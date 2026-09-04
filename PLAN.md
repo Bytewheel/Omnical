@@ -180,11 +180,20 @@ is built on; re-verify anything that may have drifted before executing a phase.
 ### 3.3 Network / public reachability
 
 - `0115d8cf.duckdns.org` → A record → `65.33.235.245` — matches the current public IP
-  of the upstream network (verified via `dig` and `curl ifconfig.me`). The user
-  confirmed this hostname is available for this project.
-- Public exposure therefore requires exactly one upstream port-forward (TCP 443) plus
-  a libreCMC firewall input rule. DuckDNS supports TXT records via its API →
-  **Let's Encrypt DNS-01 works with no inbound port 80 at all**.
+  of the upstream network (verified via `dig`, `curl ifconfig.me`, and UPnP
+  `GetExternalIPAddress`). **CORRECTED 2026-09-04: the hostname is NOT free** — an
+  existing Deco-app forward (TCP 443 → 192.168.1.107) publicly serves the OpenNIC
+  `.truth` TLD website from the dev machine's Apache under this name with a certbot
+  LE cert (see Phase 0 step 3). Per user decision, **omnical uses external port 8443**
+  (verified free); the `.truth` site keeps 443.
+- Public exposure therefore requires one upstream port-forward (**TCP 8443 →
+  192.168.1.21:8443, DONE 2026-09-04 via UPnP IGD**, see Phase 0 step 3 for the
+  Deco X60 quirks and the persistence caveat) plus a libreCMC firewall input rule
+  (Phase 4). DuckDNS supports TXT records via its API → **Let's Encrypt DNS-01 works
+  with no inbound port 80 at all**. Note: a cert for this hostname already exists on
+  the dev machine (certbot, `/etc/letsencrypt`, expires 2026-10-07) — Phase 3 must
+  decide between reusing it or issuing alongside it; two ACME clients for one name
+  is redundant but harmless.
 
 ### 3.4 Identity & data ecosystem (who/what this serves)
 
@@ -274,6 +283,48 @@ Existing tooling to integrate with:
    (`OK` = token valid, subdomain in account).** Needed for ACME DNS-01 in Phase 3.
 3. **Upstream router (TP-Link at 192.168.1.1)**: create NAT port-forward
    **TCP 443 → 192.168.1.21:443** (external 443). No port 80 forward needed.
+   — **DONE (2026-09-04), AMENDED by user decision: omnical exposed on port 8443,
+   not 443.** Investigation findings (all verified same day):
+   - The upstream device is a **TP-Link Deco X60** (mesh; WAN holds `65.33.235.245`,
+     Spectrum line, confirmed via UPnP `GetExternalIPAddress`). Its local web UI
+     (green "su"/luci-stok UI at `192.168.1.1`, module list in
+     `/webpages/config/navigator.json`) has **no port-forwarding page at all** —
+     forwards are Deco-app-only, and no app/cloud credentials were available.
+   - **Port 443 was already taken**: an existing (Deco-app-configured) static forward
+     **TCP 443 → 192.168.1.107 (the dev machine)** publicly serves the OpenNIC
+     **`.truth` TLD website** (Apache, certbot cert
+     `/etc/letsencrypt/live/0115d8cf.duckdns.org/`, valid to 2026-10-07) at
+     `https://0115d8cf.duckdns.org/` — i.e. the duckdns hostname was **not actually
+     free**. Externally verified live (check-host.net: TCP + HTTP 200 from ~57
+     global nodes). Re-pointing 443 to `192.168.1.21` would have taken that public
+     site offline → escalated to user per plan rules; user chose **omnical on 8443**.
+   - The Deco runs **MiniUPnPd 1.8** (IGD at `192.168.1.1:1900`, `/ctl/IPConn`).
+     Quirks found: mapping table starts empty (app rules invisible to it); it runs
+     in **secure mode** (AddPortMapping only accepted when `NewInternalClient` ==
+     requesting host — so the mapping had to be sent **from the libreCMC router
+     itself**, via `ssh router` + curl); mappings to **internal port 443 are silently
+     not programmed** (SOAP returns success, readback works, but no kernel DNAT);
+     external 443 additionally 718s (already occupied).
+   - **Forward created: `TCP 8443 → 192.168.1.21:8443`** (same-port, lease 0 =
+     permanent, description `omnical-dav`), added from the router. **Verified
+     end-to-end**: external `65.33.235.245:8443` now elicits the libreCMC's firewall
+     REJECT (fast TCP RST) from 46/57 global check-host.net nodes (all timed out
+     before) — packets demonstrably reach the libreCMC WAN; the RST is expected
+     until Phase 2 (dav-tls listening) + Phase 4 (allow rule) land. External 8443
+     was verified free beforehand (57 nodes, 0 connects).
+   - **Persistence caveat / follow-up for user**: UPnP-mapping survival across a Deco
+     reboot is unverified (do not reboot the Deco to find out). Mirror the rule in
+     the **Deco app** (Port Forwarding: TCP, external 8443 → `192.168.1.21`:8443,
+     device "libreCMC") for a guaranteed-persistent rule, or at minimum re-check
+     after the next Deco reboot; if lost, it can be re-added with one command from
+     the router (same SOAP `AddPortMapping` via `curl` to `192.168.1.1:1900/ctl/IPConn`).
+   - **Required downstream amendments when executing later phases (not yet applied):**
+     public URL becomes `https://0115d8cf.duckdns.org:8443`; dav-tls listens on
+     **`192.168.1.21:8443`** (WAN IP — NOT `0.0.0.0`, which would collide with
+     uhttpd's planned LAN `:8443` binds; with dav-tls off 443 entirely, the
+     uhttpd→8443 move in 2.5/C4 becomes **unnecessary — keep uhttpd on 443 LAN**);
+     Phase 4.1 firewall rule uses `dest_port='8443'`; Phase 4.3 matrix, Phase 3
+     verify commands, and Phase 5–7 URL examples change 443→8443 accordingly.
 4. **DuckDNS updater ownership**: confirm what currently updates the A record for
    `0115d8cf.duckdns.org` (TP-Link feature? dev-machine cron?). If nothing does,
    add a cron on the router in Phase 2 (curl to the DuckDNS update API every 5 min).
