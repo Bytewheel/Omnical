@@ -300,7 +300,8 @@ plus a local x86_64 smoke-test pass.**
 > built: static aarch64 binary 1.22 MiB stripped (`out/dav-tls`, runs under
 > qemu-aarch64) + x86_64 host build 1.4 MiB
 > (`out/x86_64-unknown-linux-gnu/dav-tls`); both via `scripts/build-rust.sh`
-> (clang recipe D)** · 1.5 smoke test pending.
+> (clang recipe D)** · **1.5 DONE — local smoke test passed: all gates green
+> (see 1.5 for results and findings)**.
 > **Nothing has been deployed to the router.**
 
 ### 1.1 Project skeleton (mirror router-nym) — **DONE (2026-09-04)**
@@ -442,7 +443,37 @@ Spec (as originally designed; implemented above with the tokio deviation):
 - Also buildable for `x86_64-unknown-linux-gnu` for local testing.
 - Expected size: ~2–4 MB stripped.
 
-### 1.5 Local smoke test (x86_64, dev machine) — NOT STARTED (unblocked 2026-09-04: both x86_64 binaries built)
+### 1.5 Local smoke test (x86_64, dev machine) — **DONE (2026-09-04, all gates green)**
+
+Executed in `/tmp/opencode/omnical-smoke/` with `out/x86_64-unknown-linux-gnu/{rustical,dav-tls}`
+(rustical on `:4000`, dav-tls on `127.0.0.1:4443` with a throwaway self-signed cert; principal
+`smoketest` + app token created via `rustical principals create --password` /
+`rustical principals app-token create`).
+
+**Gate results (all via dav-tls, i.e. TLS-terminated):**
+
+| Gate | Result |
+|---|---|
+| `/.well-known/caldav` / `/.well-known/carddav` | 308 redirect → `/caldav` / `/carddav` ✓ |
+| `OPTIONS` on calendar collection | `dav: 1, 3, access-control, calendar-access, webdav-push` ✓ |
+| `OPTIONS` on addressbook collection | `dav: 1, 3, access-control, addressbook, webdav-push` ✓ |
+| `PROPFIND` (Depth 0/1) | 207 multistatus ✓ |
+| `PUT` test `.ics` → 201; `REPORT` calendar-query (time-range) → 207 with etag; `GET` returns byte-identical content | ✓ |
+| `rustical health` | exit 0 (needs config/db env set — silent on success) ✓ |
+
+**Findings relevant to later phases:**
+
+- **Home-set shape:** `calendar-home-set` = `/caldav/principal/<user_id>/` itself; addressbook
+  home = `/carddav/principal/<user_id>/`. (Addressbook-home-set prop 404s on the *calendar*
+  principal URL — query the carddav one instead.)
+- **Default collections are NOT auto-created** for a fresh principal (at least not until first
+  frontend login). Collections are created fine via standard `MKCOL` with
+  `resourcetype {collection, calendar}` / `{collection, addressbook}` (201 both) —
+  relevant for Phase 5.4; also `MKCALENDAR` is advertised on calendars.
+- **Frontend root `/` allows GET/HEAD only** (PROPFIND → 405) — DAV discovery must go via
+  `/.well-known/*`, as all clients do.
+- dav-tls passed PROPFIND/REPORT/PUT/GET and TLS handshakes untouched; ALPN `http/1.1`
+  negotiated (curl `--http1.1` implicit via no-h2 offering).
 
 ```sh
 cargo build --release --target x86_64-unknown-linux-gnu   # both crates
