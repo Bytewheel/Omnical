@@ -700,6 +700,41 @@ curl -s http://127.0.0.1:4000/.well-known/caldav -o /dev/null -w '%{http_code}\n
 **Deliverable: valid Let's Encrypt cert for `0115d8cf.duckdns.org` live on
 `0.0.0.0:443`, with unattended renewal.**
 
+> **STATUS (2026-09-04): DONE** — except the external end-to-end checks, which are
+> gated on the Phase 4 firewall rule by design.
+> - **Certbot-cert decision (§3.3):** issued **alongside** the existing certbot cert
+>   ("redundant but harmless") — `/etc/letsencrypt` and the `.truth` site's lifecycle
+>   untouched.
+> - acme.sh installed on the dev machine (account email `burningserenity@gmail.com`,
+>   the primary identity — changeable via `acme.sh --update-account -m`); default CA
+>   pinned to Let's Encrypt via `--set-default-ca` (acme.sh otherwise defaults to
+>   ZeroSSL).
+> - Cert issued via DuckDNS DNS-01 in ~30 s: CN/SAN `0115d8cf.duckdns.org`, issuer
+>   Let's Encrypt, ECDSA, valid **2026-09-04 → 2026-12-03**; next renewal auto-picked
+>   from the ARI window (2026-11-04).
+> - Deploy hook (saved in the domain conf → runs on every renewal): `scp -p` both
+>   files → `router:/etc/rustical/tls/`, `chmod 600`, `/etc/init.d/dav-tls restart`.
+>   Written **without the plan's brace-expansion idiom** — acme.sh runs reloadcmd via
+>   POSIX `sh`, where `{a,b}` does not expand. DuckDNS token saved by the plugin to
+>   `~/.acme.sh/account.conf`; acme.sh cron (4×/day) installed → renewals fully
+>   unattended.
+> - Per the Phase 0.3 amendment everything is on **:8443**: dav-tls `enable`d
+>   (boot-persistent) and running, listening `192.168.1.21:8443 → 127.0.0.1:4000`,
+>   privileges dropped to `nobody` after cert load (certs are read pre-drop, so 0600
+>   root-owned files are correct).
+> - **Verified from the router** (`curl --resolve …:8443:192.168.1.21`, full-chain
+>   validation against the router's ca-bundle, `ssl_verify_result=0`, no `-k`):
+>   `/.well-known/caldav` → **308** through dav-tls; `/caldav/` → 405 (plain GET on a
+>   DAV root — expected); `/` → 303 (frontend login redirect). Benign first-start
+>   artifact: procd `restart` on a never-started service logs `ubus … Not found` once.
+> - **External probe** (check-host.net, 57 nodes): 0 connected; RST pattern intact
+>   (38 refused / 17 timed out / 2 other) — matches the Phase 0 baseline: the Deco
+>   forward is still alive and the libreCMC still REJECTs wan:8443 until Phase 4.1.
+> - Key hygiene: 0600 on both dev (`out/tls/key.pem`) and router; `~/router-dav` is
+>   not a git repo, so nothing to gitignore.
+> - **Deferred:** external `curl -sI https://0115d8cf.duckdns.org:8443/…` (Phase 4);
+>   2.8 reboot gate (next natural reboot — it now also proves dav-tls starts on boot).
+
 All on the **dev machine** (full curl/openssl tooling; router stays thin):
 
 ```sh
