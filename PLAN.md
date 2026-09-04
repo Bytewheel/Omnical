@@ -293,7 +293,20 @@ Existing tooling to integrate with:
 **Deliverable: two static `aarch64-unknown-linux-musl` binaries in `~/router-dav/out/`
 plus a local x86_64 smoke-test pass.**
 
-### 1.1 Project skeleton (mirror router-nym)
+> **STATUS (2026-09-04, paused mid-task):** 1.1 skeleton **DONE** · 1.2 clone+verify
+> **DONE** · 1.4 `dav-tls` code written, `cargo check` passes on host (aarch64/x86_64
+> release builds pending) · **1.3 BLOCKED at the final static link** — see
+> "Toolchain findings" under 1.3. **Nothing has been deployed to the router.**
+
+### 1.1 Project skeleton (mirror router-nym) — **DONE (2026-09-04)**
+
+Created exactly as specified below, plus `README.md` (sysupgrade runbook), and the
+zig wrappers copied into `build/bin/` (self-contained; one local patch — see
+Toolchain findings). `build-deps.sh` confirmed unnecessary. `deploy.sh` written but
+NOT yet run (Phase 2). Files: `scripts/build-rust.sh`, `dav-tls/` crate,
+`router/etc/rustical/config.toml`, `router/etc/init.d/{rustical,dav-tls}`,
+`router/etc/sysupgrade.conf.additions`, `out/tls/`.
+
 
 ```
 ~/router-dav/
@@ -313,7 +326,14 @@ plus a local x86_64 smoke-test pass.**
 └── deploy.sh              # adapted from router-nym/deploy.sh
 ```
 
-### 1.2 Clone & verify RustiCal
+### 1.2 Clone & verify RustiCal — **DONE (2026-09-04)**
+
+Cloned to `~/router-dav/rustical`, pinned `v0.16.1` (git-clean, no submodules).
+**Frontend assets ARE committed** — the rust-embed folder is
+`crates/frontend/public/assets/` (`js/bundle.mjs`, `style.css`, `licenses.html`),
+so no JS toolchain build is needed. Upstream's build tool is **deno** (not bun —
+`crates/frontend/js-components/deno.json`, `deno task build`), irrelevant since
+assets ship built-in. `.sqlx/` is committed → `SQLX_OFFLINE=true` works.
 
 ```sh
 git clone https://github.com/lennart-k/rustical.git ~/router-dav/rustical
@@ -326,7 +346,7 @@ git -C ~/router-dav/rustical checkout v0.16.1   # pin the release
   before the cargo build.
 - `SQLX_OFFLINE=true` is required for the build (`.sqlx/` is committed upstream).
 
-### 1.3 Cross-compile RustiCal
+### 1.3 Cross-compile RustiCal — **BLOCKED at final static link (2026-09-04, see Toolchain findings below)**
 
 Reuse the zig-based toolchain wrappers from `router-nym/build/bin/` (`zig-musl-cc` and
 its ar/ranlib/nm symlinks) exactly as `router-nym/scripts/build-rust.sh` does:
@@ -341,8 +361,12 @@ cargo build --release --target aarch64-unknown-linux-musl --locked
 ```
 
 Notes:
-- Only C dependency is sqlx's bundled SQLite → compiled by `zig cc` via
-  `libsqlite3-sys` build script. No extra sysroot needed (unlike nym's dbus/nftnl).
+- ~~Only C dependency is sqlx's bundled SQLite~~ — **WRONG (found 2026-09-04):**
+  the default build pulls **three** C dependencies — bundled SQLite (`sqlx-sqlite`),
+  **vendored OpenSSL** (dav_push → `ece` + `web-push`, *not* feature-gated), and
+  **aws-lc-sys** (rustls' default crypto provider, via `reqwest`/`openidconnect`/
+  `web-push`). Host tools available: clang 22 (`/usr/lib/llvm/22/bin`), llvm-ar,
+  cmake 4.3.4, perl, make, nasm, libclang, rust-lld (in the rustup toolchain).
 - Disable nothing (RustiCal has no heavyweight default features; `debug`,
   `frontend-dev`, `opentelemetry` are opt-in).
 - **Size-gate:** `strip` the binary immediately. Budget: `rustical` ≤ 35 MB stripped.
@@ -351,9 +375,46 @@ Notes:
   if still over → surface to user with the USB-stick fallback option (deferred by
   decision, not off the table).
 
-### 1.4 Build `dav-tls` (the one custom component)
+**Toolchain findings (2026-09-04) — 1.3 BLOCKED at the final static link.**
 
-Spec (small, single-file Rust program):
+Three cross-toolchain attempts (rustc 1.98.1, `SQLX_OFFLINE=true`,
+`CARGO_PROFILE_RELEASE_STRIP=true`, aarch64-unknown-linux-musl):
+
+| # | CC (C deps) | Linker | Result |
+|---|---|---|---|
+| A | zig 0.16 (`build/bin/zig-musl-cc`, router-nym pattern) | zig's own ELF linker | **All C deps compile under zig cc** (vendored OpenSSL, aws-lc-sys, SQLite, ring) ✓ — but the final link fails twice: rustc now emits `-Wl,--fix-cortex-a53-843419` which zig rejects (patched our wrapper copy to strip it — router-nym binaries already run on this RK3328 without the errata workaround), then `duplicate symbol: _start` (zig's musl crt1.o collides with rust's self-contained crt1.o). |
+| B | clang 22 (upstream-Dockerfile recipe) | rust-lld + `-Clink-self-contained=yes` | aws-lc-sys (jitterentropy) fails: clang has **no musl sysroot** on this host → falls back to host glibc headers (`/system/index/include`): `__float128 is not supported on this target`. |
+| C (current `scripts/build-rust.sh` zig route) | zig (for its bundled musl headers) | rust-lld + rust's self-contained musl (upstream's link recipe) | C deps compile ✓; final link fails with **empty-name undefined symbols** referenced from zig-compiled `sqlite3.o` inside `liblibsqlite3_sys` (many sites: `sqlite3CreateIndex`, `sqlite3Select`, …) — a zig-cc object-emission quirk strict lld rejects. Needs debugging. |
+
+Suggested next steps (in order of promise):
+1. **clang as CC + zig-provided musl headers** — `zig libc -target aarch64-linux-musl`
+   prints include/lib dirs; wire as `CC_aarch64_unknown_linux_musl=clang` +
+   `CFLAGS_aarch64_unknown_linux_musl="-nostdinc -isystem <zig-musl-include>"`,
+   keep rust-lld self-contained link (upstream-proven, real clang objects).
+   Check the empty-name relocs on the zig sqlite3.o first (`llvm-readelf -r`) to
+   confirm the diagnosis.
+2. If (1) works, use it for both binaries (dav-tls → ring compiles under zig; see
+   whether it also needs clang).
+3. Fallback: prebuilt musl cross toolchain (musl.cc `aarch64-linux-musl-cross`)
+   as CC/AR/RANLIB + rust-lld.
+4. Still untested once a link succeeds: size-gate (no successful aarch64 link yet);
+   1.5 smoke test not started (blocked).
+
+### 1.4 Build `dav-tls` (the one custom component) — code WRITTEN (2026-09-04), builds pending
+
+Source complete in `~/router-dav/dav-tls/` and `cargo check` passes. Implementation
+deviation from the spec above: **tokio + tokio-rustls (ring provider)** instead of
+std::net + threads — the two-thread-with-Mutex design would block the server→client
+direction during a blocking client read, stalling long-lived WebDAV-Push WebSockets;
+tokio's split halves avoid that. aws-lc-rs deliberately not used in this crate.
+Features implemented: repeatable `--listen`, `--upstream` (default wiring per §2.4:
+`0.0.0.0:443` → `127.0.0.1:4000`), ALPN `http/1.1` only, SO_REUSEADDR (socket2),
+`--user` privilege drop via libc getpwnam, graceful SIGTERM/SIGINT drain (≤5s,
+1024-conn cap), TCP_NODELAY, TLS close_notify propagation. Own release profile
+(opt-level="z", lto, strip). Aarch64 + x86_64 release builds still pending (blocked
+on the same link recipe decision as 1.3).
+
+Spec (as originally designed; implemented above with the tokio deviation):
 
 - Args: `--listen 0.0.0.0:443` (repeatable), `--upstream 127.0.0.1:4000`,
   `--cert /etc/rustical/tls/fullchain.pem`, `--key /etc/rustical/tls/key.pem`,
@@ -369,7 +430,7 @@ Spec (small, single-file Rust program):
 - Also buildable for `x86_64-unknown-linux-gnu` for local testing.
 - Expected size: ~2–4 MB stripped.
 
-### 1.5 Local smoke test (x86_64, dev machine)
+### 1.5 Local smoke test (x86_64, dev machine) — NOT STARTED (blocked on 1.3/1.4 builds)
 
 ```sh
 cargo build --release --target x86_64-unknown-linux-gnu   # both crates
