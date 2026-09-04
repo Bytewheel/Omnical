@@ -293,10 +293,13 @@ Existing tooling to integrate with:
 **Deliverable: two static `aarch64-unknown-linux-musl` binaries in `~/router-dav/out/`
 plus a local x86_64 smoke-test pass.**
 
-> **STATUS (2026-09-04, paused mid-task):** 1.1 skeleton **DONE** · 1.2 clone+verify
-> **DONE** · 1.4 `dav-tls` code written, `cargo check` passes on host (aarch64/x86_64
-> release builds pending) · **1.3 BLOCKED at the final static link** — see
-> "Toolchain findings" under 1.3. **Nothing has been deployed to the router.**
+> **STATUS (2026-09-04, updated):** 1.1 skeleton **DONE** · 1.2 clone+verify
+> **DONE** · **1.3 DONE — rustical cross-compiled: static aarch64 binary, 26 MiB
+> stripped (within 35 MiB budget), runs under qemu-aarch64 (`--version`,
+> `gen-config` OK); toolchain fix recorded under 1.3** · 1.4 `dav-tls` code
+> written, `cargo check` passes on host (aarch64/x86_64 release builds pending —
+> the now-working clang recipe applies to it too) · 1.5 smoke test pending.
+> **Nothing has been deployed to the router.**
 
 ### 1.1 Project skeleton (mirror router-nym) — **DONE (2026-09-04)**
 
@@ -346,7 +349,7 @@ git -C ~/router-dav/rustical checkout v0.16.1   # pin the release
   before the cargo build.
 - `SQLX_OFFLINE=true` is required for the build (`.sqlx/` is committed upstream).
 
-### 1.3 Cross-compile RustiCal — **BLOCKED at final static link (2026-09-04, see Toolchain findings below)**
+### 1.3 Cross-compile RustiCal — **DONE (2026-09-04): `out/rustical`, static aarch64, 26 MiB stripped**
 
 Reuse the zig-based toolchain wrappers from `router-nym/build/bin/` (`zig-musl-cc` and
 its ar/ranlib/nm symlinks) exactly as `router-nym/scripts/build-rust.sh` does:
@@ -375,30 +378,27 @@ Notes:
   if still over → surface to user with the USB-stick fallback option (deferred by
   decision, not off the table).
 
-**Toolchain findings (2026-09-04) — 1.3 BLOCKED at the final static link.**
+**Toolchain findings (2026-09-04) — RESOLVED: recipe D (clang + zig musl headers) works.**
 
-Three cross-toolchain attempts (rustc 1.98.1, `SQLX_OFFLINE=true`,
+Four cross-toolchain attempts (rustc 1.98.1, `SQLX_OFFLINE=true`,
 `CARGO_PROFILE_RELEASE_STRIP=true`, aarch64-unknown-linux-musl):
 
 | # | CC (C deps) | Linker | Result |
 |---|---|---|---|
 | A | zig 0.16 (`build/bin/zig-musl-cc`, router-nym pattern) | zig's own ELF linker | **All C deps compile under zig cc** (vendored OpenSSL, aws-lc-sys, SQLite, ring) ✓ — but the final link fails twice: rustc now emits `-Wl,--fix-cortex-a53-843419` which zig rejects (patched our wrapper copy to strip it — router-nym binaries already run on this RK3328 without the errata workaround), then `duplicate symbol: _start` (zig's musl crt1.o collides with rust's self-contained crt1.o). |
 | B | clang 22 (upstream-Dockerfile recipe) | rust-lld + `-Clink-self-contained=yes` | aws-lc-sys (jitterentropy) fails: clang has **no musl sysroot** on this host → falls back to host glibc headers (`/system/index/include`): `__float128 is not supported on this target`. |
-| C (current `scripts/build-rust.sh` zig route) | zig (for its bundled musl headers) | rust-lld + rust's self-contained musl (upstream's link recipe) | C deps compile ✓; final link fails with **empty-name undefined symbols** referenced from zig-compiled `sqlite3.o` inside `liblibsqlite3_sys` (many sites: `sqlite3CreateIndex`, `sqlite3Select`, …) — a zig-cc object-emission quirk strict lld rejects. Needs debugging. |
+| C | zig (for its bundled musl headers) | rust-lld + rust's self-contained musl (upstream's link recipe) | C deps compile ✓; final link fails with **empty-name undefined symbols** referenced from zig-compiled `sqlite3.o` inside `liblibsqlite3_sys` (many sites: `sqlite3CreateIndex`, `sqlite3Select`, …). **Diagnosis CONFIRMED 2026-09-04 via `readelf -sW sqlite3.o`: 17 empty-name undefined SECTION LOCAL symbols** — a zig-cc object-emission quirk strict lld rejects. Zig-CC is unusable for lld-linked builds. |
+| **D (WINNER — now the default `clang` route in `scripts/build-rust.sh`)** | **clang 22 + zig's musl include dirs** (`zig libc -target aarch64-linux-musl -includes`) | rust-lld + rust's self-contained musl | **WORKS.** Recipe: `CC_aarch64_unknown_linux_musl=clang`, `AR/RANLIB=llvm-ar/llvm-ranlib`, `CFLAGS_aarch64_unknown_linux_musl="-nostdinc -isystem <clang -print-resource-dir>/include -isystem <each zig musl include dir>"` (the resource dir is required — `-nostdinc` drops clang's builtin headers, breaking `arm_neon.h` in aws-lc), `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-Clink-self-contained=yes -Clinker=rust-lld"`. Validated first on a standalone bundled-rusqlite crate (0 empty-name symbols vs zig's 17), then full rustical build. |
 
-Suggested next steps (in order of promise):
-1. **clang as CC + zig-provided musl headers** — `zig libc -target aarch64-linux-musl`
-   prints include/lib dirs; wire as `CC_aarch64_unknown_linux_musl=clang` +
-   `CFLAGS_aarch64_unknown_linux_musl="-nostdinc -isystem <zig-musl-include>"`,
-   keep rust-lld self-contained link (upstream-proven, real clang objects).
-   Check the empty-name relocs on the zig sqlite3.o first (`llvm-readelf -r`) to
-   confirm the diagnosis.
-2. If (1) works, use it for both binaries (dav-tls → ring compiles under zig; see
-   whether it also needs clang).
-3. Fallback: prebuilt musl cross toolchain (musl.cc `aarch64-linux-musl-cross`)
-   as CC/AR/RANLIB + rust-lld.
-4. Still untested once a link succeeds: size-gate (no successful aarch64 link yet);
-   1.5 smoke test not started (blocked).
+Outcome of the D build (2026-09-04):
+- `~/router-dav/out/rustical` — ELF 64-bit aarch64, **statically linked (no dynamic
+  section), stripped, 27,839,344 bytes = 26 MiB** — within the 35 MiB budget, no
+  size-mitigation steps (opt-level=z/LTO/upx) needed.
+- Runtime check under `qemu-aarch64`: `rustical --version` → `rustical 0.16.1` ✓,
+  `rustical gen-config` prints the default TOML ✓ (full smoke test is 1.5).
+- Build time ~3.5 min from a clean aarch64 target dir.
+- Note for 1.4: `dav-tls` should use the same recipe (`TOOLCHAIN=clang` is now the
+  `build-rust.sh` default).
 
 ### 1.4 Build `dav-tls` (the one custom component) — code WRITTEN (2026-09-04), builds pending
 
@@ -411,8 +411,9 @@ Features implemented: repeatable `--listen`, `--upstream` (default wiring per §
 `0.0.0.0:443` → `127.0.0.1:4000`), ALPN `http/1.1` only, SO_REUSEADDR (socket2),
 `--user` privilege drop via libc getpwnam, graceful SIGTERM/SIGINT drain (≤5s,
 1024-conn cap), TCP_NODELAY, TLS close_notify propagation. Own release profile
-(opt-level="z", lto, strip). Aarch64 + x86_64 release builds still pending (blocked
-on the same link recipe decision as 1.3).
+(opt-level="z", lto, strip). Aarch64 + x86_64 release builds still pending (now
+unblocked: recipe D under 1.3 works; dav-tls builds via the `clang` default route of
+`scripts/build-rust.sh`, no C deps beyond ring which compiles under it).
 
 Spec (as originally designed; implemented above with the tokio deviation):
 
