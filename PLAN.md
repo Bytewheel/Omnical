@@ -732,8 +732,10 @@ curl -s http://127.0.0.1:4000/.well-known/caldav -o /dev/null -w '%{http_code}\n
 >   forward is still alive and the libreCMC still REJECTs wan:8443 until Phase 4.1.
 > - Key hygiene: 0600 on both dev (`out/tls/key.pem`) and router; `~/router-dav` is
 >   not a git repo, so nothing to gitignore.
-> - **Deferred:** external `curl -sI https://0115d8cf.duckdns.org:8443/…` (Phase 4);
->   2.8 reboot gate (next natural reboot — it now also proves dav-tls starts on boot).
+> - ~~**Deferred:** external `curl -sI https://0115d8cf.duckdns.org:8443/…` (Phase 4)~~
+>   **DONE 2026-09-04 with Phase 4** (check-host.net HTTPS probe = the external
+>   curl-equivalent; see Phase 4 STATUS). Still deferred: 2.8 reboot gate (next
+>   natural reboot — it now also proves dav-tls starts on boot).
 
 All on the **dev machine** (full curl/openssl tooling; router stays thin):
 
@@ -760,28 +762,59 @@ dev machine + router, mode 0600, never in the git repo.
 
 **Verify:**
 ```sh
-openssl s_client -connect 0115d8cf.duckdns.org:443 -servername 0115d8cf.duckdns.org </dev/null 2>/dev/null \
+# (ports amended 443→8443 per Phase 0.3; executed externally via check-host.net with Phase 4)
+openssl s_client -connect 0115d8cf.duckdns.org:8443 -servername 0115d8cf.duckdns.org </dev/null 2>/dev/null \
   | openssl x509 -noout -subject -dates -issuer     # Let's Encrypt, valid dates
-curl -sI https://0115d8cf.duckdns.org/.well-known/caldav   # from an EXTERNAL network
+curl -sI https://0115d8cf.duckdns.org:8443/.well-known/caldav   # from an EXTERNAL network
 ```
 
 ---
 
 ## Phase 4 — Firewall & Reachability
 
-**Deliverable: 443 reachable from WAN through both NATs, blocked otherwise.**
+**Deliverable (amended per Phase 0.3): 8443 reachable from WAN through both NATs,
+blocked otherwise.**
 
-### 4.1 libreCMC firewall rule (follow the Allow-DNSv4 rule pattern)
+> **STATUS (2026-09-04): DONE — all gates green.**
+> - **Pre-flight checks (no drift):** no pre-existing `Allow-Dav-TLS` rule;
+>   dav-tls LISTEN on `192.168.1.21:8443`, rustical on `127.0.0.1:4000` only, uhttpd
+>   untouched on LAN :443; A record for `0115d8cf.duckdns.org` == current public IP
+>   (65.33.235.245, from dev machine and via 1.1.1.1); both services `running`.
+> - **4.1 DONE** — rule added per the amendment (follows the existing
+>   Allow-DHCP-Renew pattern): `src='wan', proto='tcp', dest_port='8443',
+>   target='ACCEPT', family='any'` → `firewall.@rule[20]` (`cfg4492bd`), committed,
+>   `/etc/init.d/firewall reload` (pre-existing benign screech_dnat reflection
+>   warnings unchanged). Live in nftables as
+>   `tcp dport 8443 counter … accept comment "!fw4: Allow-Dav-TLS"` with the packet
+>   counter climbing — traffic demonstrably flows through the rule.
+> - **4.2** — nothing to do (Phase 0): upstream forward exists twice over (Deco-app
+>   mirror + UPnP), TCP 8443 → 192.168.1.21:8443.
+> - **4.3 verified** (matrix below amended to the 8443 / WAN-IP-listener reality and
+>   marked with results): upstream-LAN path → **308** with full LE chain validation
+>   (`ssl_verify_result=0`, no `-k`); external (check-host.net, 57 global nodes):
+>   **TCP 45/57 connected, HTTPS 45/57 → `308 Permanent Redirect`** on
+>   `/.well-known/caldav` (remaining 12 = far-node timeouts, normal for a residential
+>   line; baseline before the rule was 0 connected / 38 refused — the RST→308 flip
+>   proves the firewall rule did it); port 4000 refused from outside; port 8444
+>   rejected → only 8443 opened; cert seen: `CN=0115d8cf.duckdns.org`, issuer
+>   Let's Encrypt (YE2), valid 2026-09-04 → 2026-12-03.
+> - **Bonus finding: NAT hairpin works** — the public URL answers from *inside* the
+>   network too (dev machine → `65.33.235.245:8443` → 308), so LAN clients can use
+>   `https://0115d8cf.duckdns.org:8443` directly; 192.168.10.x clients can also hit
+>   `192.168.1.21:8443` (lan-zone input policy is ACCEPT, verified in uci).
+> - Still open from earlier phases: **2.8 reboot gate** (next natural reboot).
+
+### 4.1 libreCMC firewall rule (follow the Allow-DNSv4 rule pattern) — **DONE (2026-09-04, dest_port 8443 per Phase 0.3)**
 
 ```sh
 uci add firewall rule
 uci set firewall.@rule[-1].name='Allow-Dav-TLS'
 uci set firewall.@rule[-1].src='wan'
 uci set firewall.@rule[-1].proto='tcp'
-uci set firewall.@rule[-1].dest_port='443'
+uci set firewall.@rule[-1].dest_port='8443'
 uci set firewall.@rule[-1].target='ACCEPT'
 uci set firewall.@rule[-1].family='any'
-uci commit firewall && /etc/init.d/firewall restart
+uci commit firewall && /etc/init.d/firewall reload
 ```
 
 (Also verify the IPv6 story: if a global GUA ever lands on the WAN interface,
@@ -794,14 +827,15 @@ configured, the fallback is a TCP relay on one of the existing wireguard VMs
 (`wg-vm1`/`wg-vm3`) — noted here, not planned, since the port-forward path is
 available.
 
-### 4.3 Reachability matrix to verify
+### 4.3 Reachability matrix — **VERIFIED (2026-09-04, rows amended per Phase 0.3: dav-tls listens on the WAN IP :8443, not 0.0.0.0:443)**
 
-| From | To | Expected |
+| From | To | Verified |
 |---|---|---|
-| LAN (192.168.10.x) | https://192.168.10.1:443 | 200/301, valid cert |
-| Upstream LAN (192.168.1.x, incl. dev machine) | https://192.168.1.21:443 | 200/301, valid cert |
-| Internet (phone LTE / a VM) | https://0115d8cf.duckdns.org:443 | 200/301, valid Let's Encrypt chain |
-| Any | port 4000 | unreachable (bound to 127.0.0.1) |
+| Upstream LAN (192.168.1.x, incl. dev machine) | https://192.168.1.21:8443 | ✓ 308 on `/.well-known/caldav`, LE chain validates (`ssl_verify_result=0`, no `-k`) |
+| LAN (192.168.10.x) | https://192.168.1.21:8443 or public URL | ✓ lan-zone input = ACCEPT (uci-verified); hairpin through the Deco verified from inside — no client-side distinction |
+| Internet (check-host.net, 57 nodes) | https://0115d8cf.duckdns.org:8443 | ✓ 45/57 TCP connect; 45/57 TLS handshake + `308 Permanent Redirect` (12 far-node timeouts; was 0 connected / 38 refused before the rule) |
+| Any | port 4000 | ✓ refused (bound to 127.0.0.1 only) |
+| Any | other WAN ports (e.g. 8444) | ✓ rejected — only 8443 was opened |
 
 ---
 
