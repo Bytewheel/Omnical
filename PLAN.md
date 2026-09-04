@@ -296,9 +296,11 @@ plus a local x86_64 smoke-test pass.**
 > **STATUS (2026-09-04, updated):** 1.1 skeleton **DONE** · 1.2 clone+verify
 > **DONE** · **1.3 DONE — rustical cross-compiled: static aarch64 binary, 26 MiB
 > stripped (within 35 MiB budget), runs under qemu-aarch64 (`--version`,
-> `gen-config` OK); toolchain fix recorded under 1.3** · 1.4 `dav-tls` code
-> written, `cargo check` passes on host (aarch64/x86_64 release builds pending —
-> the now-working clang recipe applies to it too) · 1.5 smoke test pending.
+> `gen-config` OK); toolchain fix recorded under 1.3** · **1.4 DONE — dav-tls
+> built: static aarch64 binary 1.22 MiB stripped (`out/dav-tls`, runs under
+> qemu-aarch64) + x86_64 host build 1.4 MiB
+> (`out/x86_64-unknown-linux-gnu/dav-tls`); both via `scripts/build-rust.sh`
+> (clang recipe D)** · 1.5 smoke test pending.
 > **Nothing has been deployed to the router.**
 
 ### 1.1 Project skeleton (mirror router-nym) — **DONE (2026-09-04)**
@@ -400,7 +402,7 @@ Outcome of the D build (2026-09-04):
 - Note for 1.4: `dav-tls` should use the same recipe (`TOOLCHAIN=clang` is now the
   `build-rust.sh` default).
 
-### 1.4 Build `dav-tls` (the one custom component) — code WRITTEN (2026-09-04), builds pending
+### 1.4 Build `dav-tls` (the one custom component) — **DONE (2026-09-04)**
 
 Source complete in `~/router-dav/dav-tls/` and `cargo check` passes. Implementation
 deviation from the spec above: **tokio + tokio-rustls (ring provider)** instead of
@@ -411,9 +413,18 @@ Features implemented: repeatable `--listen`, `--upstream` (default wiring per §
 `0.0.0.0:443` → `127.0.0.1:4000`), ALPN `http/1.1` only, SO_REUSEADDR (socket2),
 `--user` privilege drop via libc getpwnam, graceful SIGTERM/SIGINT drain (≤5s,
 1024-conn cap), TCP_NODELAY, TLS close_notify propagation. Own release profile
-(opt-level="z", lto, strip). Aarch64 + x86_64 release builds still pending (now
-unblocked: recipe D under 1.3 works; dav-tls builds via the `clang` default route of
-`scripts/build-rust.sh`, no C deps beyond ring which compiles under it).
+(opt-level="z", lto, strip). **Builds completed 2026-09-04** via the `clang`
+default route of `scripts/build-rust.sh` (ring is the only C dep and compiles
+under recipe D):
+
+- `~/router-dav/out/dav-tls` — ELF 64-bit aarch64, **statically linked (no
+  dynamic section), stripped, 1,279,960 bytes = 1.22 MiB** (well under the
+  ~2–4 MB estimate; combined with rustical = ~27 MiB of the 42 MB overlay).
+  Runtime check under `qemu-aarch64`: `--help` OK (full smoke test is 1.5).
+- `~/router-dav/out/x86_64-unknown-linux-gnu/dav-tls` — host build for the
+  1.5 smoke test, 1.4 MiB stripped, runs natively.
+- Build times: ~42 s (aarch64, clean), ~49 s (x86_64, clean); x86_64 rustical
+  rebuild from clean also completed (~6 min) as a 1.5 prerequisite.
 
 Spec (as originally designed; implemented above with the tokio deviation):
 
@@ -431,7 +442,7 @@ Spec (as originally designed; implemented above with the tokio deviation):
 - Also buildable for `x86_64-unknown-linux-gnu` for local testing.
 - Expected size: ~2–4 MB stripped.
 
-### 1.5 Local smoke test (x86_64, dev machine) — NOT STARTED (blocked on 1.3/1.4 builds)
+### 1.5 Local smoke test (x86_64, dev machine) — NOT STARTED (unblocked 2026-09-04: both x86_64 binaries built)
 
 ```sh
 cargo build --release --target x86_64-unknown-linux-gnu   # both crates
