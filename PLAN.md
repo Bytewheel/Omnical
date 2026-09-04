@@ -262,18 +262,25 @@ Existing tooling to integrate with:
 
 **Owner: user (unless noted). Gate for Phase 1.**
 
-1. **Update the Rust toolchain** (dev machine):
+1. **Update the Rust toolchain** (dev machine) — **DONE (2026-09-04): rustc 1.97.1 → 1.98.1,
+   `aarch64-unknown-linux-musl` target confirmed installed; rustup self-updated to 1.29.1.**
    ```sh
    rustup update stable        # RustiCal 0.16.1 needs rustc >= 1.98 (have 1.97.1)
    rustup target add aarch64-unknown-linux-musl   # idempotent
    ```
 2. **DuckDNS token** for account containing `0115d8cf` subdomain → store in `pass`
-   (e.g. `pass insert secrets/duckdns/token`). Needed for ACME DNS-01 in Phase 3.
+   — **DONE (2026-09-04): stored as `secrets/duckdns/0115d8cf.duckdns.org/token`
+   (user-inserted); UUID shape checked and validated against the DuckDNS update API
+   (`OK` = token valid, subdomain in account).** Needed for ACME DNS-01 in Phase 3.
 3. **Upstream router (TP-Link at 192.168.1.1)**: create NAT port-forward
    **TCP 443 → 192.168.1.21:443** (external 443). No port 80 forward needed.
 4. **DuckDNS updater ownership**: confirm what currently updates the A record for
    `0115d8cf.duckdns.org` (TP-Link feature? dev-machine cron?). If nothing does,
    add a cron on the router in Phase 2 (curl to the DuckDNS update API every 5 min).
+   — **INVESTIGATED (2026-09-04): no updater found — dev-machine crontab/systemd
+   clean, libreCMC router cron clean, user unsure; TP-Link built-in DDNS not
+   verifiable without upstream admin access. Resolution: add the router cron in
+   Phase 2.7 (DuckDNS updates are idempotent, so an extra updater is harmless).**
 5. **App-token storage convention**: RustiCal app tokens (per client) will be
    generated in Phase 5; store them in `pass` under `secrets/omnical/…`.
 6. **Confirm the identities list** (the 6 from §3.4, or a revised list) — drives
@@ -503,7 +510,7 @@ All on the **dev machine** (full curl/openssl tooling; router stays thin):
 curl https://get.acme.sh | sh -s email=<your-email>
 
 # 2. Issue via DuckDNS DNS-01 (TXT record automation; no port 80 needed)
-export DuckDNS_Token="$(pass show secrets/duckdns/token)"
+export DuckDNS_Token="$(pass show secrets/duckdns/0115d8cf.duckdns.org/token)"
 ~/.acme.sh/acme.sh --issue --dns dns_duckdns -d 0115d8cf.duckdns.org
 
 # 3. Install-cert with a deploy hook that pushes to the router and reloads dav-tls
@@ -879,7 +886,7 @@ Every step is reversible; nothing destructive is done to the router.
 - `~/.acme.sh/` — acme.sh home, duckdns DNS-01 + install-cert deploy hook
 - `~/.config/vdirsyncer/config` — extended with RustiCal pairs (Phase 6)
 - `~/backups/omnical/` — nightly backup artifacts
-- `pass` entries: `secrets/duckdns/token`, `secrets/omnical/<identity>/<client>`
+- `pass` entries: `secrets/duckdns/0115d8cf.duckdns.org/token`, `secrets/omnical/<identity>/<client>`
 
 **One-liners**
 ```sh
