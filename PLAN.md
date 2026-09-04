@@ -312,12 +312,15 @@ Existing tooling to integrate with:
      before) — packets demonstrably reach the libreCMC WAN; the RST is expected
      until Phase 2 (dav-tls listening) + Phase 4 (allow rule) land. External 8443
      was verified free beforehand (57 nodes, 0 connects).
-   - **Persistence caveat / follow-up for user**: UPnP-mapping survival across a Deco
-     reboot is unverified (do not reboot the Deco to find out). Mirror the rule in
-     the **Deco app** (Port Forwarding: TCP, external 8443 → `192.168.1.21`:8443,
-     device "libreCMC") for a guaranteed-persistent rule, or at minimum re-check
-     after the next Deco reboot; if lost, it can be re-added with one command from
-     the router (same SOAP `AddPortMapping` via `curl` to `192.168.1.1:1900/ctl/IPConn`).
+    - **Persistence caveat / follow-up for user**: UPnP-mapping survival across a Deco
+      reboot is unverified (do not reboot the Deco to find out). Mirror the rule in
+      the **Deco app** (Port Forwarding: TCP, external 8443 → `192.168.1.21`:8443,
+      device "libreCMC") for a guaranteed-persistent rule, or at minimum re-check
+      after the next Deco reboot; if lost, it can be re-added with one command from
+      the router (same SOAP `AddPortMapping` via `curl` to `192.168.1.1:1900/ctl/IPConn`).
+      — **RESOLVED (2026-09-04): user mirrored the forward in the Deco app (TCP 8443 →
+      192.168.1.21:8443, device libreCMC) — a guaranteed-persistent rule now exists in
+      addition to the UPnP mapping.**
    - **Required downstream amendments when executing later phases (not yet applied):**
      public URL becomes `https://0115d8cf.duckdns.org:8443`; dav-tls listens on
      **`192.168.1.21:8443`** (WAN IP — NOT `0.0.0.0`, which would collide with
@@ -548,7 +551,46 @@ multistatus; `/.well-known/*` redirect correctly through dav-tls; PUT+REPORT of 
 **Deliverable: both services installed, enabled, and running on the router
 (HTTP-only, LAN-addressable; TLS wired in Phase 3.**
 
-### 2.1 Files to deploy (via `deploy.sh`, modeled on router-nym)
+> **STATUS (2026-09-04): DONE — except the reboot gate, deferred by user decision.**
+> Executed via `~/router-dav/deploy.sh` against a virgin router (no prior install).
+> rustical 0.16.1 running + enabled at boot, healthy, listening on **127.0.0.1:4000
+> only**; DB created at `/usr/local/share/rustical/db.sqlite3` (f2fs overlay —
+> persistent, not /var); sysupgrade.conf entries added; `sqlite3-cli` installed;
+> dav-tls pushed, proven executable on the real aarch64 CPU (`--help` exit 0), and
+> **deliberately not enabled** (no certs until Phase 3); uhttpd untouched on LAN
+> :443. DuckDNS updater cron added and verified (API `OK`; A record → 65.33.235.245
+> via router and external resolver). Disk after deploy: 12.3 M free on the overlay
+> (87 % used — the ≥ 5 M floor from 8.4 still holds).
+>
+> **Pre-deploy bugs found & fixed during execution review (all in `~/router-dav/`):**
+> 1. `router/etc/rustical/config.toml` originally had `http.host =
+>    "0115d8cf.duckdns.org"` — in RustiCal 0.16.1 `http.host` is a **deprecated bind
+>    override that wins over `bind`**, so rustical would have tried to bind
+>    `0115d8cf.duckdns.org:4000` (resolves to the public IP → bind failure). Key
+>    removed; response URLs are generated from each request's Host header anyway
+>    (clients send `0115d8cf.duckdns.org:8443` through dav-tls).
+> 2. `--config-file` is a top-level clap option, **not** accepted after the
+>    subcommand (`rustical serve --config-file …` → "unexpected argument"). Fixed
+>    the order in `router/etc/init.d/rustical` and `deploy.sh` (`rustical
+>    --config-file X serve` / `… health`).
+> 3. `deploy.sh` scp'd into `/etc/rustical/` before creating it (virgin router had
+>    none — scp would have failed). mkdir now precedes the config push.
+> 4. `router/etc/init.d/dav-tls` amended per Phase 0.3: LISTEN `192.168.1.21:8443`
+>    (WAN IP, not `0.0.0.0:443`), plus a pre-start check that refuses to start (with
+>    a loud syslog message) if eth0's DHCP address ever drifts from 192.168.1.21.
+>
+> **2.7 finding:** the router's egress prefers IPv6 (ifconfig.me → `2603:9001:…`),
+> which DuckDNS cannot use to set the A record — the cron line pins **`curl -4`**
+> (verified: router v4 egress = 65.33.235.245 = current A record). Caveat: busybox
+> crond logs each command line (incl. the token) to the router's root-only syslog.
+>
+> **Reboot gate (2.8):** deferred 2026-09-04 — verify services + DB after the next
+> natural reboot, or fold into Phase 3 verification. **Reminder for Phase 3/4:**
+> all verify commands and the firewall rule use port **8443** (e.g.
+> `openssl s_client -connect 0115d8cf.duckdns.org:8443 …`,
+> `dest_port='8443'`).
+
+### 2.1 Files to deploy (via `deploy.sh`, modeled on router-nym) — **DONE (2026-09-04)**
 
 | Artifact (dev) | Router target | Mode |
 |---|---|---|
@@ -558,7 +600,7 @@ multistatus; `/.well-known/*` redirect correctly through dav-tls; PUT+REPORT of 
 | `router/etc/init.d/rustical` | `/etc/init.d/rustical` | 0755 |
 | `router/etc/init.d/dav-tls` | `/etc/init.d/dav-tls` | 0755 |
 
-### 2.2 Router-side preparation (idempotent, part of deploy.sh)
+### 2.2 Router-side preparation (idempotent, part of deploy.sh) — **DONE**
 
 ```sh
 # persistent data dir (overlay — NOT /var!)
@@ -568,7 +610,7 @@ opkg update && opkg install sqlite3-cli
 ```
 
 ### 2.3 `/etc/rustical/config.toml` (authoritative shape comes from
-`rustical gen-config`; the fields we set:)
+`rustical gen-config`; the fields we set:) — **DONE (host key removed — see STATUS bug 1)**
 
 ```toml
 [http]
@@ -589,7 +631,7 @@ db_url = "file:/usr/local/share/rustical/db.sqlite3"
 (Equivalent env vars if preferred: `RUSTICAL_HTTP__BIND=127.0.0.1:4000`,
 `RUSTICAL_DATA_STORE__SQLITE__DB_URL=file:…`.)
 
-### 2.4 procd init scripts
+### 2.4 procd init scripts — **DONE (dav-tls amended to 192.168.1.21:8443 per Phase 0.3)**
 
 `/etc/init.d/rustical`:
 - `START=95`, `STOP=10`, `USE_PROCD=1`
@@ -605,7 +647,7 @@ db_url = "file:/usr/local/share/rustical/db.sqlite3"
 - only enabled/started in Phase 3 when certs exist (validate: `ls /etc/rustical/tls/` in
   `start_service`, refuse to start with log message if missing)
 
-### 2.5 Free port 443 (move uhttpd HTTPS to 8443)
+### 2.5 Free port 443 (move uhttpd HTTPS to 8443) — **SKIPPED per Phase 0.3 amendment (uhttpd stays on LAN :443; verified untouched)**
 
 ```sh
 uci set uhttpd.main.listen_https='192.168.10.1:8443'
@@ -618,7 +660,7 @@ uci commit uhttpd && /etc/init.d/uhttpd restart
 LuCI remains at `https://192.168.10.1:8443` (the `:80` listener still redirects).
 Document this change — it's the only visible LuCI-side modification of the whole plan.
 
-### 2.6 Persistence across sysupgrade
+### 2.6 Persistence across sysupgrade — **DONE**
 
 Append to `/etc/sysupgrade.conf`:
 
@@ -631,7 +673,7 @@ Append to `/etc/sysupgrade.conf`:
 `/usr/sbin/dav-tls` are **not** — after any sysupgrade, re-run
 `~/router-dav/deploy.sh`. Document in the project README.)
 
-### 2.7 Optional: duckdns updater cron (only if Phase 0 step 4 found nothing)
+### 2.7 Optional: duckdns updater cron (only if Phase 0 step 4 found nothing) — **DONE (curl -4 pinned; see STATUS finding)**
 
 ```cron
 */5 * * * * curl -s "https://www.duckdns.org/update?domains=0115d8cf&token=<TOKEN>&ip=" >/dev/null
@@ -639,7 +681,7 @@ Append to `/etc/sysupgrade.conf`:
 
 (Token inserted at deploy time, chmod 600 crontab — never logged.)
 
-### 2.8 Verify
+### 2.8 Verify — **DONE except reboot gate (deferred by user, 2026-09-04)**
 
 ```sh
 /etc/init.d/rustical enable && /etc/init.d/rustical start
