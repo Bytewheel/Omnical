@@ -557,7 +557,8 @@ multistatus; `/.well-known/*` redirect correctly through dav-tls; PUT+REPORT of 
 **Deliverable: both services installed, enabled, and running on the router
 (HTTP-only, LAN-addressable; TLS wired in Phase 3.**
 
-> **STATUS (2026-09-04): DONE — except the reboot gate, deferred by user decision.**
+> **STATUS (2026-09-04): DONE — incl. the reboot gate, which passed after a
+> natural reboot on 2026-09-05 (see the reboot-gate paragraph below).**
 > Executed via `~/router-dav/deploy.sh` against a virgin router (no prior install).
 > rustical 0.16.1 running + enabled at boot, healthy, listening on **127.0.0.1:4000
 > only**; DB created at `/usr/local/share/rustical/db.sqlite3` (f2fs overlay —
@@ -590,11 +591,19 @@ multistatus; `/.well-known/*` redirect correctly through dav-tls; PUT+REPORT of 
 > (verified: router v4 egress = 65.33.235.245 = current A record). Caveat: busybox
 > crond logs each command line (incl. the token) to the router's root-only syslog.
 >
-> **Reboot gate (2.8):** deferred 2026-09-04 — verify services + DB after the next
-> natural reboot, or fold into Phase 3 verification. **Reminder for Phase 3/4:**
-> all verify commands and the firewall rule use port **8443** (e.g.
-> `openssl s_client -connect 0115d8cf.duckdns.org:8443 …`,
-> `dest_port='8443'`).
+> **Reboot gate (2.8): PASSED 2026-09-05** — user rebooted the router that evening
+> (uptime 40 min at verification); everything auto-started and survived: rustical +
+> dav-tls both `running` (bound 127.0.0.1:4000 / 192.168.1.21:8443 exactly as
+> configured), uhttpd untouched on LAN :443, `rustical health` OK, DB intact at
+> `/usr/local/share/rustical/db.sqlite3` (`PRAGMA integrity_check` = ok; live counts
+> exactly the pre-reboot values — 517 calendar / 209 address objects, 8 principals,
+> 29 app tokens), TLS certs present, all three router crons alive (srvzone,
+> screech-watchdog, DuckDNS `curl -4`), overlay 9.3 M free (floor intact), and
+> external reachability re-proven from the dev machine: `/.well-known/caldav` → 308
+> + authenticated PROPFIND 207 through the public URL with full LE chain validation.
+> Proves not-in-/var, procd boot persistence of both services, and cron persistence.
+> Verification-matrix row 17 green. (Historical reminder, now moot: all verify
+> commands and the firewall rule use port **8443**.)
 
 ### 2.1 Files to deploy (via `deploy.sh`, modeled on router-nym) — **DONE (2026-09-04)**
 
@@ -687,7 +696,7 @@ Append to `/etc/sysupgrade.conf`:
 
 (Token inserted at deploy time, chmod 600 crontab — never logged.)
 
-### 2.8 Verify — **DONE except reboot gate (deferred by user, 2026-09-04)**
+### 2.8 Verify — **DONE incl. reboot gate (natural reboot verified 2026-09-05 — see STATUS)**
 
 ```sh
 /etc/init.d/rustical enable && /etc/init.d/rustical start
@@ -740,8 +749,9 @@ curl -s http://127.0.0.1:4000/.well-known/caldav -o /dev/null -w '%{http_code}\n
 >   not a git repo, so nothing to gitignore.
 > - ~~**Deferred:** external `curl -sI https://0115d8cf.duckdns.org:8443/…` (Phase 4)~~
 >   **DONE 2026-09-04 with Phase 4** (check-host.net HTTPS probe = the external
->   curl-equivalent; see Phase 4 STATUS). Still deferred: 2.8 reboot gate (next
->   natural reboot — it now also proves dav-tls starts on boot).
+>   curl-equivalent; see Phase 4 STATUS). ~~Still deferred: 2.8 reboot gate~~
+>   — **resolved 2026-09-05: natural reboot passed, see Phase 2 STATUS** (it also
+>   proved dav-tls starts on boot).
 
 All on the **dev machine** (full curl/openssl tooling; router stays thin):
 
@@ -808,7 +818,8 @@ blocked otherwise.**
 >   network too (dev machine → `65.33.235.245:8443` → 308), so LAN clients can use
 >   `https://0115d8cf.duckdns.org:8443` directly; 192.168.10.x clients can also hit
 >   `192.168.1.21:8443` (lan-zone input policy is ACCEPT, verified in uci).
-> - Still open from earlier phases: **2.8 reboot gate** (next natural reboot).
+> - Still open from earlier phases: ~~**2.8 reboot gate** (next natural reboot)~~
+>   — **resolved 2026-09-05: natural reboot passed, see Phase 2 STATUS.**
 
 ### 4.1 libreCMC firewall rule (follow the Allow-DNSv4 rule pattern) — **DONE (2026-09-04, dest_port 8443 per Phase 0.3)**
 
@@ -1374,9 +1385,10 @@ inbox/outbox/scheduling queue (see §17 for the future custom extension).
 > - WAL was already folded when this ran (router `-wal` file 0 bytes; overlay 9.3 M free,
 >   91 % used — ≥ 5 M floor intact). **Restore drill into a scratch rustical instance
 >   remains open (verification-matrix row 18).**
-> - Elsewhere unchanged: 2.8 reboot gate still deferred (router uptime ≈ 6.5 d — no
->   natural reboot yet); 6.3 step 3 still gated on the matrix's Phase 7 client rows;
->   Phase 7 client setup still requires the user's physical devices.
+> - Elsewhere: 2.8 reboot gate **PASSED 2026-09-05** (natural reboot — services,
+>   DB, certs, crons all intact; see Phase 2 STATUS); 6.3 step 3 still gated on
+>   the matrix's Phase 7 client rows; Phase 7 client setup still requires the
+>   user's physical devices.
 > - **8.4 DONE (2026-09-05)** — storage-watch line added to the nightly backup
 >   (implemented inside `nightly-backup.sh`, which the cron entry runs — no crontab
 >   change needed): each run appends one line to `~/backups/omnical/backup.log`
@@ -1447,7 +1459,7 @@ before row 10 passes.
 | 14 | Apple Calendar/Contacts | caldav-compat path or config profile | account works; create/edit round-trips; contacts sync |
 | 15 | Sharing | group collection visible to member identities (all 4 domains) | cross-domain share works via membership |
 | 16 | iMIP invitation | Thunderbird invite to an external address on a different domain; attendee accepts | reply updates organizer's event |
-| 17 | Reboot persistence | `reboot` router; re-check services + data | everything returns; DB intact (proves not-in-/var) |
+| 17 | Reboot persistence | `reboot` router; re-check services + data | everything returns; DB intact (proves not-in-/var) — **✓ verified 2026-09-05 (natural reboot: both services auto-started and healthy, DB integrity ok with identical live counts 517/209, certs + all crons intact, external 308/207 through the public URL; see Phase 2 STATUS)** |
 | 18 | Restore drill | restore nightly backup tar into scratch instance on dev machine | DB opens, data present |
 | 19 | Firewall hygiene | nmap 4000 from LAN/WAN; port-scan WAN IP | 4000 closed; only 22/443(+53) exposed |
 
@@ -1497,17 +1509,21 @@ Every step is reversible; nothing destructive is done to the router.
    "FUTURE" BY USER DECISION 2026-09-05** ("we still need to setup the iphone properly,
    so I can invite people to events"; C8's client-side iMIP does not exist on iOS — the
     invite UI itself requires scheduling support). **STATUS (2026-09-05, latest
-     session): IN PROGRESS — items 1 and 2 DONE. The delivery bug that had 3
-     scheduling tests failing is FIXED (root cause: `Line::as_email` required `@`
-     in every address, so the fixture's `ORGANIZER:mailto:user` — an `@`-less
-     principal id — parsed to `organizer: None`, no-op-ing `handle_put`/
-     `handle_delete` and 400-ing the outbox with "no ORGANIZER"; one bug, all
-     three failures — see item 2's session log). Item-2 gate GREEN: workspace
-     check 0 errors/0 warnings; suites dav 31, scheduling 13, caldav 34,
-     store_sqlite 13; root integration 19 (snapshots unchanged); rustfmt
-     installed and the branch is fmt-clean. NEXT: item 3 (main-crate `[scheduling]`
-     config + `cmd_serve` wiring). Nothing cross-built; nothing deployed — the
-     router still runs stock 0.16.1.**
+     session): IN PROGRESS — items 1, 2 and 3 DONE. Items 1–2 recap: the
+     delivery bug that had 3 scheduling tests failing is FIXED (root cause:
+     `Line::as_email` required `@` in every address, so the fixture's
+     `ORGANIZER:mailto:user` — an `@`-less principal id — parsed to
+     `organizer: None`, no-op-ing `handle_put`/`handle_delete` and 400-ing
+     the outbox with "no ORGANIZER"; one bug, all three failures — see item
+     2's session log); item-2 gate GREEN (workspace check 0 errors/0
+     warnings; rustfmt installed, branch fmt-clean). Item 3 (main-crate
+     wiring) landed this session — see item 3's DONE block for details;
+     item-3 gate GREEN: workspace check 0 errors/0 warnings, fmt clean,
+     suites dav 31 / scheduling 13 / caldav 34 / store_sqlite 13 / root
+     lib 20 + bin 5 (config back-compat) + http-integration 3 (spawns real
+     `cmd_serve` through the new wiring) + integration 19 (snapshots
+     unchanged). NEXT: item 4 (local x86_64 smoke test). Nothing
+     cross-built; nothing deployed — the router still runs stock 0.16.1.**
 
    Why a local patch: upstream has **no** scheduling implementation to adopt — checked
    2026-09-05: latest tag is still v0.16.1 and `origin/main` past it contains only
@@ -1932,9 +1948,61 @@ Every step is reversible; nothing destructive is done to the router.
            ordering, line wrapping in principal/mod.rs, calendar/service.rs,
            calendar_object/service.rs etc.) — formatting only; all suites
            re-run green afterwards.
-   3. main crate: `[scheduling]` in `Config` (serde-default so the existing
-      router config keeps parsing), `cmd_serve` wiring (`get_data_stores` returns
-      the scheduling-store handle → `Scheduler::new(config, store)` → `make_app`).
+    3. main crate: `[scheduling]` in `Config` (serde-default so the existing
+       router config keeps parsing), `cmd_serve` wiring (`get_data_stores` returns
+       the scheduling-store handle → `Scheduler::new(config, store)` → `make_app`).
+       — **DONE (2026-09-05, later session): implemented + gate green on
+       `omnical-scheduling`.**
+       - `src/config.rs`: `pub scheduling: SchedulingConfig` field
+         (`#[serde(default)]`, placed between `caldav` and `maintenance`) — old
+         configs without the section keep parsing (also covered by the bin's
+         5 figment TOML/env tests, which parse configs with no `[scheduling]`);
+         figment's `RUSTICAL_SCHEDULING__*` env overrides come for free.
+         `src/commands/mod.rs`: `cmd_gen_config` literal extended →
+         `rustical gen-config` now prints the section (`enabled = false`, the 8
+         default UA exclusions, `smtp = []`).
+       - `src/lib.rs`: `get_data_stores` returns a 6th tuple element
+         `Arc<dyn SchedulingStore>`; the sqlite arm constructs the calendar
+         store un-Arc'd first, builds `SqliteSchedulingStore::new(cal_store.clone())`
+         from it (`SqliteCalendarStore` is `Clone`; pool + push-sender are cheap
+         Arc clones → one shared pool, and the item-1 migration
+         `20260905120000_scheduling` still runs through the existing
+         `create_db_pool(db_url, migrate)` call), then re-wraps the calendar
+         store in its `Arc`. `cmd_principals`'s 5-tuple destructure → 6.
+       - `cmd_serve`: `let scheduler = config.scheduling.enabled.then(|| Arc::new(
+         Scheduler::new(config.scheduling.clone(), scheduling_store)))` — the
+         scheduler is constructed **only when enabled**, so `[scheduling]
+         enabled = false` (the default, and the current router config) behaves
+         byte-for-byte like stock 0.16.1: no inbox/outbox routes, no scheduling
+         DAV tokens, no PUT/DELETE hooks, and no extra previous-object fetch in
+         `put_event` (that fetch is gated on a scheduler being present).
+         Startup logs `Scheduling extension enabled (N SMTP identities)` when
+         on. `make_app(..., scheduler, ...)` threads it into both `caldav_router`
+         trees (`/caldav` + `/caldav-compat`).
+       - `src/app.rs`: `make_app` gained `scheduler: Option<Arc<Scheduler>>`
+         (after `caldav_config`); the two placeholder `None`s from item 2
+         replaced with `scheduler.clone()` / `scheduler`.
+       - Call-site fixes: `tests/integration_tests/mod.rs` passes `None`
+         (scheduling behavior stays covered by the caldav crate's 7 scheduling
+         tests, which drive `caldav_router` directly); `tests/common/mod.rs` and
+         the three `Config` literals in `tests/http_integration.rs` gained
+         `scheduling: Default::default()`.
+       - **Gate (item-3):** `SQLX_OFFLINE=true cargo check --workspace
+         --all-targets` → 0 errors / 0 warnings; `cargo fmt --check` clean
+         (two nits auto-fixed by `cargo fmt`: import order, `.then(...)` chain
+         wrapping); suites green: dav 31, scheduling 13, caldav 34,
+         store_sqlite 13, root lib 20 + bin 5 + http-integration 3 (these spawn
+         real `cmd_serve` processes via `test_runner`, so the new wiring — incl.
+         the 6-tuple `get_data_stores` and the disabled-config path — runs under
+         test) + integration 19 (snapshots unchanged).
+       - Deployment notes for item 5 (recorded now while fresh): enabling on the
+         router = add `[scheduling]` with `enabled = true` + the 7 SMTP accounts
+         to `/etc/rustical/config.toml` (rendered from
+         `pass secrets/email/<id>/smtp` at deploy time per the user decision) —
+         or set `RUSTICAL_SCHEDULING__ENABLED=true` env in the init script. First
+         start of the new binary auto-applies the `scheduling_inbox_objects`
+         migration to the live DB (online, additive table; item 5's pre-deploy DB
+         backup covers it).
    4. Local x86_64 smoke test: RFC 6638 curl checks (OPTIONS tokens, principal
       props, inbox PROPFIND/GET/DELETE, PUT with attendees → Python SMTP sink
       captures the iMIP email; accept/reply flow between two local principals).
