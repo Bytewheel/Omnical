@@ -1521,9 +1521,12 @@ Every step is reversible; nothing destructive is done to the router.
      item-3 gate GREEN: workspace check 0 errors/0 warnings, fmt clean,
      suites dav 31 / scheduling 13 / caldav 34 / store_sqlite 13 / root
      lib 20 + bin 5 (config back-compat) + http-integration 3 (spawns real
-     `cmd_serve` through the new wiring) + integration 19 (snapshots
-     unchanged). NEXT: item 4 (local x86_64 smoke test). Nothing
-     cross-built; nothing deployed — the router still runs stock 0.16.1.**
+      `cmd_serve` through the new wiring) + integration 19 (snapshots
+      unchanged). NEXT: item 4 (local x86_64 smoke test) — STARTED in the
+      latest session: x86_64 build from the branch DONE + full smoke harness
+      prepared; execution (server start, curl gates) not yet begun — resume
+      from item 4's session log. Nothing cross-built; nothing deployed — the
+      router still runs stock 0.16.1.**
 
    Why a local patch: upstream has **no** scheduling implementation to adopt — checked
    2026-09-05: latest tag is still v0.16.1 and `origin/main` past it contains only
@@ -2003,9 +2006,81 @@ Every step is reversible; nothing destructive is done to the router.
          start of the new binary auto-applies the `scheduling_inbox_objects`
          migration to the live DB (online, additive table; item 5's pre-deploy DB
          backup covers it).
-   4. Local x86_64 smoke test: RFC 6638 curl checks (OPTIONS tokens, principal
-      props, inbox PROPFIND/GET/DELETE, PUT with attendees → Python SMTP sink
-      captures the iMIP email; accept/reply flow between two local principals).
+    4. Local x86_64 smoke test: RFC 6638 curl checks (OPTIONS tokens, principal
+       props, inbox PROPFIND/GET/DELETE, PUT with attendees → Python SMTP sink
+       captures the iMIP email; accept/reply flow between two local principals).
+        — **IN PROGRESS (2026-09-05, latest session): build + harness prep
+        complete and verified; server start + curl gates NOT yet run. Next
+        session resumes at "Remaining steps" below.**
+        - **Build DONE:** `scripts/build-rust.sh x86_64-unknown-linux-gnu` on
+          `omnical-scheduling` — `out/x86_64-unknown-linux-gnu/{rustical,dav-tls}`
+          (35 MB / 1.4 MB, host profile as in Phase 1.5). `rustical --version`
+          OK; `gen-config` prints the `[scheduling]` section (enabled, the 8
+          default UA exclusions, smtp) — item 3's config plumbing confirmed in
+          the real binary.
+        - **Design constraints found by reading the scheduler/SMTP code (they
+          shape the test):** (a) the UA-exclusion defaults (vdirsyncer, curl,
+          python, wget, khard, khal, okhttp, go-http-client) mean every
+          *triggering* request must send a custom User-Agent (e.g.
+          `omnical-smoke/1.0`); one PUT with curl's default UA is kept in the
+          plan as the live exclusion check. (b) The SMTP client hard-requires
+          STARTTLS with webpki root validation (no plaintext mode) — the sink
+          must present a cert the client trusts; solved by presenting the REAL
+          LE cert (`~/router-dav/out/tls/`) for `0115d8cf.duckdns.org`. (c)
+          Inbox object ids follow `sanitize_id`: `req-<uid>.ics`,
+          `cancel-<uid>.ics`, `reply-<uid>-<attendee>.ics`, with `@` → `_` in
+          uids/addresses.
+        - **Harness prepared in `/tmp/opencode/sched-smoke/` (`/tmp` is wiped on
+          reboot — this log is the durable record; re-creating is minutes):**
+          `smtp_sink.py` (stdlib-only sink on 127.0.0.1:8025 speaking exactly
+          the client's envelope: EHLO → STARTTLS (LE cert) → EHLO → AUTH PLAIN
+          → MAIL/RCPT/DATA/QUIT, dot-unstuffing, captures each message to
+          `mail/NNN.eml` + `envelope.jsonl` with mail_from/rcpt_to/auth_user);
+          `config.toml` (bind 127.0.0.1:4000, scratch DB
+          `file:/tmp/opencode/sched-smoke/db.sqlite3`, scheduling enabled, two
+          SMTP identities `org@omnical.test` + `att@omnical.test` both →
+          `0115d8cf.duckdns.org:8025`); fixtures in `ics/`: `invite.ics`
+          (organizer org@omnical.test invites internal att@omnical.test +
+          external guest@example.net), `noua.ics` (same shape, for the
+          curl-default-UA exclusion check), `remote.ics` (external organizer
+          remote@elsewhere.test invites att@omnical.test — exercises the
+          remote-organizer REPLY-email path).
+        - **Environment findings:** user namespaces are DISABLED on this host
+          (`/proc/sys/user/max_user_namespaces` = 0 → bwrap and `unshare -Urn`
+          both fail), but **passwordless sudo works**: the plan is
+          `sudo unshare -m` + `mount --bind` of a private hosts file
+          (containing `127.0.0.1 0115d8cf.duckdns.org`) over /etc/hosts for
+          the SERVER PROCESS ONLY (optionally `runuser -u burningserenity`
+          back to the user inside the namespace) — its SMTP client then
+          reaches the local sink while webpki-validating the real LE cert,
+          with zero host-visible changes; the sink runs on the host normally
+          (mount-only namespace shares the network namespace, so 127.0.0.1
+          works between them). `mount --bind` inside `sudo unshare -m` was
+          verified to succeed; the actual duckdns→127.0.0.1 override content
+          was NOT yet exercised (the earlier belief that /etc/hosts pins the
+          name was a misread — the name resolves via DNS; /etc/hosts never
+          contained it). Also: ports 4000/8025 free; Python 3.14 (no aiosmtpd
+          → hand-rolled sink).
+        - **Remaining steps (next session resumes here):** (1) write the
+          override hosts file, confirm `getent hosts 0115d8cf.duckdns.org` →
+          127.0.0.1 INSIDE the `sudo unshare -m` namespace; (2) start
+          `smtp_sink.py` + the namespace-wrapped server (`rustical
+          --config-file /tmp/opencode/sched-smoke/config.toml serve`, RUST_LOG
+          with `rustical_scheduling=debug` for the SMTP C/S transcript); (3)
+          create principals `org@omnical.test` + `att@omnical.test`
+          (`principals create --password`, piped) + app tokens, MKCOL their
+          `personal` calendars (Phase 1.5: defaults NOT auto-created); (4) run
+          the gates: OPTIONS DAV tokens on principal + calendar, PROPFIND
+          principal schedule-inbox/outbox/default-calendar URLs, PUT
+          `invite.ics` (custom UA) → 201 + REQUEST in att's inbox
+          (PROPFIND/GET/DELETE) + iMIP email in the sink (multipart, From org,
+          AUTH as org), PUT `noua.ics` with curl's DEFAULT UA → NO deliveries
+          (exclusion live), att PUTs the invite copy with
+          PARTSTAT=ACCEPTED → organizer's stored copy updated + REPLY in
+          org's inbox, att PUTs a `remote.ics` copy with PARTSTAT=ACCEPTED →
+          REPLY email from att's SMTP identity in the sink, DELETE of the
+          organizer's invite → CANCEL in inbox + email, outbox POST (REQUEST
+          + REPLY) → 200 schedule-response with per-recipient request-status.
    5. Cross-build aarch64 via `scripts/build-rust.sh` (recipe D), size-gate
       (binary was 26 MiB of the 35 MiB budget; expect ~+1 MiB), DB backup,
       `deploy.sh`, router config with the 7 SMTP accounts rendered from pass,
