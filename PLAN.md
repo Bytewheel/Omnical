@@ -1576,6 +1576,9 @@ Every step is reversible; nothing destructive is done to the router.
       **Correction (2026-09-05, item-1 session): `SqliteSchedulingStore` did NOT
       compile — "not yet exercised" meant never `cargo check`ed. See remaining-work
       item 1's finding; the store trait + migration side is fine.**
+      **RESOLVED (2026-09-05, item 2.0): the store now compiles clean — 38 errors
+      fixed, workspace check green (see remaining-work item 1 for details);
+      runtime behavior remains unexercised until item 4's smoke test.**
    - Fix recorded: first `Line::parse` draft split at the first `;`-or-:` instead of
      the first unquoted `:` — parameterized lines (ATTENDEE/ORGANIZER/DTSTART)
      lost their value; caught by the unit tests and fixed (11→12 green).
@@ -1610,15 +1613,48 @@ Every step is reversible; nothing destructive is done to the router.
          (21× `&&Pool<Sqlite>` passed where `Executor` needs `&Pool`, 16×
          `#[instrument]` on the non-`Debug` `SqliteSchedulingStore` struct, 1×
          move out of `*tx`) — all in the new
-         `crates/store_sqlite/src/scheduling_store.rs`. This session fixed only
-         the import-path line that broke every dependent crate
-         (`rustical_store::scheduling_store::{InboxObject,SchedulingStore}` →
-         `rustical_store::{…}` — the module is private; items are re-exported at
-         the crate root). Because `store_sqlite` is a dev-dep of caldav/store
-         tests and a dep of the main crate, **a full-workspace check is
-         impossible until those 38 are fixed — fold that fix into item 5
-         (or do it as item 2.0) before the cross-build.** Nothing deployed; the
-         router still runs stock 0.16.1.
+          `crates/store_sqlite/src/scheduling_store.rs`. This session fixed only
+          the import-path line that broke every dependent crate
+          (`rustical_store::scheduling_store::{InboxObject,SchedulingStore}` →
+          `rustical_store::{…}` — the module is private; items are re-exported at
+          the crate root). Because `store_sqlite` is a dev-dep of caldav/store
+          tests and a dep of the main crate, **a full-workspace check is
+          impossible until those 38 are fixed — fold that fix into item 5
+          (or do it as item 2.0) before the cross-build.** Nothing deployed; the
+          router still runs stock 0.16.1.
+        - **DONE as item 2.0 (2026-09-05, later session): all 38
+          `SqliteSchedulingStore` errors FIXED** in
+          `crates/store_sqlite/src/scheduling_store.rs` — the three root causes:
+          (a) 21× E0277 = 7 query call sites × 3 errors each: the code passed
+          `&self.cal_store.db_pool()` where `db_pool()` already returns
+          `&SqlitePool` → leading `&` removed at all 7 sites (rustc's own
+          suggestion; the `.begin_with()` call was never affected — method-call
+          auto-deref); (b) 16× E0277 = 8 `#[instrument]`s × 2 errors each:
+          `#[derive(Debug)]` added to `SqliteSchedulingStore` (legal because
+          `SqliteCalendarStore` already derives Debug — matches upstream style);
+          (c) 1× E0507: `bump_synctoken_and_notify` now takes the
+          `Transaction` **by value** (`mut tx`) so `tx.commit()` is a legal move
+          (sole caller passes it as the last use; `log_object_operation` gets
+          `&mut tx` inside). Bonus cleanups in the same pass, so the crate is
+          warning-free: dead `escape_like` helper removed (its dead-code warning
+          only surfaced once the errors were gone; no query uses `LIKE` —
+          re-add if a LIKE query ever lands), and the pre-existing
+          unused-assignment warning at `crates/scheduling/src/ics.rs:45` fixed
+          (dummy `String::new()` init folded into a match expression — identical
+          behavior). **Gate met: `SQLX_OFFLINE=true cargo check --workspace
+          --all-targets` finishes clean — 0 errors, 0 warnings** (the
+          previously-impossible full-workspace check; the store_sqlite bench
+          compiles in this mode because the root crate's dev-dep enables
+          store_sqlite's `test` feature, same unification upstream's CI relies
+          on with `cargo test --all-features --workspace`). **Test suites
+          re-verified after the fix: dav 31/31, scheduling 12/12 (still green
+          after the ics.rs cleanup), caldav 27/27 and store_sqlite 13/13 (both
+          compiled for the first time — they were the blocked dev-deps), store
+          compiles (0 unit tests).** Items 2–5 are now unblocked. Nothing
+          deployed; the router still runs stock 0.16.1. (Note: `cargo fmt` is not
+          installed in this toolchain — fmt compliance unchecked; run
+          `rustup component add rustfmt` before the item-5 cross-build to honor
+          upstream's `cargo fmt --check` CI gate.)
    2. caldav crate: `ScheduleInboxUrl`/`ScheduleOutboxUrl`/
       `ScheduleDefaultCalendarUrl` principal props + fills; `scheduler` field on
       principal/calendar/calendar-object services with `dav_header()` overrides;
