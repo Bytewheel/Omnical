@@ -1119,7 +1119,7 @@ inbox/outbox/scheduling queue (see §17 for the future custom extension).
 
 **Deliverable: nightly verified backups, health monitoring, sysupgrade runbook.**
 
-> **STATUS (2026-09-05): 8.1 DONE — all gates green; 8.2–8.4 not yet started.**
+> **STATUS (2026-09-05): 8.1 + 8.4 DONE — all gates green; 8.2–8.3 not yet started.**
 > - Implemented as a POSIX sh script `~/router-dav/scripts/nightly-backup.sh` (0755) +
 >   user-crontab entry `30 2 * * * /home/burningserenity/router-dav/scripts/nightly-backup.sh`
 >   (the plan's inline one-liner became a script so 8.4's later df-log addition is a
@@ -1148,6 +1148,18 @@ inbox/outbox/scheduling queue (see §17 for the future custom extension).
 > - Elsewhere unchanged: 2.8 reboot gate still deferred (router uptime ≈ 6.5 d — no
 >   natural reboot yet); 6.3 step 3 still gated on the matrix's Phase 7 client rows;
 >   Phase 7 client setup still requires the user's physical devices.
+> - **8.4 DONE (2026-09-05)** — storage-watch line added to the nightly backup
+>   (implemented inside `nightly-backup.sh`, which the cron entry runs — no crontab
+>   change needed): each run appends one line to `~/backups/omnical/backup.log`
+>   (0600) = timestamp + the router's `df -h / | tail -1` output, per the sample.
+>   Threshold automation beyond the sample: the same ssh fetches a second
+>   `df -k / | tail -1` line; if overlay free < 5120 KB (the ≥ 5 MB floor), the
+>   logged line gets a `WARNING: overlay free below 5 MB floor` suffix — a failed
+>   backup now logs `BACKUP FAILED …` instead of dying silently. Log grows 1
+>   line/day (no rotation needed); the retention `find` still matches only
+>   `*.tar.gz`. Warning-branch logic unit-tested with a fabricated 2048-KB value;
+>   first real logged line 2026-09-05: `overlayfs:/overlay 98.4M 89.1M 9.3M 91% /`
+>   (floor intact).
 
 ### 8.1 Nightly pull-based backup (dev machine cron; reuses `router` SSH alias) — **DONE (2026-09-05; see STATUS)**
 
@@ -1176,7 +1188,7 @@ ssh router 'sqlite3 /usr/local/share/rustical/db.sqlite3 ".backup /tmp/omnical-b
 3. After sysupgrade: re-run `~/router-dav/deploy.sh` (re-pushes binaries + init
    scripts), verify `rustical health` + external reachability.
 
-### 8.4 Storage watch
+### 8.4 Storage watch — **DONE (2026-09-05; see STATUS)**
 
 `df -h /` weekly expectation: overlay stays ≥ 5 MB free (binary + DB + certs are the
 only consumers). Add to backup cron: `ssh router df -h / | tail -1` in the log.
