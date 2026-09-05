@@ -1524,23 +1524,58 @@ Every step is reversible; nothing destructive is done to the router.
      `smtp.rs` (STARTTLS client + dot-stuffing test), `scheduler.rs` (Scheduler:
      handle_put / handle_delete / handle_outbox_post, internal-vs-external routing,
      DAV_TOKENS const).
-   - DONE (not yet exercised): `SchedulingStore` trait in `crates/store` with
-     no-op defaults; `SqliteSchedulingStore` in `crates/store_sqlite` (runtime
-     `sqlx::query` calls deliberately — keeps the committed `.sqlx/` metadata
-     untouched); migration `20260905120000_scheduling` (`scheduling_inbox_objects`
-     table); `log_object_operation`/`send_push_notification` made `pub(crate)` +
-     `db_pool()` accessor added on `SqliteCalendarStore`.
+    - DONE (not yet exercised): `SchedulingStore` trait in `crates/store` with
+      no-op defaults; `SqliteSchedulingStore` in `crates/store_sqlite` (runtime
+      `sqlx::query` calls deliberately — keeps the committed `.sqlx/` metadata
+      untouched); migration `20260905120000_scheduling` (`scheduling_inbox_objects`
+      table); `log_object_operation`/`send_push_notification` made `pub(crate)` +
+      `db_pool()` accessor added on `SqliteCalendarStore`.
+      **Correction (2026-09-05, item-1 session): `SqliteSchedulingStore` did NOT
+      compile — "not yet exercised" meant never `cargo check`ed. See remaining-work
+      item 1's finding; the store trait + migration side is fine.**
    - Fix recorded: first `Line::parse` draft split at the first `;`-or-:` instead of
      the first unquoted `:` — parameterized lines (ATTENDEE/ORGANIZER/DTSTART)
      lost their value; caught by the unit tests and fixed (11→12 green).
    - Build facts for the cross-build: `calendarobjects` has had a `uid` column
      since migration `20251101181540` → find-by-UID is a clean indexed query.
 
-   **Remaining work (next session picks up here):**
-   1. dav crate: make the OPTIONS `DAV` header instance-based (currently a trait
-      const — `route_options` needs the service as state) + add an
-      `on_resource_deleted` hook to `axum_route_delete` (the generic DELETE path
-      has no user/UA context for the CANCEL trigger).
+    **Remaining work (next session picks up here):**
+    1. dav crate: make the OPTIONS `DAV` header instance-based (currently a trait
+       const — `route_options` needs the service as state) + add an
+       `on_resource_deleted` hook to `axum_route_delete` (the generic DELETE path
+       has no user/UA context for the CANCEL trigger).
+       — **DONE (2026-09-05): implemented + verified on `omnical-scheduling`.**
+       - `ResourceService::dav_header()` instance method added
+         (default `Cow::Borrowed(Self::DAV_HEADER)` — task 2's caldav services
+         override it to append `calendar-scheduling, calendar-auto-schedule` when
+         enabled); `route_options` now takes the service as `State<RS>` and inserts
+         the dynamic value (falls back to the const if the string were ever
+         non-header-safe). No existing `DAV_HEADER` impls needed touching.
+       - `on_resource_deleted(path, principal, pre-delete resource, user_agent)`
+         async hook added to the trait (default no-op); `axum_route_delete`
+         extracts the raw `User-Agent` header and threads it through
+         `route_delete`, which fires the hook **after** `delete_resource`
+         succeeds — deliberately fire-and-forget (object already gone; a hook
+         error must not fail the already-successful request) and only on real
+         DELETEs (MOVE/COPY go through `move_resource`/`copy_resource`, never
+         `route_delete` — verified no double-fire path).
+       - Verified: `cargo check -p rustical_dav --all-targets` + caldav/carddav/
+         scheduling/dav_push/xml/ical libs all clean; **dav tests 30/30 pass**;
+         scheduling's 12/12 still green.
+       - **Finding (blocks items 3–5 until fixed): the previous session's
+         `SqliteSchedulingStore` had never been compiled and has 38 errors**
+         (21× `&&Pool<Sqlite>` passed where `Executor` needs `&Pool`, 16×
+         `#[instrument]` on the non-`Debug` `SqliteSchedulingStore` struct, 1×
+         move out of `*tx`) — all in the new
+         `crates/store_sqlite/src/scheduling_store.rs`. This session fixed only
+         the import-path line that broke every dependent crate
+         (`rustical_store::scheduling_store::{InboxObject,SchedulingStore}` →
+         `rustical_store::{…}` — the module is private; items are re-exported at
+         the crate root). Because `store_sqlite` is a dev-dep of caldav/store
+         tests and a dep of the main crate, **a full-workspace check is
+         impossible until those 38 are fixed — fold that fix into item 5
+         (or do it as item 2.0) before the cross-build.** Nothing deployed; the
+         router still runs stock 0.16.1.
    2. caldav crate: `ScheduleInboxUrl`/`ScheduleOutboxUrl`/
       `ScheduleDefaultCalendarUrl` principal props + fills; `scheduler` field on
       principal/calendar/calendar-object services with `dav_header()` overrides;
