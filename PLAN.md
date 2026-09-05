@@ -266,7 +266,7 @@ Existing tooling to integrate with:
 | C5 | Router behind upstream TP-Link (192.168.1.1); public IP is dynamic; `0115d8cf.duckdns.org` already tracks it | One-time upstream port-forward TCP 443 → 192.168.1.21:443; ACME via **DuckDNS DNS-01**; verify what updates duckdns (add router cron if nothing does) | No port 80 exposure needed; renewal keeps working through IP changes |
 | C6 | `/var` is tmpfs (wiped per boot); sysupgrade wipes non-conffile overlay files | SQLite DB at **`/usr/local/share/rustical/db.sqlite3`**; add `/etc/rustical` + `/usr/local/share/rustical` to `/etc/sysupgrade.conf`; document that `/usr/sbin` binaries need re-deploy after sysupgrade | The single most important data-safety detail of this plan |
 | C7 | RustiCal is young software | Pin 0.16.1; run the full verification matrix before cutover; keep Google pairs as source of truth until verified | Risk containment |
-| C8 | RFC 6638 absent | Cross-domain invitations via client-side iMIP (Apple/Thunderbird email `.ics` from any SMTP identity to any attendee domain) | Honest limitation; server-side scheduling is a future custom extension (see §17) |
+| C8 | RFC 6638 absent | Cross-domain invitations via client-side iMIP (Apple/Thunderbird email `.ics` from any SMTP identity to any attendee domain) | Honest limitation; server-side scheduling as a custom extension — **PULLED FORWARD, IN PROGRESS since 2026-09-05 (see §17.2)** — because iOS offers no invite UI at all without server-side scheduling |
 | C9 | Established `router-nym` pattern exists (zig-musl-cc wrappers, procd init.d, deploy.sh, watchdog cron) | Mirror it: `~/router-dav/` project layout with `scripts/`, `out/`, `router/` overlay tree, `deploy.sh` | Consistency and re-use of working, known-good infrastructure |
 
 ---
@@ -1099,7 +1099,9 @@ migration, then hourly.
 > **STATUS (2026-09-05, updated later same day): IN PROGRESS — host side partially done,
 > one DIAGNOSED blocker awaiting its fix task (quick-xml/icalendar bump-rebuild of
 > i3status-rust, below); iPhone accounts STARTED via manual entry
-> (profile route dead on iOS 26; invitations blocked by the known RFC 6638 gap); see
+> (profile route dead on iOS 26; invitations blocked by the known RFC 6638 gap —
+> **whose fix is now IN PROGRESS, pulled forward into §17.2 the same day**; see the
+> iPhone bullets below and §17.2 for the current implementation state); see
 > below.**
 > - Scope for this session (user decision): **this host (khal/khard + i3status-rust) and
 >   the iPhone**. DAVx5/Tasks.org, Thunderbird, iMIP (rows 12–13, 15–16) remain for future
@@ -1206,9 +1208,16 @@ migration, then hourly.
 >     exists only as a comment at `crates/caldav/src/principal/prop.rs:12`; iOS hides the
 >     invite UI for CalDAV accounts without scheduling support. **Adding users would NOT
 >     restore it** — attendees never need server accounts (invitations are client-side
->     iMIP email to any address, per C8); server-side scheduling remains the §17.2
+>     iMIP email to any address, per C8); server-side scheduling is the §17.2
 >     custom-extension option. (User asked about adding test users; answer: not needed —
 >     the 7 identities + `family` group already cover sharing tests.)
+>     **→ §17.2 WAS PULLED FORWARD 2026-09-05 and is now IN PROGRESS** as a local
+>     `omnical-scheduling` patch branch of the pinned 0.16.1 (see §17.2 for full design,
+>     implementation state, and remaining work). The router still runs stock 0.16.1;
+>     nothing deployed yet. Account verification is still open: logread still shows zero
+>     real iOS UAs as of 2026-09-05 ~17:00 (only scanner noise with fake iPhone bot
+>     strings — the ring buffer rotates fast); the live `logread -f` capture while
+>     re-saving an account on the phone remains part of the §17.2 live-test step.
 >   - **Subscribed-calendar route (user request — read-only view): RustiCal serves a full
 >     `.ics` export via plain GET on any calendar collection URL** (`route_get`:
 >     `text/calendar` + `X-WR-CALNAME/CALDESC/CALCOLOR`), verified live: 200 on
@@ -1397,11 +1406,123 @@ Every step is reversible; nothing destructive is done to the router.
    "just type your email address" account discovery in Apple/DAVx5/Thunderbird for
    those domains. (gmail.com etc. obviously can't be annotated — direct URL login
    still works for any address.)
-2. **Server-side scheduling (RFC 6638) / iMIP gateway**: a small custom Rust service
-   (same deployment pattern) that watches an IMAP inbox for `text/calendar` replies
-   and injects them / sends invitations via SMTP — would make invitations fully
-   server-driven while remaining domain-agnostic. Substantial; only if client-side
-   iMIP proves insufficient.
+2. **Server-side scheduling (RFC 6638) / iMIP gateway** — **PULLED FORWARD FROM
+   "FUTURE" BY USER DECISION 2026-09-05** ("we still need to setup the iphone properly,
+   so I can invite people to events"; C8's client-side iMIP does not exist on iOS — the
+   invite UI itself requires scheduling support). **STATUS (2026-09-05): IN PROGRESS —
+   new `rustical_scheduling` crate written and compiling (12/12 unit tests green);
+   caldav/dav/main-crate integration NOT yet started; nothing cross-built; nothing
+   deployed — the router still runs stock 0.16.1.**
+
+   Why a local patch: upstream has **no** scheduling implementation to adopt — checked
+   2026-09-05: latest tag is still v0.16.1 and `origin/main` past it contains only
+   housekeeping commits (cargo-deny, frontend tweaks, web-push/openssl removal).
+   Work happens on branch **`omnical-scheduling`** in `~/router-dav/rustical` (from
+   v0.16.1, uncommitted so far).
+
+   **Design (user-approved):** a *minimal RFC 6638 "implicit scheduling"* subset —
+   the same mode Google Calendar uses with iOS:
+   - Advertise `calendar-scheduling, calendar-auto-schedule` DAV tokens (only when
+     `[scheduling] enabled = true`) + add `schedule-inbox-URL` / `schedule-outbox-URL`
+     (+ `schedule-default-calendar-URL`) principal props; serve stub inbox/outbox
+     collections under both `/caldav` and `/caldav-compat` trees (inbox is real,
+     DB-backed; outbox additionally accepts `POST` per RFC 6638 §8 and returns a
+     proper `schedule-response`).
+   - **On organizer PUT** of an event whose ORGANIZER == the acting principal:
+     internal attendees (local principals — all 7 identities + future accounts) get
+     the REQUEST injected into their schedule-inbox (fully server-side); external
+     attendees get an iMIP email via the *organizer's own SMTP account* (STARTTLS).
+     Guards: no-op re-saves are skipped by a scheduling-relevant canonical diff
+     (ignores DTSTAMP/LAST-MODIFIED/CREATED/PRODID/X-* and attendee PARTSTAT/RSVP),
+     and a first-time PUT whose UID already exists under another calendar of the user
+     is treated as a move, not a new invitation.
+   - **On internal attendee PUT** (PARTSTAT change on a local organizer's event):
+     server updates the organizer's stored copies (searching the organizer's own
+     calendars *and* their group memberships — e.g. a `family` calendar) and files a
+     REPLY in the organizer's inbox. **On remote organizer** (user accepts an external
+     iMIP invitation via their Omnical calendar): a REPLY email is sent from the
+     attendee's own SMTP identity to the external organizer. Guard: only fires when the
+     attendee's PARTSTAT actually changed vs the previous stored copy.
+   - **On organizer DELETE:** CANCEL to attendees (email external + inbox for
+     internal), with a move-guard (skip CANCEL if the UID still exists in another
+     calendar — iOS "move" = PUT to new + DELETE from old).
+   - **Sync-client flood protection (critical):** user-agent exclusion list gates ALL
+     triggers (defaults: vdirsyncer, curl, python, wget, khard, khal, okhttp,
+     go-http-client — configurable). Without this, the Google-hub mirror PUTs of
+     historical events with attendees would mass-email everyone from the server.
+   - SMTP: hand-rolled async SMTP client (EHLO/STARTTLS/rustls/AUTH PLAIN/dot-stuffed
+     DATA) — **zero new build dependencies**: tokio, rustls (aws-lc provider, matching
+     the already-vendored tree), webpki-roots and base64 are already in Cargo.lock.
+     Emails are multipart/mixed: human text/plain + base64 `text/calendar` attachment
+     (RFC 6047 shape, RFC 2047 subjects), one email per attendee, sent from a spawned
+     task with 3 attempts / 30 s backoff so PUT latency never waits on SMTP.
+
+   **User decisions (2026-09-05):** all 7 identities get SMTP via the existing
+   `pass` entries `secrets/email/<id>/smtp` — the exact credentials msmtp already
+   uses (verified working senders); passwords will be deployed only into the
+   router's 0600 `/etc/rustical/config.toml` (same protection class as the TLS key;
+   `~/router-dav` stays secret-free — a render step injects from pass at deploy
+   time). First live end-to-end iPhone test: **`nicholas@carltonaudio.com`**.
+
+   **SMTP inventory (recon from `~/.config/msmtp/config`, all STARTTLS):**
+   `smtp.gmail.com:587` — burningserenity@gmail.com, nfcarlton@gmail.com,
+   nfcalaway@gmail.com, nicholas@hawksnestsoftware.com ·
+   `netsol-smtp-oxcs.hostingplatform.com:587` — nicholas@carltonaudio.com ·
+   `smtp.novo-ordo.com:587` — nfcalaway@novo-ordo.com and zero@novo-ordo.com
+   (both authenticated as `nfcalaway@novo-ordo.com`, per the existing msmtp accounts).
+
+   **Implementation state (all on branch `omnical-scheduling`, 2026-09-05):**
+   - DONE, compiling, **12/12 unit tests pass**: `crates/scheduling/` —
+     `config.rs` (SchedulingConfig: enabled, UA exclusions, per-identity SMTP
+     accounts), `ics.rs` (quote-aware line parser, EventInfo extraction,
+     scheduling-relevant diff, add_method, PARTSTAT rewrite, iTIP REPLY builder,
+     chrono-tz humanizer), `mime.rs` (iMIP builder + invite/cancel/reply bodies),
+     `smtp.rs` (STARTTLS client + dot-stuffing test), `scheduler.rs` (Scheduler:
+     handle_put / handle_delete / handle_outbox_post, internal-vs-external routing,
+     DAV_TOKENS const).
+   - DONE (not yet exercised): `SchedulingStore` trait in `crates/store` with
+     no-op defaults; `SqliteSchedulingStore` in `crates/store_sqlite` (runtime
+     `sqlx::query` calls deliberately — keeps the committed `.sqlx/` metadata
+     untouched); migration `20260905120000_scheduling` (`scheduling_inbox_objects`
+     table); `log_object_operation`/`send_push_notification` made `pub(crate)` +
+     `db_pool()` accessor added on `SqliteCalendarStore`.
+   - Fix recorded: first `Line::parse` draft split at the first `;`-or-:` instead of
+     the first unquoted `:` — parameterized lines (ATTENDEE/ORGANIZER/DTSTART)
+     lost their value; caught by the unit tests and fixed (11→12 green).
+   - Build facts for the cross-build: `calendarobjects` has had a `uid` column
+     since migration `20251101181540` → find-by-UID is a clean indexed query.
+
+   **Remaining work (next session picks up here):**
+   1. dav crate: make the OPTIONS `DAV` header instance-based (currently a trait
+      const — `route_options` needs the service as state) + add an
+      `on_resource_deleted` hook to `axum_route_delete` (the generic DELETE path
+      has no user/UA context for the CANCEL trigger).
+   2. caldav crate: `ScheduleInboxUrl`/`ScheduleOutboxUrl`/
+      `ScheduleDefaultCalendarUrl` principal props + fills; `scheduler` field on
+      principal/calendar/calendar-object services with `dav_header()` overrides;
+      `put_event` hook (fetch old object before store-write, call
+      `handle_put` after); new inbox/outbox `ResourceService`s mounted at
+      `/inbox`+`/outbox` (axum static routes beat `/{calendar_id}`) with the
+      outbox POST schedule-response builder; thread `Option<Arc<Scheduler>>`
+      through `caldav_router` (both trees) and update all test callers.
+   3. main crate: `[scheduling]` in `Config` (serde-default so the existing
+      router config keeps parsing), `cmd_serve` wiring (`get_data_stores` returns
+      the scheduling-store handle → `Scheduler::new(config, store)` → `make_app`).
+   4. Local x86_64 smoke test: RFC 6638 curl checks (OPTIONS tokens, principal
+      props, inbox PROPFIND/GET/DELETE, PUT with attendees → Python SMTP sink
+      captures the iMIP email; accept/reply flow between two local principals).
+   5. Cross-build aarch64 via `scripts/build-rust.sh` (recipe D), size-gate
+      (binary was 26 MiB of the 35 MiB budget; expect ~+1 MiB), DB backup,
+      `deploy.sh`, router config with the 7 SMTP accounts rendered from pass,
+      server-side verify through dav-tls (`curl --resolve …:8443:192.168.1.21`).
+   6. Live iPhone test (test identity `nicholas@carltonaudio.com`): `logread -f`
+      capture while re-saving the account (also resolves the still-open "unverified
+      phone→server traffic" item), confirm the Invitees field now appears, create
+      an event inviting another identity (internal inbox path) and an external
+      address (email path), accept/reply round-trip, then batch-verify the other 6
+      identities and run the verification-matrix rows 14–16.
+   7. PLAN.md final status update + file the upstream i3status-rust issue remains
+      a *separate* pending task (untouched this session).
 3. **WebDAV Push transports** (WebSocket/WebPush) tuning for instant DAVx5 sync
    (RustiCal ships support; configure in `dav_push` after Phase 7).
 4. **IPv6**: publish AAAA on duckdns once a stable GUA exists on WAN; same firewall
