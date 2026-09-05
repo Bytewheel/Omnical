@@ -1097,7 +1097,8 @@ migration, then hourly.
 **Deliverable: every approved client class working against the router.**
 
 > **STATUS (2026-09-05, updated later same day): IN PROGRESS — host side partially done,
-> one open blocker (icalendar parsing, below); iPhone accounts STARTED via manual entry
+> one DIAGNOSED blocker awaiting its fix task (quick-xml/icalendar bump-rebuild of
+> i3status-rust, below); iPhone accounts STARTED via manual entry
 > (profile route dead on iOS 26; invitations blocked by the known RFC 6638 gap); see
 > below.**
 > - Scope for this session (user decision): **this host (khal/khard + i3status-rust) and
@@ -1122,22 +1123,41 @@ migration, then hourly.
 >   Same multi-home quirk that breaks Apple; `/caldav-compat/` returns a single home and
 >   discovery + calendar listing then parse fine ("Personal", "Personal birthdays"; Tasks
 >   auto-excluded — VTODO-only).
-> - **Finding — OPEN BLOCKER: `icalendar` 0.16.12 (the block's ICS parser) returns
->   Ok-with-0-components on RustiCal's real `calendar-data` payloads** (both khal- and
->   Google-originated), so the block shows "no events" although the REPORT returns correct
->   data (verified via curl replication of the block's full request chain: well-known →
->   current-user-principal → home-set → Depth-1 listing → time-range REPORT, all 207 with
->   correct bodies). Reproduced in a scratch crate at `/tmp/opencode/i3s-test/xmltest/`
->   (exact deps of i3status-rs 0.36.1: quick-xml 0.37 + serde + icalendar 0.16.12,
->   copy of the block's structs): multistatus/prop/`CalendarData` extraction all work;
->   `icalendar::Calendar::from_str` yields 0 components on the real payloads but 2 on
->   hand-retyped equivalents. Prime suspects: RFC-5545 **folded lines** (`\r\n `
->   continuation — present in the Google ATTENDEE) and/or payloads ending in a **lone
->   `\r`** (no final LF); bisect variants `v1–v4.ics` already prepared in
->   `/tmp/opencode/i3s-test/` but the identifying test was not run (session stopped).
->   Next steps: run the bisect → identify the byte feature → decide work-around (e.g.
->   serve unfolded data, patch upstream RustiCal if it emits non-conformant folding) vs
->   upstream fix in icalendar; bar stays on the old Google source until resolved.
+> - **Finding — BLOCKER DIAGNOSED (2026-09-05, bisect run — supersedes the earlier
+>   "prime suspects"): the "no events" failure is a client-stack bug chain; RustiCal is
+>   NOT at fault.** The identifying bisect finally ran on the prepared variants (real
+>   event, khal-originated): **v1** = as-extracted (folded ATTENDEE + ends in lone `\r`):
+>   0 components; **v2** = folding removed, lone `\r` kept: 0; **v3** = folding kept +
+>   final `\r\n` restored: 1; **v4** = neither: 1 → **the culprit is the truncated final
+>   CRLF (lone `\r` at EOF), NOT RFC-5545 folding** — folding parses fine. Tracing where
+>   the lone `\r` comes from, every link proven empirically:
+>   1. **RustiCal is conformant end-to-end.** DB-stored ICS ends `END:VCALENDAR\r\n`
+>      (5/5 sampled, `hex(substr(…))` on the router); the wire REPORT serializes that
+>      final CRLF in XML text as `&#13;` + literal LF (CR-escaping is mandatory — a
+>      conformant XML parser decodes it back to `\r\n`; confirmed on 2/2 calendar-data
+>      payloads in the saved `compat-report.xml`).
+>   2. **quick-xml 0.37's serde deserializer (exactly what the block uses) corrupts it**:
+>      it strips the trailing literal LF of element text before unescaping — minimal
+>      repro: `"<a>END:VCALENDAR&#13;\n</a>"` → `"END:VCALENDAR\r"` (and
+>      `"<a>plain\n</a>"` → `"plain"`) — producing the lone `\r`.
+>   3. **icalendar 0.16.12 then fails silently**: lone-`\r` payload → Ok-with-0-components
+>      instead of an Err, so the block shows "no events" with no error.
+>   Both bugs are already fixed in current upstream deps (scratch repros kept at
+>   `/tmp/opencode/i3s-test/{qxml-latest,ics-latest}`): **quick-xml 0.42** preserves the
+>   trailing LF (payload decodes to `…\r\n`, 1 component); **icalendar 0.17.9 and
+>   0.17.13** return a loud Err on lone-`\r` (conformant input unaffected). However,
+>   **i3status-rust master (post-0.36.1) still pins quick-xml 0.37** (icalendar 0.17.9)
+>   → even a current upstream build still corrupts the payload (loudly, at least).
+>   **Decision (work-around vs upstream, as this task required):** patch **neither
+>   RustiCal** (wire-conformant; an escaping hack like `&#10;`-encoding the final LF to
+>   defeat the trim was considered and rejected) **nor icalendar** (already fixed ≥0.17).
+>   Fix client-side instead — separate follow-up task: **rebuild i3status-rust 0.36.1
+>   with `quick-xml = 0.42` + `icalendar = 0.17.13`** (source-built GoboLinux install at
+>   `/programs/x11-misc/i3status-rust/0.36.1/`; expect possible small API fixes for the
+>   0.37→0.42 jump), verify the calendar block against Omnical, then `pkill i3status-rs`
+>   to activate the already-wired config; **file an upstream i3status-rust issue**
+>   recommending the quick-xml bump (attach the minimal repro above). Bar stays on the
+>   old Google source until that rebuild is executed.
 > - **Finding — server quirk (benign): RustiCal's server-side time-range REPORT
 >   over-matches recurring events** — a yearly event with `DTSTART;VALUE=DATE:19900409`
 >   is returned for a Sept-2026 window. Clients that expand RRULEs themselves
@@ -1216,7 +1236,7 @@ migration, then hourly.
 | **Apple Contacts** | CardDAV account, server `0115d8cf.duckdns.org`, user id + app token, path `/carddav` | |
 | **Thunderbird** | New Account → Calendar → On the Network → root URL `https://0115d8cf.duckdns.org` + app token; same for CardDAV | Group calendars discovered properly |
 | **khal / khard** | via vdirsyncer hub (Phase 6) | CLI stays exactly as today, now backed by the router |
-| **i3status-rust** (added to scope 2026-09-05) | Native `calendar` block; basic auth + app token via 0600 credentials file; source `https://0115d8cf.duckdns.org:8443/caldav-compat/` (see STATUS: `/caldav/` fails on multi-home) | Wiring done; blocked on the icalendar 0.16.12 parsing quirk above |
+| **i3status-rust** (added to scope 2026-09-05) | Native `calendar` block; basic auth + app token via 0600 credentials file; source `https://0115d8cf.duckdns.org:8443/caldav-compat/` (see STATUS: `/caldav/` fails on multi-home) | Wiring done; blocker DIAGNOSED (quick-xml 0.37 strips the trailing LF of calendar-data → lone `\r`; icalendar 0.16.12 then silently yields 0 components — see STATUS); fix = rebuild with quick-xml 0.42 + icalendar 0.17.13, then activate |
 
 **Cross-domain invitations (iMIP):** RustiCal does not implement RFC 6638
 server-side scheduling. Invitations to attendees on **any** domain are sent
