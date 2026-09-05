@@ -1496,10 +1496,13 @@ Every step is reversible; nothing destructive is done to the router.
 2. **Server-side scheduling (RFC 6638) / iMIP gateway** — **PULLED FORWARD FROM
    "FUTURE" BY USER DECISION 2026-09-05** ("we still need to setup the iphone properly,
    so I can invite people to events"; C8's client-side iMIP does not exist on iOS — the
-   invite UI itself requires scheduling support). **STATUS (2026-09-05): IN PROGRESS —
-   new `rustical_scheduling` crate written and compiling (12/12 unit tests green);
-   caldav/dav/main-crate integration NOT yet started; nothing cross-built; nothing
-   deployed — the router still runs stock 0.16.1.**
+   invite UI itself requires scheduling support). **STATUS (2026-09-05, updated later
+   same day): IN PROGRESS — `rustical_scheduling` crate compiling (12/12 unit tests
+   green); dav-crate hooks DONE (remaining-work item 1); `SqliteSchedulingStore`
+   compiles (item 2.0); item 2 (caldav integration) PARTIALLY WRITTEN in the latest
+   session and **interrupted mid-edit — the workspace does NOT currently compile**
+   (see item 2's status note for exactly what is done and what remains); nothing
+   cross-built; nothing deployed — the router still runs stock 0.16.1.**
 
    Why a local patch: upstream has **no** scheduling implementation to adopt — checked
    2026-09-05: latest tag is still v0.16.1 and `origin/main` past it contains only
@@ -1655,14 +1658,131 @@ Every step is reversible; nothing destructive is done to the router.
           installed in this toolchain — fmt compliance unchecked; run
           `rustup component add rustfmt` before the item-5 cross-build to honor
           upstream's `cargo fmt --check` CI gate.)
-   2. caldav crate: `ScheduleInboxUrl`/`ScheduleOutboxUrl`/
-      `ScheduleDefaultCalendarUrl` principal props + fills; `scheduler` field on
-      principal/calendar/calendar-object services with `dav_header()` overrides;
-      `put_event` hook (fetch old object before store-write, call
-      `handle_put` after); new inbox/outbox `ResourceService`s mounted at
-      `/inbox`+`/outbox` (axum static routes beat `/{calendar_id}`) with the
-      outbox POST schedule-response builder; thread `Option<Arc<Scheduler>>`
-      through `caldav_router` (both trees) and update all test callers.
+    2. caldav crate: `ScheduleInboxUrl`/`ScheduleOutboxUrl`/
+       `ScheduleDefaultCalendarUrl` principal props + fills; `scheduler` field on
+       principal/calendar/calendar-object services with `dav_header()` overrides;
+       `put_event` hook (fetch old object before store-write, call
+       `handle_put` after); new inbox/outbox `ResourceService`s mounted at
+       `/inbox`+`/outbox` (axum static routes beat `/{calendar_id}`) with the
+       outbox POST schedule-response builder; thread `Option<Arc<Scheduler>>`
+       through `caldav_router` (both trees) and update all test callers.
+       — **IN PROGRESS (2026-09-05, session interrupted mid-edit at the user's
+       request): all new/changed source is written EXCEPT the final wiring and
+       tests; the tree does NOT compile in this state (guaranteed E0063 in
+       caldav_router, see below). Nothing run through cargo this session —
+       the notes are code-inspection-accurate. Done this session:**
+       - **Scheduler API extension (found necessary by the integration):**
+         `handle_put` gained a `current: (&str, &str, &str)` (principal,
+         calendar, object-id) parameter, and `organizer_put`'s copy/move-guard
+         now **excludes the just-written copy** from its
+         `find_calendar_objects_by_uid` results. Reason: the design calls
+         `handle_put` *after* the store-write, so the new event itself is
+         always in the UID-lookup results — without the exclusion the guard
+         would trip on every first-time PUT and silently suppress ALL new-event
+         invitations (latent bug in the finished scheduler; its 12 unit tests
+         never call `handle_put`, so they are unaffected). Also added
+         `Scheduler::store()` (clones the `Arc<dyn SchedulingStore>`) so the
+         caldav layer can serve the inbox; `handle_delete` unchanged (its
+         move-guard runs after the row is gone — no exclusion needed).
+       - **Build registry:** root `Cargo.toml` gained
+         `rustical_scheduling = { path = "./crates/scheduling/" }` in
+         `[workspace.dependencies]`; `crates/caldav/Cargo.toml` gained
+         `rustical_scheduling` + `sha2` + `hex` (inbox-item etag).
+       - **NEW `crates/caldav/src/scheduling/` module (3 files):**
+         `mod.rs` (`SchedulingProps { default_calendar_id }`;
+         `dav_header_with_scheduling(base, Option<&Scheduler>)` — appends
+         `calendar-scheduling, calendar-auto-schedule` only when enabled;
+         `select_default_calendar_id` — first user-writable VEVENT calendar,
+         skipping `_`-prefixed (birthdays) and subscribed ones, min by
+         (order, id)); `inbox.rs` (InboxResource — collection with resourcetype
+         {collection, schedule-inbox}, CommonPropertiesProp, owner-only
+         privileges; InboxObjectResource reusing `CalendarObjectPropWrapper`
+         (getetag / calendar-data / getcontenttype) with a sha256 etag over
+         id+ics; InboxResourceService PathComponents=(principal,), get_members
+         from `get_inbox_objects`, nests the object service at `/{object_id}`;
+         object ids are used VERBATIM — `sanitize_id` already appends `.ics`,
+         so unlike calendar objects there is NO .ics-stripping deserializer;
+         object service implements get/delete_resource + GET handler with
+         owner-only auth, ETag + text/calendar, HEAD support);
+         `outbox.rs` (OutboxResource — collection with resourcetype
+         {collection, schedule-outbox}; OutboxResourceService holds the
+         scheduler; `AxumMethods::post` → `post_outbox` →
+         `handle_outbox_post` → HTTP 200 + `schedule-response` XML with
+         per-recipient `mailto:` href and `request-status` `2.0;Success` /
+         `5.0;<msg>`; body-parse failures → 400 via
+         `rustical_dav::Error::BadRequest`). Inbox/outbox DAV_HEADER consts
+         bake the scheduling tokens in (their routes are only mounted while
+         enabled); the principal/calendar/calendar-object services instead
+         override `dav_header()` with the helper.
+       - **Principal props + service:** `PrincipalProp` gained
+         `ScheduleInboxUrl` / `ScheduleOutboxUrl` /
+         `ScheduleDefaultCalendarUrl` (`Option<HrefElement>`, `#[xml(rename =
+         "schedule-inbox-URL")]` etc., NS CALDAV — same conditional-prop
+         pattern as the existing `Source(Option<HrefElement>)`; allprop
+         serializes them empty while disabled). `PrincipalResource` gained
+         `scheduling: Option<SchedulingProps>`; fills derive the inbox/outbox
+         hrefs from the request's principal URI + `inbox/` / `outbox/`
+         (each tree — `/caldav` and `/caldav-compat` — advertises its own),
+         default-calendar href percent-encodes the id.
+         PrincipalResourceService gained `scheduler: Option<Arc<Scheduler>>`,
+         fills `scheduling` in `get_resource` (enabled-gated), and
+         `axum_router` conditionally mounts `/inbox` + `/outbox` when
+         `scheduler.is_some_and(enabled)` (static axum routes beat
+         `/{calendar_id}`), passing the scheduler into
+         CalendarResourceService.
+       - **Calendar + calendar-object services:** both gained the `scheduler`
+         field (new() signatures extended, Clone updated, `dav_header()`
+         overrides added); CalendarResourceService threads it into
+         CalendarObjectResourceService, which implements `on_resource_deleted`
+         → `handle_delete(user.id, deleted.get_ics(), ua)`.
+       - **`put_event` (calendar_object/methods.rs):** previous-object fetch
+         now also runs when a scheduler is present (the If-Match/If-None-Match
+         precondition block reuses it; semantics unchanged); User-Agent read
+         from the header map; after a successful `put_object` it calls
+         `handle_put(&user.id, (principal, calendar_id, object_id), old_ics,
+         body, ua)`. NB: `object_id` here is the `.ics`-STRIPPED id (path
+         deserializer strips it) — consistent with what the store returns,
+         which the guard exclusion depends on. Acting user = authenticated
+         principal id; impersonation (`user$family`) surfaces as `family` and
+         then no-ops conservatively (organizer≠`family`).
+       **Remaining to finish item 2 (next session starts here — the first
+       three are what currently breaks compilation):**
+       1. `crates/caldav/src/lib.rs`: extend `caldav_router` with the
+          `scheduler: Option<Arc<Scheduler>>` param and pass it into the
+          `PrincipalResourceService` literal (currently missing the new
+          `scheduler` field → E0063; the `use rustical_scheduling::Scheduler`
+          and `pub mod scheduling;` lines are already in place).
+       2. `src/app.rs`: update BOTH `caldav_router` calls (both trees) to pass
+          `None` (item 3 later replaces None with the real wiring).
+       3. `crates/caldav/src/principal/tests.rs`: the two struct literals
+          (PrincipalResourceService ~line 25, PrincipalResource ~line 72) need
+          `scheduler: None` / `scheduling: None`.
+       4. `crates/caldav/src/scheduling/tests.rs`: referenced by
+          `#[cfg(test)] mod tests;` in scheduling/mod.rs but NOT written yet.
+          Planned coverage (design decided): full `caldav_router` via
+          TestStoreContext + `SqliteSchedulingStore` + enabled
+          SchedulingConfig (also proves the `/inbox` vs `/{calendar_id}` axum
+          route precedence doesn't panic at Router construction); OPTIONS
+          advertises the tokens; PROPFIND principal fills the three props;
+          PUT with an internal attendee → REQUEST in the attendee's inbox
+          (PROPFIND/GET/DELETE); DELETE → CANCEL; outbox POST →
+          schedule-response; vdirsyncer UA → no delivery. Fixture facts
+          settled: add second principal `attendee@example.com` + app token
+          via `principal_store.add_app_token`, `personal` calendar via
+          `insert_calendar`, ORGANIZER `mailto:user` matches the fixture
+          principal `user`, expected inbox object id `req-<uid>.ics`.
+       5. Snapshot updates (via `INSTA_UPDATE=always`, then review):
+          `crates/caldav/src/principal/snapshots/…propfind-2.snap` (debug) and
+          `…propfind-3.snap` (serialized) gain the three empty props; the ROOT
+          integration-test snapshots
+          `tests/integration_tests/caldav/snapshots/…propfind_depth_0.snap`
+          and `…propfind_depth_1.snap` likewise (they PROPFIND the principal
+          allprop through make_app — unchanged wiring there because app.rs
+          passes None).
+       6. Item-2 gate: `SQLX_OFFLINE=true cargo check --workspace
+          --all-targets` clean (keep the 0-warnings bar) + suites green
+          (dav 31, scheduling 12, caldav 27 + the new scheduling tests,
+          store_sqlite 13).
    3. main crate: `[scheduling]` in `Config` (serde-default so the existing
       router config keeps parsing), `cmd_serve` wiring (`get_data_stores` returns
       the scheduling-store handle → `Scheduler::new(config, store)` → `make_app`).
