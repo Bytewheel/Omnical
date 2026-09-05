@@ -66,7 +66,7 @@ router.
 
 | Requirement | How it is met |
 |---|---|
-| **Multi-identity accounts** | RustiCal principals are arbitrary strings — one account per full email address (6 identities across 4 domains today, any future address works); auth is user-id + app token, domain-agnostic |
+| **Multi-identity accounts** | RustiCal principals are arbitrary strings — one account per full email address (7 identities across 4 domains today, any future address works); auth is user-id + app token, domain-agnostic |
 | **Sync hub for any provider** | vdirsyncer on the dev machine pairs Google (or any CalDAV/CardDAV provider) ↔ local vdirs ↔ Omnical, making the router the convergence point for accounts hosted anywhere |
 | **Sharing across domains** | RustiCal groups + memberships; per-principal ACL sharing independent of email domain |
 | **Cross-domain invitations** | Client-side iMIP/iTIP (Apple Calendar / Thunderbird email the `.ics` invites via any SMTP identity to any attendee address). RustiCal does **not** implement RFC 6638 server-side scheduling — documented limitation, optional future extension |
@@ -197,7 +197,10 @@ is built on; re-verify anything that may have drifted before executing a phase.
 
 ### 3.4 Identity & data ecosystem (who/what this serves)
 
-Email identities (6, across 4 domains — any future address must also work):
+Email identities (7, across 4 domains — any future address must also work.
+**CONFIRMED by user 2026-09-04**: the original 6 below plus `zero@novo-ordo.com`,
+which was found in `~/.mbsyncrc` and khard (`novo-ordo-zero` addressbook) but
+missing from the original plan list — added as #7; this list drives Phase 5):
 
 1. `burningserenity@gmail.com`
 2. `nfcarlton@gmail.com`
@@ -205,6 +208,7 @@ Email identities (6, across 4 domains — any future address must also work):
 4. `nicholas@hawksnestsoftware.com` (Google Workspace)
 5. `nicholas@carltonaudio.com` (IMAP at netsol)
 6. `nfcalaway@novo-ordo.com` (IMAP at novo-ordo)
+7. `zero@novo-ordo.com` (IMAP at novo-ordo — khard addressbook `novo-ordo-zero`)
 
 Existing tooling to integrate with:
 
@@ -338,7 +342,9 @@ Existing tooling to integrate with:
 5. **App-token storage convention**: RustiCal app tokens (per client) will be
    generated in Phase 5; store them in `pass` under `secrets/omnical/…`.
 6. **Confirm the identities list** (the 6 from §3.4, or a revised list) — drives
-   Phase 5.
+    Phase 5. — **DONE (2026-09-04): user confirmed a revised list of 7 — the §3.4
+    six plus `zero@novo-ordo.com` (present in `~/.mbsyncrc`/khard but missing from
+    the original plan list). §3.4 and the §1 summary updated accordingly.**
 
 ---
 
@@ -841,8 +847,47 @@ available.
 
 ## Phase 5 — Users, Groups, Collections (any email domain)
 
-**Deliverable: 6 principals + sharing groups + per-client app tokens + seeded
+**Deliverable: 7 principals + sharing groups + per-client app tokens + seeded
 collections. This is where "works across any email domain" materializes.**
+
+> **STATUS (2026-09-04): DONE — all gates green.**
+> - **Pre-change safety net:** hot SQLite `.backup` pulled to
+>   `~/backups/omnical/db-pre-phase5-20260904.sqlite3` (148 KB) before any change
+>   (Phase 8's procedure used ad-hoc, since nightly backups don't exist yet).
+> - **5.1 DONE — 7 principals** created (user ids = full email addresses,
+>   displayname = the email). `principals create --password` accepts piped stdin
+>   (no TTY needed; prompts once). Frontend passwords: 32-char random per
+>   identity, stored in `pass` at `secrets/omnical/<identity>/frontend`.
+>   Actual CLI: `create`/`remove`, not the plan's guessed `add`.
+> - **5.2 DONE — group `family`** (principal-type group, displayname "Family",
+>   no password — group principals are reached via member auth or impersonation
+>   `<user>$family`) with **all 7 identities assigned** via
+>   `principals membership assign <id> --to family` (subcommand is `assign`,
+>   not `add`; `membership list <id>` shows accessible principals = self + groups).
+> - **5.3 DONE — 28 app tokens** (4 per identity: `vdirsyncer`, `davx5`,
+>   `thunderbird`, `apple`) via `principals app-token create --name <client>
+>   <id>` (prints the bare token on stdout); all stored in `pass` at
+>   `secrets/omnical/<identity>/<client>` — 7 frontend passwords + 28 tokens =
+>   35 pass entries. DAV Basic auth verified with the vdirsyncer tokens.
+> - **5.4 DONE — 24 collections seeded** via MKCOL through dav-tls
+>   (`curl --resolve 0115d8cf.duckdns.org:8443:192.168.1.21`, LE chain validates,
+>   no `-k`): per identity `personal` (calendar, component-set VEVENT+VJOURNAL),
+>   `tasks` (calendar, VTODO-only component-set), `personal` (addressbook); for
+>   the group: `family` (calendar "Family"), `tasks` ("Family Tasks"), `family`
+>   (addressbook "Family Contacts"). **Group seeding needed no impersonation —
+>   plain member auth has MKCOL rights on the group home.** MKCOL on an existing
+>   collection returns 405 (matters for re-runs). Confirmed: the
+>   `_birthdays_<addressbook>` auto-collection appears per principal right after
+>   the addressbook exists.
+> - **Verified:** `principals list` = 8 (7 INDIVIDUAL + 1 GROUP); `app-token
+>   list` shows 4 tokens per identity; PROPFIND Depth 1 on every caldav + carddav
+>   home = 207 with exactly the expected hrefs; all 7 memberships in `family`;
+>   router overlay 12.6 M free (87 % used — ≥ 5 M floor intact).
+> - **Notes for later phases:** verification-matrix row 15 now has real group
+>   collections to test against; Phase 6 vdirsyncer pairs should target hrefs
+>   `/caldav/principal/<id>/{personal,tasks}/` and
+>   `/carddav/principal/<id>/personal/`; RustiCal PROPFIND responses use the
+>   *default* (unprefixed) DAV namespace — parse `<href>`, not `<D:href>`.
 
 ### 5.1 Create principals (user id = full email address)
 
