@@ -950,7 +950,91 @@ Notes from upstream docs:
 **Deliverable: the router is the convergence hub for all identities regardless of
 which provider hosts them.**
 
-### 6.1 Extend `~/.config/vdirsyncer/config`
+> **STATUS (2026-09-04): DONE — 6.1, 6.2, and 6.3 steps 1–2 executed and verified;
+> 6.3 step 3 (canonicality flip) deliberately deferred per its own gate (needs the
+> verification matrix, i.e. Phase 7 client rows, to pass first).**
+> - **Safety net:** hot SQLite `.backup` pulled before any change
+>   (`~/backups/omnical/db-pre-phase6-20260904.sqlite3`, 148 KB) and again after
+>   migration (`db-post-phase6-20260904.sqlite3`, 3.5 MB).
+> - **Pre-flight scratch validation** (throwaway pair in `/tmp/opencode`, 3 real
+>   Google events → temporary `_vdirtest` calendar on the server, then deleted):
+>   MKCOL/PUT/etag/GET/idempotent-re-sync all pass. Content round-trips
+>   semantically identical — RustiCal adds RFC-5545-correct CRLF and re-folds long
+>   lines; vdirsyncer normalizes both, so its second sync was 0 actions.
+> - **6.1 DONE — 9 new pairs + 8 new storages** appended to
+>   `~/.config/vdirsyncer/config` (pre-edit backup: `config.pre-phase6-20260904.bak`).
+>   Existing Google pairs untouched — the new pairs **share the same filesystem
+>   storages** (that IS the hub: Google ↔ vdir ↔ RustiCal). Initial sync:
+>   **721 items uploaded a→b, 0 downloaded, 0 errors**. Deviations from the plan's
+>   example, forced by vdirsyncer 0.20 reality:
+>   - `collections` uses the 0.20 three-item entry form `["config-name", "a-name",
+>     "b-name"]` instead of `"from a"` (names genuinely differ per side); `null` is
+>     allowed in the a/b slots and is used for the three flat, local-only khard
+>     addressbooks (no collection subdir — the dir itself is the collection).
+>   - `password.fetch = ["command", "pass", "show", "secrets/omnical/<id>/vdirsyncer"]`
+>     is 0.20's spelling of the plan's "password-command". Verified headless
+>     (gpg-agent reachable with HOME only; `pass` resolvable from both
+>     `/system/index/bin` and `/usr/bin`), so the existing cron can use it.
+>   - URL is `https://0115d8cf.duckdns.org:8443/` (Phase 0.3 amendment; NAT
+>     hairpin verified from the dev machine).
+> - **Data mapping (all 7 identities covered):**
+>   - Calendars: `google_calendar_local`/`nfcarlton@gmail.com` (195 events) →
+>     nfcarlton@gmail.com `personal`; `google_calendar_local_hawksnest`/
+>     `nicholas@hawksnestsoftware.com` (0 events) → hawksnest `personal`, and its
+>     second collection `cln2…@virtual` — Google's read-only **"Holidays in United
+>     States"** calendar (317 events) → **new `holidays` collection** created via
+>     MKCOL on the router (displayname "US Holidays") so the holiday vdir is
+>     hub-covered too and khal can keep it after the 6.3 flip.
+>   - Contacts: `burningserenity-gmail`/`nfcarlton-gmail`/`nfcalaway-gmail`/
+>     `hawksnest` (Google-paired, collection `default`, 104/104/0/0 vcards) → each
+>     identity's `personal` addressbook; flat local-only `carltonaudio` (0),
+>     `novo-ordo` (1), `novo-ordo-zero` (0) → `personal` of
+>     nicholas@carltonaudio.com / nfcalaway@novo-ordo.com / zero@novo-ordo.com.
+> - **6.2 DONE** — discover + metasync + sync all clean for the new pairs; second
+>   sync = 0 actions; full all-pairs `vdirsyncer sync` (the exact cron command) =
+>   0 actions across 17 collections. **Scheduler already existed** (`*/15 * * * *
+>   vdirsyncer sync` in the user crontab — exactly the plan's migration cadence),
+>   so no new timer was added. `metasync` is a by-design no-op here (a pair's
+>   `metadata` keys default to empty — no displayname files were written into the
+>   vdirs).
+> - **6.3:** step 1 DONE (the 721 uploads; server-side counts verified equal to
+>   local: 195/317/0 + 104/104/1/0/0/0). Step 2 (strays) — both investigated, both
+>   no-ops: `~/.calendars/local/` is **empty** (0 `.ics`), and
+>   `~/.contacts/contacts.csv` (90 rows) is a **stale Google export** — every
+>   phone (90/90) and email (6/6) already exists in the synced vCard addressbooks,
+>   so importing would only create duplicates → skipped. Step 3 NOT done (matrix
+>   gate). **Reminder for the 6.3 flip:** khal's `google_hawksnest` calendar points
+>   at a *stale* dir (`~/.calendars/google/nicholas@hawksnestsoftware.com/`, 1
+>   stale `.ics`) instead of the actively-synced `~/.calendars/hawksnest/…` — fix
+>   when repointing khal.
+> - **Two-way proof (Google-independent):** server-side PUT of a test vCard into
+>   carltonaudio's `personal` → downloaded into the local khard dir; server-side
+>   DELETE → deletion propagated locally (needed `--force-delete` — vdirsyncer's
+>   empty-storage guard, expected for a 1-item collection); both sides back to
+>   pristine 0 items.
+> - **Router impact:** DB 151 KB → 3.5 MB; SQLite WAL spiked to 7 MB during the
+>   bulk push → overlay briefly **2.6 M free (below the ≥5 M floor)**;
+>   `PRAGMA wal_checkpoint(TRUNCATE)` folded it back (online-safe, service live) →
+>   **9.3 M free (91 %)**. **Note for Phase 8:** include a WAL checkpoint in the
+>   nightly backup cron; keep the 8.4 disk watch.
+> - **Findings for later phases:**
+>   - `burningserenity-gmail` and `nfcarlton-gmail` khard addressbooks **both
+>     sync from the nfcarlton@gmail.com Google account** (100/104 cards
+>     byte-identical) — that 104-contact set therefore now exists twice in
+>     RustiCal (once per identity), mirroring the user's existing khard topology.
+>     Kept deliberately (identity-based mapping per §3.4); revisit at the 6.3
+>     flip if de-duplication is wanted.
+>   - RustiCal hrefs = the item UID when UID-safe; UIDs containing `@` (all
+>     `…@google.com` ones) get generated UUID hrefs — harmless (vdirsyncer tracks
+>     hrefs via listing, not construction).
+>   - Benign noise: vdirsyncer's discovery PROPFIND on `/` logs 405 "client
+>     error" in rustical's `logread` (frontend root is GET/HEAD-only — known from
+>     Phase 1.5); discovery proceeds via `/.well-known/*` and works.
+>   - Verification-matrix **row 10 now passes** (clean discover+sync incl. ETags,
+>     no items lost; both directions exercised). Rows 11+ remain for the matrix
+>     run / Phase 7.
+
+### 6.1 Extend `~/.config/vdirsyncer/config` — **DONE (2026-09-04; see STATUS for the 0.20 syntax deviations)**
 
 Keep the existing Google↔vdir pairs untouched; add RustiCal pairs per identity.
 Example for one identity (repeat pattern per identity):
@@ -983,7 +1067,7 @@ password = "<app token from pass>"
 (App tokens can be referenced via vdirsyncer's password-command with `pass` to keep
 them out of the config file.)
 
-### 6.2 Run & schedule
+### 6.2 Run & schedule — **DONE (2026-09-04; existing `*/15 * * * * vdirsyncer sync` cron reused — see STATUS)**
 
 ```sh
 vdirsyncer discover && vdirsyncer metasync && vdirsyncer sync
@@ -993,7 +1077,7 @@ Add to cron/timer if no vdirsyncer scheduler exists today (this plan does not as
 one; check `crontab -l` / systemd timers first). Suggest every 15 min during
 migration, then hourly.
 
-### 6.3 Migration & khal/khard repointing
+### 6.3 Migration & khal/khard repointing — **steps 1–2 DONE 2026-09-04 (both no-ops — see STATUS); step 3 gated on the verification matrix as written**
 
 1. Initial sync: vdirs (Google truth) → RustiCal collections.
 2. Import strays: `~/.calendars/local/*.ics` and `~/.contacts/contacts.csv`
@@ -1085,7 +1169,7 @@ before row 10 passes.
 | 7 | VTODO | PUT a VTODO; REPORT with `calendar-query` comp-filter VTODO | 207; Tasks.org sees the task |
 | 8 | addressbook-query REPORT | curl REPORT on `/carddav/…` | 207, vCards match filter |
 | 9 | Well-known | `curl -sI https://…/.well-known/caldav` and `…/carddav` | 30x to correct roots (client autodiscovery path) |
-| 10 | vdirsyncer | `vdirsyncer discover && sync` (new pairs) | clean two-way sync incl. ETags; no items lost (diff before/after) |
+| 10 | vdirsyncer | `vdirsyncer discover && sync` (new pairs) | clean two-way sync incl. ETags; no items lost (diff before/after) — **✓ verified 2026-09-04 (Phase 6: 721 items a→b, 0 errors; server-side PUT/DELETE round-trip b→a; idempotent re-sync; server counts == local counts)** |
 | 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients |
 | 12 | DAVx5 + Tasks.org | Android account; create/edit event, contact, task | syncs both directions; WebDAV Push = near-instant when enabled |
 | 13 | Thunderbird | calendar + cardbook/tasks accounts at root URL | discovers all own collections + group calendars |
