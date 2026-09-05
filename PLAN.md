@@ -1096,7 +1096,10 @@ migration, then hourly.
 
 **Deliverable: every approved client class working against the router.**
 
-> **STATUS (2026-09-05): IN PROGRESS — host side partially done, one open blocker; see below.**
+> **STATUS (2026-09-05, updated later same day): IN PROGRESS — host side partially done,
+> one open blocker (icalendar parsing, below); iPhone accounts STARTED via manual entry
+> (profile route dead on iOS 26; invitations blocked by the known RFC 6638 gap); see
+> below.**
 > - Scope for this session (user decision): **this host (khal/khard + i3status-rust) and
 >   the iPhone**. DAVx5/Tasks.org, Thunderbird, iMIP (rows 12–13, 15–16) remain for future
 >   sessions.
@@ -1150,19 +1153,57 @@ migration, then hourly.
 >   verify-removal is pending (part of the row-11 gate).**
 > - Row 11 khard part (create/edit/remove a contact in a synced addressbook): NOT
 >   started.
-> - **iPhone: NOT started.** Prepared plan (worked out this session, not executed): the
->   stock RustiCal Apple profile (frontend `app_token` route with `apple=true`,
->   `apple_configuration/template.xml`) embeds the Host-header *including port* into
->   `CalDAVHostName` — dubious on iOS — and adds one family-impersonation payload per
->   profile (7 profiles ⇒ 7 duplicate family calendars). Instead: hand-build **one
->   combined `.mobileconfig`** = 7 × CalDAV (`https://0115d8cf.duckdns.org:8443/
->   caldav-compat/principal/<user>`) + 7 × CardDAV (`/carddav/principal/<user>/`) +
->   1 × family (`user$family` impersonation via the primary identity), using bare
->   `*HostName` + explicit `*Port: 8443` + `UseSSL` + full PrincipalURLs, reusing the
->   existing per-identity `apple` app tokens from pass (`secrets/omnical/<id>/apple`).
->   Serve it to the phone briefly over LAN HTTP; install once; verify server-side
->   (logread UA lines + phone-created event via REPORT). Phone works both on-LAN (NAT
->   hairpin verified in Phase 4) and away.
+> - **iPhone: IN PROGRESS (2026-09-05) — manual-entry route found and used; invitations
+>   blocked by the known RFC 6638 gap (C8); several verification points open.**
+>   - **iOS 26 finding — the `.mobileconfig` route is DEAD on this phone:** iOS 26 removed
+>     manual configuration-profile installation entirely (user-confirmed: profiles download
+>     but never appear in Settings, regardless of content-type). The prepared plan was
+>     executed as far as the platform allows: `scripts/make-apple-profile.py` (0755) builds
+>     `out/omnical-iphone.mobileconfig` — one combined profile, 15 payloads = 7 × CalDAV
+>     (`/caldav-compat/principal/<id>`) + 7 × CardDAV (`/carddav/principal/<id>`) + 1 ×
+>     family (`burningserenity@gmail.com$family` impersonation), bare `*HostName` +
+>     explicit `*Port: 8443` + `UseSSL` + full PrincipalURLs, deterministic uuid5 UUIDs
+>     (re-install replaces accounts instead of duplicating), tokens pulled from `pass`
+>     (`secrets/omnical/<id>/apple`), output mode 0600; `scripts/serve-apple-profile.py`
+>     (0755) serves it with RustiCal's exact Apple content-type
+>     (`application/x-apple-aspen-config` — with plain `application/octet-stream` even
+>     pre-26 iOS shows no install entry in Settings). Both scripts kept for pre-iOS-26
+>     devices / future MDM; unusable on this phone. A QR-code token-transfer attempt
+>     (qrencode → swayimg on the monitor) was also abandoned — iOS Camera treats the raw
+>     token as a search string with no Copy affordance.
+>   - **Working route (user-confirmed): plain manual account entry.** Settings → Apps →
+>     Calendar → Calendar Accounts → Add Account → Other → Add CalDAV Account (same shape
+>     under Contacts → Contacts Accounts → Add CardDAV Account): Server
+>     `0115d8cf.duckdns.org:8443`, User Name = full email address, Password = that
+>     identity's `apple` app token (one token serves both Calendar and Contacts;
+>     `pass show secrets/omnical/<id>/apple`). Discovery rides `/.well-known/*` →
+>     UA-sniffed into `/caldav-compat` (single home-set). Pre-flight verified this
+>     session: all 7 `apple` tokens authenticate (207 on both trees), `user$family`
+>     impersonation returns a single-href home-set on `/caldav-compat/principal/family`.
+>     User attempted accounts for `family` (impersonation) and `nicholas@carltonaudio.com`.
+>   - **Symptom: no Invitees field when creating events on iOS → cannot invite people.**
+>     Root cause (source-verified): RustiCal does not implement RFC 6638 scheduling — it
+>     exists only as a comment at `crates/caldav/src/principal/prop.rs:12`; iOS hides the
+>     invite UI for CalDAV accounts without scheduling support. **Adding users would NOT
+>     restore it** — attendees never need server accounts (invitations are client-side
+>     iMIP email to any address, per C8); server-side scheduling remains the §17.2
+>     custom-extension option. (User asked about adding test users; answer: not needed —
+>     the 7 identities + `family` group already cover sharing tests.)
+>   - **Subscribed-calendar route (user request — read-only view): RustiCal serves a full
+>     `.ics` export via plain GET on any calendar collection URL** (`route_get`:
+>     `text/calendar` + `X-WR-CALNAME/CALDESC/CALCOLOR`), verified live: 200 on
+>     `/caldav/principal/nicholas@carltonaudio.com/personal/`. Unverified: whether iOS
+>     "Add Subscribed Calendar" accepts the URL with embedded or prompted credentials,
+>     and the family export via impersonation (that curl was lost to a shell quoting
+>     bug). Note: subscribed calendars are read-only and offer no invitations either.
+>   - **Unverified: phone → server traffic.** rustical `logread` shows zero iOS UAs
+>     (`dataaccessd`/`accountsd`/`remindd`) and zero requests from the phone IP — only
+>     scanner noise (matches the benign observation below; the two dav-tls
+>     handshake-failure lines coincide with the 15:58 asusrouter probe burst). Either
+>     logread rotated past the attempts, or account verification failed on the phone
+>     without a visible error. Next session: `logread -f` while re-saving an account /
+>     forcing a refresh on the phone; then batch-add the remaining identities and run the
+>     row-14 checks (event create/edit round-trip via REPORT, contacts sync).
 > - Benign observation: the public 8443 listener now attracts scanner traffic
 >   (asusrouter probes, `POST /login.cgi` → 404s in rustical log; occasional dav-tls
 >   TLS-handshake-failure lines) — expected for an open port, no action needed.
@@ -1171,7 +1212,7 @@ migration, then hourly.
 |---|---|---|
 | **DAVx5** | Login via **Nextcloud flow**: URL `https://0115d8cf.duckdns.org`, use frontend login → generates app token automatically; collections auto-discovered | WebDAV Push gives near-instant sync (enable dav_push transport per docs) |
 | **Tasks.org** | Add CalDAV account via DAVx5; task lists appear as calendars with VTODO support | The "tasks" requirement of this project |
-| **Apple Calendar** | Use `/caldav-compat` paths (Apple mishandles multi-home `calendar-home-set`), or install the **configuration profile** generated by RustiCal's frontend (token section) | Requires real TLS (satisfied by LE) |
+| **Apple Calendar** | Use `/caldav-compat` paths (Apple mishandles multi-home `calendar-home-set`); **iOS 26: no manual profile install — add accounts by hand** (Settings → Other → CalDAV/CardDAV, server `0115d8cf.duckdns.org:8443` + `apple` app token; see STATUS) | Requires real TLS (satisfied by LE); no invite UI (RFC 6638 gap, C8) |
 | **Apple Contacts** | CardDAV account, server `0115d8cf.duckdns.org`, user id + app token, path `/carddav` | |
 | **Thunderbird** | New Account → Calendar → On the Network → root URL `https://0115d8cf.duckdns.org` + app token; same for CardDAV | Group calendars discovered properly |
 | **khal / khard** | via vdirsyncer hub (Phase 6) | CLI stays exactly as today, now backed by the router |
