@@ -1493,20 +1493,21 @@ Every step is reversible; nothing destructive is done to the router.
    "just type your email address" account discovery in Apple/DAVx5/Thunderbird for
    those domains. (gmail.com etc. obviously can't be annotated — direct URL login
    still works for any address.)
-2. **Server-side scheduling (RFC 6638) / iMIP gateway** — **PULLED FORWARD FROM
+ 2. **Server-side scheduling (RFC 6638) / iMIP gateway** — **PULLED FORWARD FROM
    "FUTURE" BY USER DECISION 2026-09-05** ("we still need to setup the iphone properly,
    so I can invite people to events"; C8's client-side iMIP does not exist on iOS — the
     invite UI itself requires scheduling support). **STATUS (2026-09-05, latest
-    session): IN PROGRESS — `rustical_scheduling` crate compiling (12/12 unit tests
-    green); dav-crate hooks DONE (item 1); `SqliteSchedulingStore` compiles (item
-    2.0); item 2 (caldav integration) — **all wiring DONE and the caldav crate
-    compiles clean again** (`cargo check -p rustical_caldav --all-targets`:
-    0 errors/0 warnings; sub-items 2.1–2.3 done, tests written per 2.4, snapshot
-    finding recorded under 2.5); **4/7 new scheduling tests green, 3 FAILING on a
-    delivery bug now under active debugging** (`Scheduler::handle_put` silently
-    no-ops + outbox POST 400 — full debugging trail and next steps under item 2's
-    session log); the item-2 gate (full workspace check + suites) NOT yet re-run;
-    nothing cross-built; nothing deployed — the router still runs stock 0.16.1.**
+     session): IN PROGRESS — items 1 and 2 DONE. The delivery bug that had 3
+     scheduling tests failing is FIXED (root cause: `Line::as_email` required `@`
+     in every address, so the fixture's `ORGANIZER:mailto:user` — an `@`-less
+     principal id — parsed to `organizer: None`, no-op-ing `handle_put`/
+     `handle_delete` and 400-ing the outbox with "no ORGANIZER"; one bug, all
+     three failures — see item 2's session log). Item-2 gate GREEN: workspace
+     check 0 errors/0 warnings; suites dav 31, scheduling 13, caldav 34,
+     store_sqlite 13; root integration 19 (snapshots unchanged); rustfmt
+     installed and the branch is fmt-clean. NEXT: item 3 (main-crate `[scheduling]`
+     config + `cmd_serve` wiring). Nothing cross-built; nothing deployed — the
+     router still runs stock 0.16.1.**
 
    Why a local patch: upstream has **no** scheduling implementation to adopt — checked
    2026-09-05: latest tag is still v0.16.1 and `origin/main` past it contains only
@@ -1670,12 +1671,11 @@ Every step is reversible; nothing destructive is done to the router.
        `/inbox`+`/outbox` (axum static routes beat `/{calendar_id}`) with the
        outbox POST schedule-response builder; thread `Option<Arc<Scheduler>>`
        through `caldav_router` (both trees) and update all test callers.
-        — **IN PROGRESS (2026-09-05, latest session): ALL source written, wired and
-        compiling — `cargo check -p rustical_caldav --all-targets` is clean again
-        (0 errors, 0 warnings); sub-items 1–3 of the finish-list below are DONE,
-        4 is written (4/7 green, 3 failing — see the session log), 5 turned out
-        smaller than predicted (serialized snapshots unaffected), 6 (gate) NOT yet
-        run. Previous session's record (source was written but never compiled):**
+         — **DONE (2026-09-05, later session): delivery bug fixed, all 7 scheduling
+         tests green, debug test removed, item-2 gate run and GREEN — see the second
+         session log at the end of this item. State recorded by the previous session
+         (all source written, wired and compiling; finish-list 1–3 done, 5 smaller
+         than predicted):**
        - **Scheduler API extension (found necessary by the integration):**
          `handle_put` gained a `current: (&str, &str, &str)` (principal,
          calendar, object-id) parameter, and `organizer_put`'s copy/move-guard
@@ -1780,18 +1780,22 @@ Every step is reversible; nothing destructive is done to the router.
            via `principal_store.add_app_token`, `personal` calendar via
            `insert_calendar`, ORGANIZER `mailto:user` matches the fixture
            principal `user`, expected inbox object id `req-<uid>.ics`.
-           — **WRITTEN (latest session), all 7 planned tests + a
-           `test_outbox_rejects_non_organizer` bonus; fixture exactly as
-           designed. Green (4): OPTIONS tokens (principal + calendar), PROPFIND
-           principal props (hrefs `/caldav/principal/user/{inbox,outbox,personal}/`),
-           vdirsyncer-UA no-delivery, outbox-rejects-non-organizer (400 — NB not
-           yet distinguished whether that 400 comes from the organizer check or
-           a parse failure). FAILING (3): PUT→REQUEST-in-inbox, DELETE→CANCEL,
-           outbox POST→schedule-response — all on one underlying delivery bug,
-           see the session log. NOTE the tests use UIDs without `@`
-           (`sched-req-1` etc.): `sanitize_id` maps `@`→`_`, so
-           `req-put-test-1@example.com.ics` would actually be
-           `req-put-test-1_example.com.ics`.**
+            — **WRITTEN (latest session), all 7 planned tests + a
+            `test_outbox_rejects_non_organizer` bonus; fixture exactly as
+            designed. Green (4): OPTIONS tokens (principal + calendar), PROPFIND
+            principal props (hrefs `/caldav/principal/user/{inbox,outbox,personal}/`),
+            vdirsyncer-UA no-delivery, outbox-rejects-non-organizer (400 — NB not
+            yet distinguished whether that 400 comes from the organizer check or
+            a parse failure). FAILING (3): PUT→REQUEST-in-inbox, DELETE→CANCEL,
+            outbox POST→schedule-response — all on one underlying delivery bug,
+            see the session log. NOTE the tests use UIDs without `@`
+            (`sched-req-1` etc.): `sanitize_id` maps `@`→`_`, so
+            `req-put-test-1@example.com.ics` would actually be
+            `req-put-test-1_example.com.ics`.**
+            — **ALL GREEN (2026-09-05, later session): the 3 failing tests pass
+            after the `as_email` fix (see the second session log); the bonus
+            test's 400 is now provably the organizer check (parse no longer
+            fails), i.e. it fails for the right reason.**
         5. Snapshot updates (via `INSTA_UPDATE=always`, then review):
            `crates/caldav/src/principal/snapshots/…propfind-2.snap` (debug) and
            `…propfind-3.snap` (serialized) gain the three empty props; the ROOT
@@ -1807,16 +1811,23 @@ Every step is reversible; nothing destructive is done to the router.
            `propfind-3` passes unchanged and contains no schedule elements:
            XML serialization SKIPS the None-valued props entirely (the earlier
            "serializes them empty" assumption was wrong). The root
-           `propfind_depth_0/1` snapshots were predicted-unaffected (app.rs
-           passes None) and are expected to pass unchanged — re-verify in the
-           item-2 gate run.**
-        6. Item-2 gate: `SQLX_OFFLINE=true cargo check --workspace
-           --all-targets` clean (keep the 0-warnings bar) + suites green
-           (dav 31, scheduling 12, caldav 27 + the new scheduling tests,
-           store_sqlite 13).
-           — **NOT yet run this session (only `cargo check -p rustical_caldav
-           --all-targets` verified clean; caldav suite currently 31 passed /
-           3 failed — the 3 new failing delivery tests).**
+            `propfind_depth_0/1` snapshots were predicted-unaffected (app.rs
+            passes None) and are expected to pass unchanged — re-verify in the
+            item-2 gate run.**
+            — **RE-VERIFIED in the gate (2026-09-05, later session): root
+            integration suite 19/19 green, snapshots untouched.**
+         6. Item-2 gate: `SQLX_OFFLINE=true cargo check --workspace
+            --all-targets` clean (keep the 0-warnings bar) + suites green
+            (dav 31, scheduling 12, caldav 27 + the new scheduling tests,
+            store_sqlite 13).
+            — **NOT yet run this session (only `cargo check -p rustical_caldav
+            --all-targets` verified clean; caldav suite currently 31 passed /
+            3 failed — the 3 new failing delivery tests).**
+            — **RUN AND GREEN (2026-09-05, later session): workspace check 0
+            errors / 0 warnings; dav 31, scheduling 13 (12 + new regression
+            test), caldav 34 (27 + 7 scheduling), store_sqlite 13; root crate
+            integration tests 19/19. Plus `cargo fmt --check` clean (see the
+            second session log).**
 
         **Session log (2026-09-05, latest session) — wiring completed, delivery
         bug found and half-diagnosed:**
@@ -1841,37 +1852,86 @@ Every step is reversible; nothing destructive is done to the router.
           inbox PROPFIND/GET/DELETE routes work (207 with
           `resourcetype {collection, schedule-inbox}`, ETag'd GET, successful
           DELETE, owner-only 401s).
-        - **THE OPEN BUG — `Scheduler::handle_put` silently no-ops.** Symptom:
-          PUT (as `user`, ORGANIZER `mailto:user`, internal ATTENDEE
-          `attendee@example.com`) returns 201 but the attendee's inbox stays
-          empty; DELETE likewise delivers no CANCEL; outbox POST returns 400.
-          Isolated to the scheduler (NOT routing/auth/store) via a direct-call
-          debug test (`debug_scheduler_direct`, currently still in tests.rs —
-          **remove before finishing**): with the store side individually proven
-          OK — manual `put_inbox_object` → Ok and readable; 
-          `find_calendar_objects_by_uid("user","sched-req-1")` returns exactly
-          `[("personal","sched-req-1",ics)]`; `principal_exists(attendee)` =
-          true; migration table exists (`create_db_pool(":memory:", true)`
-          migrates) — calling `handle_put("user", ("user","personal",
-          "sched-req-1"), None, &ics, None)` directly still delivers nothing.
-          Code inspection so far: `Line::parse`/`as_email`/`unfold`/`parse_event`
-          (crates/scheduling/src/ics.rs) and every guard in
-          `handle_put`→`organizer_put`→`deliver`→`deliver_status` look correct;
-          scheduling unit tests remain 12/12. **Next steps (in order):**
-          1. cheapest discriminator first — call `ics::parse_event` directly on
-             the exact `event_ics(...)` payload in a debug print (if it returns
-             None or wrong EventInfo, the bug is parse-side and likely explains
-             the outbox 400 too — a unifying hypothesis, NOT yet confirmed);
-          2. otherwise instrument the guard chain (eprintln at each early return
-             in handle_put/organizer_put, and print the `handle_outbox_post`
-             Err string in the outbox test — the 400's cause is currently
-             ambiguous between "could not parse iTIP message" and the
-             organizer check);
-          3. fix, re-run the 3 failing tests, then the full item-2 gate.
-        - **Also pending cleanup:** delete `debug_scheduler_direct` + its extra
-          imports (`CalendarObject`, `SchedulingStore`) from tests.rs; `cargo
-          fmt` still uninstalled (run `rustup component add rustfmt` before the
-          item-5 cross-build per the earlier note).
+         - **THE OPEN BUG — `Scheduler::handle_put` silently no-ops.** Symptom:
+           PUT (as `user`, ORGANIZER `mailto:user`, internal ATTENDEE
+           `attendee@example.com`) returns 201 but the attendee's inbox stays
+           empty; DELETE likewise delivers no CANCEL; outbox POST returns 400.
+           Isolated to the scheduler (NOT routing/auth/store) via a direct-call
+           debug test (`debug_scheduler_direct`, currently still in tests.rs —
+           **remove before finishing**): with the store side individually proven
+           OK — manual `put_inbox_object` → Ok and readable; 
+           `find_calendar_objects_by_uid("user","sched-req-1")` returns exactly
+           `[("personal","sched-req-1",ics)]`; `principal_exists(attendee)` =
+           true; migration table exists (`create_db_pool(":memory:", true)`
+           migrates) — calling `handle_put("user", ("user","personal",
+           "sched-req-1"), None, &ics, None)` directly still delivers nothing.
+           Code inspection so far: `Line::parse`/`as_email`/`unfold`/`parse_event`
+           (crates/scheduling/src/ics.rs) and every guard in
+           `handle_put`→`organizer_put`→`deliver`→`deliver_status` look correct;
+           scheduling unit tests remain 12/12. **Next steps (in order):**
+           1. cheapest discriminator first — call `ics::parse_event` directly on
+              the exact `event_ics(...)` payload in a debug print (if it returns
+              None or wrong EventInfo, the bug is parse-side and likely explains
+              the outbox 400 too — a unifying hypothesis, NOT yet confirmed);
+           2. otherwise instrument the guard chain (eprintln at each early return
+              in handle_put/organizer_put, and print the `handle_outbox_post`
+              Err string in the outbox test — the 400's cause is currently
+              ambiguous between "could not parse iTIP message" and the
+              organizer check);
+           3. fix, re-run the 3 failing tests, then the full item-2 gate.
+           **→ RESOLVED (2026-09-05, later session): step 1's unifying hypothesis
+           was CONFIRMED — see the second session log.**
+         - **Also pending cleanup:** delete `debug_scheduler_direct` + its extra
+           imports (`CalendarObject`, `SchedulingStore`) from tests.rs; `cargo
+           fmt` still uninstalled (run `rustup component add rustfmt` before the
+           item-5 cross-build per the earlier note).
+           **→ DONE (2026-09-05, later session): debug test + both imports
+           removed; rustfmt installed and the whole branch is fmt-clean.**
+
+         **Session log (2026-09-05, later session) — delivery bug root-caused,
+         fixed, item-2 gate green:**
+         - **Root cause (empirically confirmed via the planned step-1
+           discriminator, a `parse_event` print in the debug test):** the test
+           payload parsed to `EventInfo { organizer: None, attendees:
+           [attendee@example.com, …] }` — `Line::as_email()`
+           (crates/scheduling/src/ics.rs) required `@` in **every** extracted
+           address, but the fixture's ORGANIZER is `mailto:user` and the fixture
+           principal id is `user` (RustiCal principal ids are arbitrary strings
+           — `@` is NOT required; only `:` and `$` are forbidden). So the
+           organizer parsed to `None` → `handle_put`/`handle_delete` early-
+           returned at their `let Some(organizer) … else { return }` guards and
+           `handle_outbox_post` returned `Err("iTIP message has no ORGANIZER")`
+           → the outbox 400. One parse-side bug, all three failures — the
+           previous session's "code inspection looks correct" simply missed that
+           `@`-less principal ids can legally appear as ORGANIZER/ATTENDEE
+           CAL-ADDRESSes. (Production identities are full email addresses, so
+           this would have worked there — but the server must not silently
+           no-op on arbitrary-string principals, which are a core RustiCal
+           property this project relies on.)
+         - **Fix:** `as_email()` now takes a `mailto:`-prefixed value verbatim
+           (trimmed + lowercased; still rejected if empty or containing `:`/`
+           ` `) — a `mailto:` CAL-ADDRESS is an address *by definition*; the
+           `@`-containing heuristic now only guards the bare (non-mailto) form
+           against random text. Regression unit test
+           `mailto_without_at_is_an_address` added to ics.rs (organizer
+           `mailto:user` → `Some("user")`; bare `ORGANIZER:user` still → None);
+           scheduling suite now 13/13.
+         - **Aftermath:** the 3 delivery tests + all others green (caldav lib
+           34/34 = 27 + 7 scheduling); `debug_scheduler_direct` and its
+           `CalendarObject`/`SchedulingStore` imports removed from tests.rs;
+           `test_outbox_rejects_non_organizer` now 400s for the *right* reason
+           (organizer≠acting-user check, not a parse failure).
+         - **Item-2 gate run (finish-list item 6):** `SQLX_OFFLINE=true cargo
+           check --workspace --all-targets` → 0 errors / 0 warnings; suites:
+           dav 31, scheduling 13, caldav 34, store_sqlite 13 (all green); root
+           crate integration tests 19/19 (the `propfind_depth_0/1` snapshots
+           pass unchanged — finish-list item 5's re-verification done).
+         - **rustfmt:** installed (1.9.0, closing the earlier note) and
+           `cargo fmt` applied — `cargo fmt --check` now clean. The fmt pass
+           touched several pre-existing scheduling-branch files (import
+           ordering, line wrapping in principal/mod.rs, calendar/service.rs,
+           calendar_object/service.rs etc.) — formatting only; all suites
+           re-run green afterwards.
    3. main crate: `[scheduling]` in `Config` (serde-default so the existing
       router config keeps parsing), `cmd_serve` wiring (`get_data_stores` returns
       the scheduling-store handle → `Scheduler::new(config, store)` → `make_app`).
