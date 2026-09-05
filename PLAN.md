@@ -1496,13 +1496,17 @@ Every step is reversible; nothing destructive is done to the router.
 2. **Server-side scheduling (RFC 6638) / iMIP gateway** — **PULLED FORWARD FROM
    "FUTURE" BY USER DECISION 2026-09-05** ("we still need to setup the iphone properly,
    so I can invite people to events"; C8's client-side iMIP does not exist on iOS — the
-   invite UI itself requires scheduling support). **STATUS (2026-09-05, updated later
-   same day): IN PROGRESS — `rustical_scheduling` crate compiling (12/12 unit tests
-   green); dav-crate hooks DONE (remaining-work item 1); `SqliteSchedulingStore`
-   compiles (item 2.0); item 2 (caldav integration) PARTIALLY WRITTEN in the latest
-   session and **interrupted mid-edit — the workspace does NOT currently compile**
-   (see item 2's status note for exactly what is done and what remains); nothing
-   cross-built; nothing deployed — the router still runs stock 0.16.1.**
+    invite UI itself requires scheduling support). **STATUS (2026-09-05, latest
+    session): IN PROGRESS — `rustical_scheduling` crate compiling (12/12 unit tests
+    green); dav-crate hooks DONE (item 1); `SqliteSchedulingStore` compiles (item
+    2.0); item 2 (caldav integration) — **all wiring DONE and the caldav crate
+    compiles clean again** (`cargo check -p rustical_caldav --all-targets`:
+    0 errors/0 warnings; sub-items 2.1–2.3 done, tests written per 2.4, snapshot
+    finding recorded under 2.5); **4/7 new scheduling tests green, 3 FAILING on a
+    delivery bug now under active debugging** (`Scheduler::handle_put` silently
+    no-ops + outbox POST 400 — full debugging trail and next steps under item 2's
+    session log); the item-2 gate (full workspace check + suites) NOT yet re-run;
+    nothing cross-built; nothing deployed — the router still runs stock 0.16.1.**
 
    Why a local patch: upstream has **no** scheduling implementation to adopt — checked
    2026-09-05: latest tag is still v0.16.1 and `origin/main` past it contains only
@@ -1666,11 +1670,12 @@ Every step is reversible; nothing destructive is done to the router.
        `/inbox`+`/outbox` (axum static routes beat `/{calendar_id}`) with the
        outbox POST schedule-response builder; thread `Option<Arc<Scheduler>>`
        through `caldav_router` (both trees) and update all test callers.
-       — **IN PROGRESS (2026-09-05, session interrupted mid-edit at the user's
-       request): all new/changed source is written EXCEPT the final wiring and
-       tests; the tree does NOT compile in this state (guaranteed E0063 in
-       caldav_router, see below). Nothing run through cargo this session —
-       the notes are code-inspection-accurate. Done this session:**
+        — **IN PROGRESS (2026-09-05, latest session): ALL source written, wired and
+        compiling — `cargo check -p rustical_caldav --all-targets` is clean again
+        (0 errors, 0 warnings); sub-items 1–3 of the finish-list below are DONE,
+        4 is written (4/7 green, 3 failing — see the session log), 5 turned out
+        smaller than predicted (serialized snapshots unaffected), 6 (gate) NOT yet
+        run. Previous session's record (source was written but never compiled):**
        - **Scheduler API extension (found necessary by the integration):**
          `handle_put` gained a `current: (&str, &str, &str)` (principal,
          calendar, object-id) parameter, and `organizer_put`'s copy/move-guard
@@ -1745,44 +1750,128 @@ Every step is reversible; nothing destructive is done to the router.
          which the guard exclusion depends on. Acting user = authenticated
          principal id; impersonation (`user$family`) surfaces as `family` and
          then no-ops conservatively (organizer≠`family`).
-       **Remaining to finish item 2 (next session starts here — the first
-       three are what currently breaks compilation):**
-       1. `crates/caldav/src/lib.rs`: extend `caldav_router` with the
-          `scheduler: Option<Arc<Scheduler>>` param and pass it into the
-          `PrincipalResourceService` literal (currently missing the new
-          `scheduler` field → E0063; the `use rustical_scheduling::Scheduler`
-          and `pub mod scheduling;` lines are already in place).
-       2. `src/app.rs`: update BOTH `caldav_router` calls (both trees) to pass
-          `None` (item 3 later replaces None with the real wiring).
-       3. `crates/caldav/src/principal/tests.rs`: the two struct literals
-          (PrincipalResourceService ~line 25, PrincipalResource ~line 72) need
-          `scheduler: None` / `scheduling: None`.
-       4. `crates/caldav/src/scheduling/tests.rs`: referenced by
-          `#[cfg(test)] mod tests;` in scheduling/mod.rs but NOT written yet.
-          Planned coverage (design decided): full `caldav_router` via
-          TestStoreContext + `SqliteSchedulingStore` + enabled
-          SchedulingConfig (also proves the `/inbox` vs `/{calendar_id}` axum
-          route precedence doesn't panic at Router construction); OPTIONS
-          advertises the tokens; PROPFIND principal fills the three props;
-          PUT with an internal attendee → REQUEST in the attendee's inbox
-          (PROPFIND/GET/DELETE); DELETE → CANCEL; outbox POST →
-          schedule-response; vdirsyncer UA → no delivery. Fixture facts
-          settled: add second principal `attendee@example.com` + app token
-          via `principal_store.add_app_token`, `personal` calendar via
-          `insert_calendar`, ORGANIZER `mailto:user` matches the fixture
-          principal `user`, expected inbox object id `req-<uid>.ics`.
-       5. Snapshot updates (via `INSTA_UPDATE=always`, then review):
-          `crates/caldav/src/principal/snapshots/…propfind-2.snap` (debug) and
-          `…propfind-3.snap` (serialized) gain the three empty props; the ROOT
-          integration-test snapshots
-          `tests/integration_tests/caldav/snapshots/…propfind_depth_0.snap`
-          and `…propfind_depth_1.snap` likewise (they PROPFIND the principal
-          allprop through make_app — unchanged wiring there because app.rs
-          passes None).
-       6. Item-2 gate: `SQLX_OFFLINE=true cargo check --workspace
-          --all-targets` clean (keep the 0-warnings bar) + suites green
-          (dav 31, scheduling 12, caldav 27 + the new scheduling tests,
-          store_sqlite 13).
+        **Finish-list status (updated 2026-09-05, latest session):**
+        1. `crates/caldav/src/lib.rs`: extend `caldav_router` with the
+           `scheduler: Option<Arc<Scheduler>>` param and pass it into the
+           `PrincipalResourceService` literal (currently missing the new
+           `scheduler` field → E0063; the `use rustical_scheduling::Scheduler`
+           and `pub mod scheduling;` lines are already in place).
+           — **DONE (latest session): param added (last position), threaded into
+           the literal; lib compiles.**
+        2. `src/app.rs`: update BOTH `caldav_router` calls (both trees) to pass
+           `None` (item 3 later replaces None with the real wiring).
+           — **DONE (latest session): both calls pass `None` with a comment
+           pointing at item 3.**
+        3. `crates/caldav/src/principal/tests.rs`: the two struct literals
+           (PrincipalResourceService ~line 25, PrincipalResource ~line 72) need
+           `scheduler: None` / `scheduling: None`.
+           — **DONE (latest session).**
+        4. `crates/caldav/src/scheduling/tests.rs`: referenced by
+           `#[cfg(test)] mod tests;` in scheduling/mod.rs but NOT written yet.
+           Planned coverage (design decided): full `caldav_router` via
+           TestStoreContext + `SqliteSchedulingStore` + enabled
+           SchedulingConfig (also proves the `/inbox` vs `/{calendar_id}` axum
+           route precedence doesn't panic at Router construction); OPTIONS
+           advertises the tokens; PROPFIND principal fills the three props;
+           PUT with an internal attendee → REQUEST in the attendee's inbox
+           (PROPFIND/GET/DELETE); DELETE → CANCEL; outbox POST →
+           schedule-response; vdirsyncer UA → no delivery. Fixture facts
+           settled: add second principal `attendee@example.com` + app token
+           via `principal_store.add_app_token`, `personal` calendar via
+           `insert_calendar`, ORGANIZER `mailto:user` matches the fixture
+           principal `user`, expected inbox object id `req-<uid>.ics`.
+           — **WRITTEN (latest session), all 7 planned tests + a
+           `test_outbox_rejects_non_organizer` bonus; fixture exactly as
+           designed. Green (4): OPTIONS tokens (principal + calendar), PROPFIND
+           principal props (hrefs `/caldav/principal/user/{inbox,outbox,personal}/`),
+           vdirsyncer-UA no-delivery, outbox-rejects-non-organizer (400 — NB not
+           yet distinguished whether that 400 comes from the organizer check or
+           a parse failure). FAILING (3): PUT→REQUEST-in-inbox, DELETE→CANCEL,
+           outbox POST→schedule-response — all on one underlying delivery bug,
+           see the session log. NOTE the tests use UIDs without `@`
+           (`sched-req-1` etc.): `sanitize_id` maps `@`→`_`, so
+           `req-put-test-1@example.com.ics` would actually be
+           `req-put-test-1_example.com.ics`.**
+        5. Snapshot updates (via `INSTA_UPDATE=always`, then review):
+           `crates/caldav/src/principal/snapshots/…propfind-2.snap` (debug) and
+           `…propfind-3.snap` (serialized) gain the three empty props; the ROOT
+           integration-test snapshots
+           `tests/integration_tests/caldav/snapshots/…propfind_depth_0.snap`
+           and `…propfind_depth_1.snap` likewise (they PROPFIND the principal
+           allprop through make_app — unchanged wiring there because app.rs
+           passes None).
+           — **SMALLER THAN PREDICTED (latest session): only the DEBUG snapshot
+           `propfind-2.snap` changed (reviewed: exactly the three new
+           `ScheduleInboxUrl/ScheduleOutboxUrl/ScheduleDefaultCalendarUrl(None)`
+           variants inserted). The serialized snapshots are UNAFFECTED —
+           `propfind-3` passes unchanged and contains no schedule elements:
+           XML serialization SKIPS the None-valued props entirely (the earlier
+           "serializes them empty" assumption was wrong). The root
+           `propfind_depth_0/1` snapshots were predicted-unaffected (app.rs
+           passes None) and are expected to pass unchanged — re-verify in the
+           item-2 gate run.**
+        6. Item-2 gate: `SQLX_OFFLINE=true cargo check --workspace
+           --all-targets` clean (keep the 0-warnings bar) + suites green
+           (dav 31, scheduling 12, caldav 27 + the new scheduling tests,
+           store_sqlite 13).
+           — **NOT yet run this session (only `cargo check -p rustical_caldav
+           --all-targets` verified clean; caldav suite currently 31 passed /
+           3 failed — the 3 new failing delivery tests).**
+
+        **Session log (2026-09-05, latest session) — wiring completed, delivery
+        bug found and half-diagnosed:**
+        - **Extra compile fixes beyond the predicted E0063s** (first `cargo
+          check` didn't even parse the manifest): (a) `crates/caldav/Cargo.toml`
+          had a **duplicate `sha2.workspace = true`** key (previous session added
+          it although it already existed) — removed; (b) `Scheduler` got a
+          **manual redacted `Debug` impl** (`enabled` only) instead of a derive —
+          it holds `SchedulingConfig` with SMTP passwords which must never leak
+          through `PrincipalResourceService`'s `#[derive(Debug)]` into logs;
+          (c) `SchedulingProps` got `#[derive(Debug, Clone)]`; (d) inbox.rs
+          needed `use hex::ToHex;` for `encode_hex` and had an unused
+          `IntoResponse` import removed.
+        - **Routing finding (test-level):** the bare `caldav_router(...)` Router
+          matches paths **WITHOUT trailing slash only** — `/caldav/principal/user`
+          → 200/207, but `/caldav/principal/user/` → 404 (integration tests go
+          through `make_app`'s merged Router, which behaves differently — the
+          Phase 1.5 smoke test's trailing-slash `/caldav/` PROPFIND worked there).
+          All scheduling-test request URIs therefore use no trailing slash. The
+          inbox/outbox **static nests DO win over `/{calendar_id}`** and router
+          construction does not panic — precedence requirement proven. The
+          inbox PROPFIND/GET/DELETE routes work (207 with
+          `resourcetype {collection, schedule-inbox}`, ETag'd GET, successful
+          DELETE, owner-only 401s).
+        - **THE OPEN BUG — `Scheduler::handle_put` silently no-ops.** Symptom:
+          PUT (as `user`, ORGANIZER `mailto:user`, internal ATTENDEE
+          `attendee@example.com`) returns 201 but the attendee's inbox stays
+          empty; DELETE likewise delivers no CANCEL; outbox POST returns 400.
+          Isolated to the scheduler (NOT routing/auth/store) via a direct-call
+          debug test (`debug_scheduler_direct`, currently still in tests.rs —
+          **remove before finishing**): with the store side individually proven
+          OK — manual `put_inbox_object` → Ok and readable; 
+          `find_calendar_objects_by_uid("user","sched-req-1")` returns exactly
+          `[("personal","sched-req-1",ics)]`; `principal_exists(attendee)` =
+          true; migration table exists (`create_db_pool(":memory:", true)`
+          migrates) — calling `handle_put("user", ("user","personal",
+          "sched-req-1"), None, &ics, None)` directly still delivers nothing.
+          Code inspection so far: `Line::parse`/`as_email`/`unfold`/`parse_event`
+          (crates/scheduling/src/ics.rs) and every guard in
+          `handle_put`→`organizer_put`→`deliver`→`deliver_status` look correct;
+          scheduling unit tests remain 12/12. **Next steps (in order):**
+          1. cheapest discriminator first — call `ics::parse_event` directly on
+             the exact `event_ics(...)` payload in a debug print (if it returns
+             None or wrong EventInfo, the bug is parse-side and likely explains
+             the outbox 400 too — a unifying hypothesis, NOT yet confirmed);
+          2. otherwise instrument the guard chain (eprintln at each early return
+             in handle_put/organizer_put, and print the `handle_outbox_post`
+             Err string in the outbox test — the 400's cause is currently
+             ambiguous between "could not parse iTIP message" and the
+             organizer check);
+          3. fix, re-run the 3 failing tests, then the full item-2 gate.
+        - **Also pending cleanup:** delete `debug_scheduler_direct` + its extra
+          imports (`CalendarObject`, `SchedulingStore`) from tests.rs; `cargo
+          fmt` still uninstalled (run `rustup component add rustfmt` before the
+          item-5 cross-build per the earlier note).
    3. main crate: `[scheduling]` in `Config` (serde-default so the existing
       router config keeps parsing), `cmd_serve` wiring (`get_data_stores` returns
       the scheduling-store handle → `Scheduler::new(config, store)` → `make_app`).
