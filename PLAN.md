@@ -1187,13 +1187,22 @@ migration, then hourly.
 >   (`~/.local/share/i3status-rs/`) 0 bytes, and an ESTABLISHED connection from the
 >   i3status-rs pid to `65.33.235.245:8443` — the block is live against the router
 >   (hairpin NAT path).
-> - **Upstream issue NOT yet filed** — `gh` 2.96.0 present but **not authenticated**
->   (needs `gh auth login`). Repro evidence re-verified fresh: quick-xml 0.42 minimal
->   repro → payload ends `…,13,10` (`\r\n` intact); icalendar 0.17.13 → v3.ics parses
->   1 component (lone-`\r` loud-Err per the bisect above); the full-fidelity xmltest
->   re-run just needs `--bin xmltest` (its workspace now holds 3 binaries). Remaining:
->   draft the issue text → `gh auth login` (user) → post (or paste manually). The
->   patched source tree + repro dirs live under `/tmp/opencode` (wiped on reboot) — the
+> - **Upstream issue FILED (2026-09-05, after user ran `gh auth login`):
+>   greshake/i3status-rust#2309** —
+>   https://github.com/greshake/i3status-rust/issues/2309 (title: "calendar block:
+>   silently shows no events against conformant CalDAV servers (quick-xml 0.37
+>   strips trailing LF of calendar-data text)"). Pre-flight before posting: no
+>   duplicate open issue (searched), upstream master re-checked — still pins
+>   quick-xml 0.37 (icalendar 0.17.9), so master is still root-cause broken (loudly
+>   rather than silently). Every evidence link re-verified fresh the same day via
+>   standalone minimal repros: quick-xml 0.37.5 → text ends lone `\r`; quick-xml
+>   0.42 → ends `\r\n` (fixed); icalendar 0.16.12 lone-`\r` → **silent** 0
+>   components; icalendar 0.17.9 → loud Err; conformant payloads → 1 component.
+>   Issue body = symptom (silent no-events) + the two stacked bugs with the minimal
+>   repro + the verified two-line Cargo.toml fix (compiles clean, no API changes) +
+>   an offer to open a PR. Draft kept at `/tmp/opencode/i3s-issue/issue.md`
+>   (`/tmp` is wiped on reboot — the posted issue itself is the durable record).
+>   The patched source tree + repro dirs also live under `/tmp/opencode`; the
 >   two-line patch above is the durable record; the installed artifact is durable.
 > - **Finding — server quirk (benign): RustiCal's server-side time-range REPORT
 >   over-matches recurring events** — a yearly event with `DTSTART;VALUE=DATE:19900409`
@@ -1280,7 +1289,7 @@ migration, then hourly.
 | **Apple Contacts** | CardDAV account, server `0115d8cf.duckdns.org`, user id + app token, path `/carddav` | |
 | **Thunderbird** | New Account → Calendar → On the Network → root URL `https://0115d8cf.duckdns.org` + app token; same for CardDAV | Group calendars discovered properly |
 | **khal / khard** | via vdirsyncer hub (Phase 6) | CLI stays exactly as today, now backed by the router |
-| **i3status-rust** (added to scope 2026-09-05) | Native `calendar` block; basic auth + app token via 0600 credentials file; source `https://0115d8cf.duckdns.org:8443/caldav-compat/` (see STATUS: `/caldav/` fails on multi-home) | **DONE 2026-09-05** — blocker fixed by rebuild (quick-xml 0.42 + icalendar 0.17.13; no API changes needed), verified against Omnical, installed over stock (backup `/usr/bin/i3status-rs.bak-0.36.1-stock`), live bar active; only the upstream issue filing remains (gh unauthenticated) |
+| **i3status-rust** (added to scope 2026-09-05) | Native `calendar` block; basic auth + app token via 0600 credentials file; source `https://0115d8cf.duckdns.org:8443/caldav-compat/` (see STATUS: `/caldav/` fails on multi-home) | **DONE 2026-09-05** — blocker fixed by rebuild (quick-xml 0.42 + icalendar 0.17.13; no API changes needed), verified against Omnical, installed over stock (backup `/usr/bin/i3status-rs.bak-0.36.1-stock`), live bar active; upstream issue also filed: greshake/i3status-rust#2309 |
 
 **Cross-domain invitations (iMIP):** RustiCal does not implement RFC 6638
 server-side scheduling. Invitations to attendees on **any** domain are sent
@@ -1556,11 +1565,12 @@ Every step is reversible; nothing destructive is done to the router.
       an event inviting another identity (internal inbox path) and an external
       address (email path), accept/reply round-trip, then batch-verify the other 6
       identities and run the verification-matrix rows 14–16.
-   7. PLAN.md final status update + the upstream i3status-rust issue remains
-      a *separate* pending task — **update (2026-09-05, later session): the rebuild
-      itself is DONE (see Phase 7 STATUS); the issue is still UNFILED — gh 2.96.0
-      present but unauthenticated (`gh auth login` needed), repro evidence
-      fresh-verified; drafting + posting is the only remainder.**
+   7. PLAN.md final status update + the upstream i3status-rust issue ~~remains
+      a *separate* pending task~~ — **update (2026-09-05, later session): the rebuild
+      itself is DONE (see Phase 7 STATUS); RESOLVED same day after `gh auth login`:
+      the issue is FILED as greshake/i3status-rust#2309 (see Phase 7 STATUS for the
+      evidence chain) — nothing remains here except possible upstream follow-up
+      (a PR was offered in the issue).**
 3. **WebDAV Push transports** (WebSocket/WebPush) tuning for instant DAVx5 sync
    (RustiCal ships support; configure in `dav_push` after Phase 7).
 4. **IPv6**: publish AAAA on duckdns once a stable GUA exists on WAN; same firewall
