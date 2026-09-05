@@ -1096,9 +1096,10 @@ migration, then hourly.
 
 **Deliverable: every approved client class working against the router.**
 
-> **STATUS (2026-09-05, updated later same day): IN PROGRESS — host side partially done,
-> one DIAGNOSED blocker awaiting its fix task (quick-xml/icalendar bump-rebuild of
-> i3status-rust, below); iPhone accounts STARTED via manual entry
+> **STATUS (2026-09-05, updated twice same day): IN PROGRESS — host side done except the
+> khard part of row 11; the i3status-rust blocker is FIXED (rebuilt with quick-xml 0.42 +
+> icalendar 0.17.13 — live bar active against Omnical, see the FIX EXECUTED bullet below);
+> iPhone accounts STARTED via manual entry
 > (profile route dead on iOS 26; invitations blocked by the known RFC 6638 gap —
 > **whose fix is now IN PROGRESS, pulled forward into §17.2 the same day**; see the
 > iPhone bullets below and §17.2 for the current implementation state); see
@@ -1116,9 +1117,9 @@ migration, then hourly.
 >   (`secrets/omnical/nfcarlton@gmail.com/i3status`); credentials in
 >   `~/.config/i3status-rust/omnical_credentials.toml` (0600, referenced via the block's
 >   `credentials_path`); calendar-block source swapped Google-OAuth → Omnical basic auth
->   (config backup `config.toml.bak.20260905-pre-omnical`). **Change NOT yet activated** —
->   the live bar still runs the old in-memory Google config; `pkill i3status-rs` (swaybar
->   respawns it) once the blocker below is fixed.
+>   (config backup `config.toml.bak.20260905-pre-omnical`). **ACTIVATED 2026-09-05 (later
+>   session) — the live bar now runs the rebuilt binary with this Omnical source; see the
+>   FIX EXECUTED bullet below.**
 > - **Finding — block URL must be `/caldav-compat/`, NOT `/caldav/`:** the regular tree's
 >   `calendar-home-set` returns TWO `<href>`s (personal + family) and i3status-rs 0.36.1's
 >   quick-xml parser deserializes a single `href` String → block errors out on `/caldav/`.
@@ -1158,8 +1159,42 @@ migration, then hourly.
 >   `/programs/x11-misc/i3status-rust/0.36.1/`; expect possible small API fixes for the
 >   0.37→0.42 jump), verify the calendar block against Omnical, then `pkill i3status-rs`
 >   to activate the already-wired config; **file an upstream i3status-rust issue**
->   recommending the quick-xml bump (attach the minimal repro above). Bar stays on the
->   old Google source until that rebuild is executed.
+>   recommending the quick-xml bump (attach the minimal repro above). ~~Bar stays on the
+>   old Google source until that rebuild is executed.~~
+> - **FIX EXECUTED (2026-09-05, later session) — blocker resolved; live bar on Omnical.**
+>   Upstream `greshake/i3status-rust` cloned at tag v0.36.1 (commit `b4212f7` — identical
+>   to the installed build) into `/tmp/opencode/i3status-rust-rebuild`; local pins are
+>   **quick-xml 0.37 (lock 0.37.5) + icalendar 0.16.12** (the "0.17.9" in the bisect text
+>   referred to master). Two-line `Cargo.toml` patch — `quick-xml = { version = "0.42",
+>   features = ["serialize"] }` (locks 0.42.0) and `icalendar = { version = "0.17.13",
+>   features = ["chrono-tz"] }` (locks 0.17.13) — then `cargo build --release`
+>   (thin-LTO profile as shipped) compiled **clean on the first try: no API fixes were
+>   needed for the 0.37→0.42 jump** (the block's `$value`/`@name` serde renames are
+>   unchanged in 0.42); ~2.5 min. Verification against live Omnical: the mini
+>   calendar-only config renders `Sun 11:00 Omnical test event` (the khal test event)
+>   where the stock binary rendered the no-events icon; 25 s run, zero stderr; the full
+>   user config ran 20 s clean with the calendar widget populated. Install: stock binary
+>   preserved as `/usr/bin/i3status-rs.bak-0.36.1-stock` (28.6 MB), rebuild at
+>   `/usr/bin/i3status-rs` (23.4 MB) — the `/programs/…/bin` and `/system/index/bin`
+>   symlinks resolve to it automatically. Distinguish binaries by size (both report
+>   `0.36.1 (commit b4212f7)`).
+> - **Activation finding — swaybar does NOT respawn a killed status_command** (unlike
+>   i3bar; the `pkill i3status-rs; swaybar respawns it` assumption was wrong). After
+>   `pkill i3status-rs` the bar sat statusless; killing swaybar itself worked — sway
+>   respawned swaybar, which re-exec'd status_command with the NEW binary + the
+>   already-wired Omnical config. Restart method to remember: `pkill swaybar`, not
+>   `pkill i3status-rs`. Live bar verified: stable >50 s, errors.txt
+>   (`~/.local/share/i3status-rs/`) 0 bytes, and an ESTABLISHED connection from the
+>   i3status-rs pid to `65.33.235.245:8443` — the block is live against the router
+>   (hairpin NAT path).
+> - **Upstream issue NOT yet filed** — `gh` 2.96.0 present but **not authenticated**
+>   (needs `gh auth login`). Repro evidence re-verified fresh: quick-xml 0.42 minimal
+>   repro → payload ends `…,13,10` (`\r\n` intact); icalendar 0.17.13 → v3.ics parses
+>   1 component (lone-`\r` loud-Err per the bisect above); the full-fidelity xmltest
+>   re-run just needs `--bin xmltest` (its workspace now holds 3 binaries). Remaining:
+>   draft the issue text → `gh auth login` (user) → post (or paste manually). The
+>   patched source tree + repro dirs live under `/tmp/opencode` (wiped on reboot) — the
+>   two-line patch above is the durable record; the installed artifact is durable.
 > - **Finding — server quirk (benign): RustiCal's server-side time-range REPORT
 >   over-matches recurring events** — a yearly event with `DTSTART;VALUE=DATE:19900409`
 >   is returned for a Sept-2026 window. Clients that expand RRULEs themselves
@@ -1245,7 +1280,7 @@ migration, then hourly.
 | **Apple Contacts** | CardDAV account, server `0115d8cf.duckdns.org`, user id + app token, path `/carddav` | |
 | **Thunderbird** | New Account → Calendar → On the Network → root URL `https://0115d8cf.duckdns.org` + app token; same for CardDAV | Group calendars discovered properly |
 | **khal / khard** | via vdirsyncer hub (Phase 6) | CLI stays exactly as today, now backed by the router |
-| **i3status-rust** (added to scope 2026-09-05) | Native `calendar` block; basic auth + app token via 0600 credentials file; source `https://0115d8cf.duckdns.org:8443/caldav-compat/` (see STATUS: `/caldav/` fails on multi-home) | Wiring done; blocker DIAGNOSED (quick-xml 0.37 strips the trailing LF of calendar-data → lone `\r`; icalendar 0.16.12 then silently yields 0 components — see STATUS); fix = rebuild with quick-xml 0.42 + icalendar 0.17.13, then activate |
+| **i3status-rust** (added to scope 2026-09-05) | Native `calendar` block; basic auth + app token via 0600 credentials file; source `https://0115d8cf.duckdns.org:8443/caldav-compat/` (see STATUS: `/caldav/` fails on multi-home) | **DONE 2026-09-05** — blocker fixed by rebuild (quick-xml 0.42 + icalendar 0.17.13; no API changes needed), verified against Omnical, installed over stock (backup `/usr/bin/i3status-rs.bak-0.36.1-stock`), live bar active; only the upstream issue filing remains (gh unauthenticated) |
 
 **Cross-domain invitations (iMIP):** RustiCal does not implement RFC 6638
 server-side scheduling. Invitations to attendees on **any** domain are sent
@@ -1521,8 +1556,11 @@ Every step is reversible; nothing destructive is done to the router.
       an event inviting another identity (internal inbox path) and an external
       address (email path), accept/reply round-trip, then batch-verify the other 6
       identities and run the verification-matrix rows 14–16.
-   7. PLAN.md final status update + file the upstream i3status-rust issue remains
-      a *separate* pending task (untouched this session).
+   7. PLAN.md final status update + the upstream i3status-rust issue remains
+      a *separate* pending task — **update (2026-09-05, later session): the rebuild
+      itself is DONE (see Phase 7 STATUS); the issue is still UNFILED — gh 2.96.0
+      present but unauthenticated (`gh auth login` needed), repro evidence
+      fresh-verified; drafting + posting is the only remainder.**
 3. **WebDAV Push transports** (WebSocket/WebPush) tuning for instant DAVx5 sync
    (RustiCal ships support; configure in `dav_push` after Phase 7).
 4. **IPv6**: publish AAAA on duckdns once a stable GUA exists on WAN; same firewall
