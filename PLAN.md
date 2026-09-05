@@ -1096,6 +1096,77 @@ migration, then hourly.
 
 **Deliverable: every approved client class working against the router.**
 
+> **STATUS (2026-09-05): IN PROGRESS — host side partially done, one open blocker; see below.**
+> - Scope for this session (user decision): **this host (khal/khard + i3status-rust) and
+>   the iPhone**. DAVx5/Tasks.org, Thunderbird, iMIP (rows 12–13, 15–16) remain for future
+>   sessions.
+> - Pre-flight: router healthy (rustical `127.0.0.1:4000`, dav-tls `192.168.1.21:8443`),
+>   full `vdirsyncer sync` clean, safety-net DB backup pulled to
+>   `~/backups/omnical/db-pre-phase7-20260905.sqlite3` (3.5 MB) before any change.
+> - User decisions: iPhone = **all 7 identities**; status-bar calendar =
+>   **nfcarlton@gmail.com** (the account the previous Google-OAuth block showed).
+> - **i3status-rust (new host client, added to scope by user):** new app token `i3status`
+>   (nfcarlton@gmail.com) created via CLI, stored in pass
+>   (`secrets/omnical/nfcarlton@gmail.com/i3status`); credentials in
+>   `~/.config/i3status-rust/omnical_credentials.toml` (0600, referenced via the block's
+>   `credentials_path`); calendar-block source swapped Google-OAuth → Omnical basic auth
+>   (config backup `config.toml.bak.20260905-pre-omnical`). **Change NOT yet activated** —
+>   the live bar still runs the old in-memory Google config; `pkill i3status-rs` (swaybar
+>   respawns it) once the blocker below is fixed.
+> - **Finding — block URL must be `/caldav-compat/`, NOT `/caldav/`:** the regular tree's
+>   `calendar-home-set` returns TWO `<href>`s (personal + family) and i3status-rs 0.36.1's
+>   quick-xml parser deserializes a single `href` String → block errors out on `/caldav/`.
+>   Same multi-home quirk that breaks Apple; `/caldav-compat/` returns a single home and
+>   discovery + calendar listing then parse fine ("Personal", "Personal birthdays"; Tasks
+>   auto-excluded — VTODO-only).
+> - **Finding — OPEN BLOCKER: `icalendar` 0.16.12 (the block's ICS parser) returns
+>   Ok-with-0-components on RustiCal's real `calendar-data` payloads** (both khal- and
+>   Google-originated), so the block shows "no events" although the REPORT returns correct
+>   data (verified via curl replication of the block's full request chain: well-known →
+>   current-user-principal → home-set → Depth-1 listing → time-range REPORT, all 207 with
+>   correct bodies). Reproduced in a scratch crate at `/tmp/opencode/i3s-test/xmltest/`
+>   (exact deps of i3status-rs 0.36.1: quick-xml 0.37 + serde + icalendar 0.16.12,
+>   copy of the block's structs): multistatus/prop/`CalendarData` extraction all work;
+>   `icalendar::Calendar::from_str` yields 0 components on the real payloads but 2 on
+>   hand-retyped equivalents. Prime suspects: RFC-5545 **folded lines** (`\r\n `
+>   continuation — present in the Google ATTENDEE) and/or payloads ending in a **lone
+>   `\r`** (no final LF); bisect variants `v1–v4.ics` already prepared in
+>   `/tmp/opencode/i3s-test/` but the identifying test was not run (session stopped).
+>   Next steps: run the bisect → identify the byte feature → decide work-around (e.g.
+>   serve unfolded data, patch upstream RustiCal if it emits non-conformant folding) vs
+>   upstream fix in icalendar; bar stays on the old Google source until resolved.
+> - **Finding — server quirk (benign): RustiCal's server-side time-range REPORT
+>   over-matches recurring events** — a yearly event with `DTSTART;VALUE=DATE:19900409`
+>   is returned for a Sept-2026 window. Clients that expand RRULEs themselves
+>   (i3status block, khal, DAVx5) filter it out client-side; vdirsyncer is etag-based
+>   and unaffected. Remember this when writing ad-hoc REPORT consumers.
+> - **Row 11 (khal) — create + edit directions DONE:** `khal new` into the `google`
+>   calendar (the nfcarlton hub vdir) → `vdirsyncer sync` → event present on server
+>   (curl REPORT) ✓; edit via `khal edit` (khal 0.14 has **no `modify` subcommand** —
+>   drove its interactive prompts through stdin) renamed the summary → sync → server
+>   shows the new summary ✓. Writes also propagated to Google (hub by design).
+>   **The test event "Omnical test event (edited via khal)" (2026-09-06 11:00–11:30
+>   EDT) still exists on server + vdir + Google — cleanup via `khal delete` + sync +
+>   verify-removal is pending (part of the row-11 gate).**
+> - Row 11 khard part (create/edit/remove a contact in a synced addressbook): NOT
+>   started.
+> - **iPhone: NOT started.** Prepared plan (worked out this session, not executed): the
+>   stock RustiCal Apple profile (frontend `app_token` route with `apple=true`,
+>   `apple_configuration/template.xml`) embeds the Host-header *including port* into
+>   `CalDAVHostName` — dubious on iOS — and adds one family-impersonation payload per
+>   profile (7 profiles ⇒ 7 duplicate family calendars). Instead: hand-build **one
+>   combined `.mobileconfig`** = 7 × CalDAV (`https://0115d8cf.duckdns.org:8443/
+>   caldav-compat/principal/<user>`) + 7 × CardDAV (`/carddav/principal/<user>/`) +
+>   1 × family (`user$family` impersonation via the primary identity), using bare
+>   `*HostName` + explicit `*Port: 8443` + `UseSSL` + full PrincipalURLs, reusing the
+>   existing per-identity `apple` app tokens from pass (`secrets/omnical/<id>/apple`).
+>   Serve it to the phone briefly over LAN HTTP; install once; verify server-side
+>   (logread UA lines + phone-created event via REPORT). Phone works both on-LAN (NAT
+>   hairpin verified in Phase 4) and away.
+> - Benign observation: the public 8443 listener now attracts scanner traffic
+>   (asusrouter probes, `POST /login.cgi` → 404s in rustical log; occasional dav-tls
+>   TLS-handshake-failure lines) — expected for an open port, no action needed.
+
 | Client | Setup | Notes |
 |---|---|---|
 | **DAVx5** | Login via **Nextcloud flow**: URL `https://0115d8cf.duckdns.org`, use frontend login → generates app token automatically; collections auto-discovered | WebDAV Push gives near-instant sync (enable dav_push transport per docs) |
@@ -1104,6 +1175,7 @@ migration, then hourly.
 | **Apple Contacts** | CardDAV account, server `0115d8cf.duckdns.org`, user id + app token, path `/carddav` | |
 | **Thunderbird** | New Account → Calendar → On the Network → root URL `https://0115d8cf.duckdns.org` + app token; same for CardDAV | Group calendars discovered properly |
 | **khal / khard** | via vdirsyncer hub (Phase 6) | CLI stays exactly as today, now backed by the router |
+| **i3status-rust** (added to scope 2026-09-05) | Native `calendar` block; basic auth + app token via 0600 credentials file; source `https://0115d8cf.duckdns.org:8443/caldav-compat/` (see STATUS: `/caldav/` fails on multi-home) | Wiring done; blocked on the icalendar 0.16.12 parsing quirk above |
 
 **Cross-domain invitations (iMIP):** RustiCal does not implement RFC 6638
 server-side scheduling. Invitations to attendees on **any** domain are sent
@@ -1212,7 +1284,7 @@ before row 10 passes.
 | 8 | addressbook-query REPORT | curl REPORT on `/carddav/…` | 207, vCards match filter |
 | 9 | Well-known | `curl -sI https://…/.well-known/caldav` and `…/carddav` | 30x to correct roots (client autodiscovery path) |
 | 10 | vdirsyncer | `vdirsyncer discover && sync` (new pairs) | clean two-way sync incl. ETags; no items lost (diff before/after) — **✓ verified 2026-09-04 (Phase 6: 721 items a→b, 0 errors; server-side PUT/DELETE round-trip b→a; idempotent re-sync; server counts == local counts)** |
-| 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients |
+| 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients — **partially verified 2026-09-05 (Phase 7: khal create + edit → server ✓ via REPORT, incl. Google-side hub propagation; khard part, delete-propagation, and other-clients checks still open — see Phase 7 STATUS)** |
 | 12 | DAVx5 + Tasks.org | Android account; create/edit event, contact, task | syncs both directions; WebDAV Push = near-instant when enabled |
 | 13 | Thunderbird | calendar + cardbook/tasks accounts at root URL | discovers all own collections + group calendars |
 | 14 | Apple Calendar/Contacts | caldav-compat path or config profile | account works; create/edit round-trips; contacts sync |
