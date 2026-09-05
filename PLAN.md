@@ -1119,7 +1119,37 @@ inbox/outbox/scheduling queue (see §17 for the future custom extension).
 
 **Deliverable: nightly verified backups, health monitoring, sysupgrade runbook.**
 
-### 8.1 Nightly pull-based backup (dev machine cron; reuses `router` SSH alias)
+> **STATUS (2026-09-05): 8.1 DONE — all gates green; 8.2–8.4 not yet started.**
+> - Implemented as a POSIX sh script `~/router-dav/scripts/nightly-backup.sh` (0755) +
+>   user-crontab entry `30 2 * * * /home/burningserenity/router-dav/scripts/nightly-backup.sh`
+>   (the plan's inline one-liner became a script so 8.4's later df-log addition is a
+>   one-file edit; all pre-existing crontab entries untouched, incl. the `*/15` vdirsyncer
+>   and acme.sh crons).
+> - Amendments vs the 8.1 sample command: (a) `PRAGMA wal_checkpoint(TRUNCATE)` runs
+>   first, per the Phase 6 note for Phase 8 (its numeric output is discarded so the tar
+>   stream stays clean); (b) output goes to `<date>.tar.gz.part`, then atomic `mv` — a
+>   failed run can never leave a corrupt/partial artifact (the sample's raw `>` would
+>   create an empty file even on ssh failure); on failure the script exits 1 and removes
+>   the `.part`; (c) `rm -f /tmp/omnical-bu.db` on the router after tar; (d) retention =
+>   `find … -name '*.tar.gz' -mtime +30 -delete` (the sample's `(older than 30d)` was
+>   pseudo-code) — matches only `*.tar.gz`, so the ad-hoc pre-phase `.sqlite3` backups in
+>   `~/backups/omnical/` are untouched; (e) `umask 077` → artifacts 0600, because the tar
+>   includes `/etc/rustical` (config **and the TLS private key**) per the sample.
+> - **Verified (manual run of the exact script, 2026-09-05):**
+>   `~/backups/omnical/2026-09-05.tar.gz`, 1,752,142 bytes, mode 0600; members =
+>   `omnical-bu.db`, `etc/rustical/{config.toml,tls/fullchain.pem,tls/key.pem}`; extracted
+>   DB passes `PRAGMA integrity_check` (= ok) and its row counts equal the live DB
+>   (principals 8, memberships 7, calendars 18, addressbooks 8, calendarobjects 515,
+>   addressobjects 210, app_tokens 28). busybox tar quirk checked: absolute `/etc/rustical`
+>   gets its leading `/` stripped with a stderr notice only — stdout stays a clean gzip.
+> - WAL was already folded when this ran (router `-wal` file 0 bytes; overlay 9.3 M free,
+>   91 % used — ≥ 5 M floor intact). **Restore drill into a scratch rustical instance
+>   remains open (verification-matrix row 18).**
+> - Elsewhere unchanged: 2.8 reboot gate still deferred (router uptime ≈ 6.5 d — no
+>   natural reboot yet); 6.3 step 3 still gated on the matrix's Phase 7 client rows;
+>   Phase 7 client setup still requires the user's physical devices.
+
+### 8.1 Nightly pull-based backup (dev machine cron; reuses `router` SSH alias) — **DONE (2026-09-05; see STATUS)**
 
 ```sh
 # 02:30 local, daily
