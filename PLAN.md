@@ -1096,8 +1096,10 @@ migration, then hourly.
 
 **Deliverable: every approved client class working against the router.**
 
-> **STATUS (2026-09-05, updated twice same day): IN PROGRESS — host side done except the
-> khard part of row 11; the i3status-rust blocker is FIXED (rebuilt with quick-xml 0.42 +
+> **STATUS (2026-09-05, updated three times same day): IN PROGRESS — host side DONE
+> (row 11 fully verified: khal create/edit/delete + khard create/edit/remove, each
+> step synced and server-verified — see the row-11 bullets); the i3status-rust
+> blocker is FIXED (rebuilt with quick-xml 0.42 +
 > icalendar 0.17.13 — live bar active against Omnical, see the FIX EXECUTED bullet below);
 > iPhone accounts STARTED via manual entry
 > (profile route dead on iOS 26; invitations blocked by the known RFC 6638 gap —
@@ -1209,16 +1211,57 @@ migration, then hourly.
 >   is returned for a Sept-2026 window. Clients that expand RRULEs themselves
 >   (i3status block, khal, DAVx5) filter it out client-side; vdirsyncer is etag-based
 >   and unaffected. Remember this when writing ad-hoc REPORT consumers.
+> - **Finding — RustiCal DELETEs are soft deletes (discovered 2026-09-05 during the
+>   row-11 khard/khal work):** removed DAV objects keep their DB row with
+>   `deleted_at` set — in BOTH `calendarobjects` and `addressobjects` (current
+>   tombstones: today's row-11 test event + test card, plus Phase 6's
+>   `phase6-roundtrip-test` card in the same addressbook). Live item counts are
+>   `WHERE deleted_at IS NULL` (now cal 517 / addr 209); raw `count(*)` totals grow
+>   by one tombstone per deletion (now 518 / 211) and are NOT meaningful for
+>   before/after comparisons. This is the deleted-object-recovery feature working
+>   as designed — **note for Phase 8: any backup/restore verification must use live
+>   counts, not raw counts.**
 > - **Row 11 (khal) — create + edit directions DONE:** `khal new` into the `google`
 >   calendar (the nfcarlton hub vdir) → `vdirsyncer sync` → event present on server
 >   (curl REPORT) ✓; edit via `khal edit` (khal 0.14 has **no `modify` subcommand** —
 >   drove its interactive prompts through stdin) renamed the summary → sync → server
 >   shows the new summary ✓. Writes also propagated to Google (hub by design).
->   **The test event "Omnical test event (edited via khal)" (2026-09-06 11:00–11:30
->   EDT) still exists on server + vdir + Google — cleanup via `khal delete` + sync +
->   verify-removal is pending (part of the row-11 gate).**
-> - Row 11 khard part (create/edit/remove a contact in a synced addressbook): NOT
->   started.
+>   **Cleanup DONE (2026-09-05, later session): khal 0.14 has no `delete` subcommand
+>   either — the delete path lives inside `khal edit` (menu option `D` → confirm
+>   `y`), so `printf 'D\ny\n' | khal edit "Omnical test event"` removed it. (As
+>   found, the event's SUMMARY was "Omnical test event", DESCRIPTION "Row 11
+>   verification — created via khal"; its vdir file was Google's re-serialization —
+>   PRODID Google + Google-added VALARM — living proof the earlier create had
+>   round-tripped through Google.) The full `vdirsyncer sync` then logged explicit
+>   deletions on BOTH hub sides (`google_calendar_remote/nfcarlton@gmail.com` AND
+>   `rustical_calendar_nfcarlton_remote/personal`); server-side GET of the old UID
+>   href → 404, time-range REPORT for 2026-09-06 → no test event (only a recurring
+>   "Happy birthday!" that the server over-matches — khal correctly shows nothing
+>   that day, reconfirming the over-match finding above); `khal search omnical`
+>   empty; second full sync = 0 actions / 0 errors.**
+> - **Row 11 khard part — DONE (2026-09-05, later session): full create → edit →
+>   remove cycle in the `carltonaudio` addressbook** (chosen deliberately: flat,
+>   local-only, 0 real cards, no Google coupling — same pristine target as Phase 6's
+>   two-way proof; safety-net DB backup pulled first:
+>   `~/backups/omnical/db-pre-row11-20260905.sqlite3`, 3.5 MB, integrity ok).
+>   Non-interactive khard 0.21 recipe (all verified): create = `khard new -a
+>   carltonaudio -i template.yaml` (YAML template: First/Last name + `Email:
+>   internet:` — khard generates the UID and writes `<uid>.vcf` into the flat
+>   vdir); edit = dump khard's own template via `khard show --format=yaml`, modify
+>   it, then `echo y | khard edit -a carltonaudio -i edited.yaml <search>` (the
+>   click confirm is fed via stdin); remove = `khard remove -a carltonaudio
+>   --force <search>`. After each step the pair was synced and the server verified
+>   via carddav **addressbook-query REPORT with an FN text-match filter** — the
+>   first live exercise of that query type: 207 with exactly the expected vcard on
+>   create, the edited email replacing the old one on edit (same UID/href), empty
+>   multistatus + GET-of-old-href → 404 after removal. The final 1→0 deletion
+>   tripped vdirsyncer's empty-storage guard exactly as in Phase 6 — **vdirsyncer
+>   0.20 spelling: `--force-delete` is a plain boolean flag on `sync`, not
+>   per-storage** — and the delete then propagated cleanly. Server live
+>   addressobjects back to the pre-task 209. "Other clients" for contacts = the
+>   vdirsyncer hub itself (no other contact client is verified yet — the iPhone
+>   contacts account is still unverified); contrast the khal event, whose deletion
+>   was verified against BOTH hub sides incl. Google.
 > - **iPhone: IN PROGRESS (2026-09-05) — manual-entry route found and used; invitations
 >   blocked by the known RFC 6638 gap (C8); several verification points open.**
 >   - **iOS 26 finding — the `.mobileconfig` route is DEAD on this phone:** iOS 26 removed
@@ -1398,7 +1441,7 @@ before row 10 passes.
 | 8 | addressbook-query REPORT | curl REPORT on `/carddav/…` | 207, vCards match filter |
 | 9 | Well-known | `curl -sI https://…/.well-known/caldav` and `…/carddav` | 30x to correct roots (client autodiscovery path) |
 | 10 | vdirsyncer | `vdirsyncer discover && sync` (new pairs) | clean two-way sync incl. ETags; no items lost (diff before/after) — **✓ verified 2026-09-04 (Phase 6: 721 items a→b, 0 errors; server-side PUT/DELETE round-trip b→a; idempotent re-sync; server counts == local counts)** |
-| 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients — **partially verified 2026-09-05 (Phase 7: khal create + edit → server ✓ via REPORT, incl. Google-side hub propagation; khard part, delete-propagation, and other-clients checks still open — see Phase 7 STATUS)** |
+| 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients — **✓ verified 2026-09-05 (Phase 7: khal create + edit + delete and khard create + edit + remove, each step synced and verified server-side via curl REPORT — calendar-query time-range for events, addressbook-query FN-filter for contacts; deletion propagation confirmed on BOTH hub sides for the event (Google + RustiCal) via vdirsyncer action logs; "other clients" beyond the hub = rows 12–14 clients, still pending)** |
 | 12 | DAVx5 + Tasks.org | Android account; create/edit event, contact, task | syncs both directions; WebDAV Push = near-instant when enabled |
 | 13 | Thunderbird | calendar + cardbook/tasks accounts at root URL | discovers all own collections + group calendars |
 | 14 | Apple Calendar/Contacts | caldav-compat path or config profile | account works; create/edit round-trips; contacts sync |
