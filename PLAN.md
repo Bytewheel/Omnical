@@ -1311,8 +1311,10 @@ migration, then hourly.
 >     the 7 identities + `family` group already cover sharing tests.)
 >     **→ §17.2 WAS PULLED FORWARD 2026-09-05 and is now IN PROGRESS** as a local
 >     `omnical-scheduling` patch branch of the pinned 0.16.1 (see §17.2 for full design,
->     implementation state, and remaining work). The router still runs stock 0.16.1;
->     nothing deployed yet. Account verification is still open: logread still shows zero
+>     implementation state, and remaining work). ~~The router still runs stock 0.16.1;
+>     nothing deployed yet.~~ **DEPLOYED 2026-09-06 (§17.2 item 5): the router now runs
+>     the scheduling build, extension enabled (7 SMTP identities) — see §17.2 item 5's
+>     DONE block.** Account verification is still open: logread still shows zero
 >     real iOS UAs as of 2026-09-05 ~17:00 (only scanner noise with fake iPhone bot
 >     strings — the ring buffer rotates fast); the live `logread -f` capture while
 >     re-saving an account on the phone remains part of the §17.2 live-test step.
@@ -1508,27 +1510,30 @@ Every step is reversible; nothing destructive is done to the router.
  2. **Server-side scheduling (RFC 6638) / iMIP gateway** — **PULLED FORWARD FROM
    "FUTURE" BY USER DECISION 2026-09-05** ("we still need to setup the iphone properly,
    so I can invite people to events"; C8's client-side iMIP does not exist on iOS — the
-     invite UI itself requires scheduling support). **STATUS (2026-09-05, latest
-      session): IN PROGRESS — items 1–4 DONE (item 4 = the full local x86_64
-      smoke test, ALL gates green 2026-09-05 incl. both live SMTP legs — see
-      item 4's DONE block). Items 1–2 recap: the
-     delivery bug that had 3 scheduling tests failing is FIXED (root cause:
-     `Line::as_email` required `@` in every address, so the fixture's
-     `ORGANIZER:mailto:user` — an `@`-less principal id — parsed to
-     `organizer: None`, no-op-ing `handle_put`/`handle_delete` and 400-ing
-     the outbox with "no ORGANIZER"; one bug, all three failures — see item
-     2's session log); item-2 gate GREEN (workspace check 0 errors/0
-     warnings; rustfmt installed, branch fmt-clean). Item 3 (main-crate
-     wiring) landed this session — see item 3's DONE block for details;
-     item-3 gate GREEN: workspace check 0 errors/0 warnings, fmt clean,
-     suites dav 31 / scheduling 13 / caldav 34 / store_sqlite 13 / root
-     lib 20 + bin 5 (config back-compat) + http-integration 3 (spawns real
-      `cmd_serve` through the new wiring) + integration 19 (snapshots
-       unchanged). NEXT: item 5 (cross-build) — aarch64 via
-       `scripts/build-rust.sh` (recipe D), size-gate, pre-deploy DB backup,
-       `deploy.sh`, router config rendered with the 7 SMTP accounts from
-       `pass`, server-side verify through dav-tls. Nothing cross-built;
-       nothing deployed — the router still runs stock 0.16.1.**
+      invite UI itself requires scheduling support). **STATUS (2026-09-06, latest
+       session): IN PROGRESS — items 1–5 DONE (item 4 = the full local x86_64
+       smoke test, ALL gates green 2026-09-05 incl. both live SMTP legs — see
+       item 4's DONE block; item 5 = cross-build + DEPLOY, all gates green
+       2026-09-06 ~00:55 — see item 5's DONE block — **the router now runs the
+       `omnical-scheduling` build with the extension LIVE: log shows
+       "Scheduling extension enabled (7 SMTP identities)"**). Items 1–2 recap: the
+      delivery bug that had 3 scheduling tests failing is FIXED (root cause:
+      `Line::as_email` required `@` in every address, so the fixture's
+      `ORGANIZER:mailto:user` — an `@`-less principal id — parsed to
+      `organizer: None`, no-op-ing `handle_put`/`handle_delete` and 400-ing
+      the outbox with "no ORGANIZER"; one bug, all three failures — see item
+      2's session log); item-2 gate GREEN (workspace check 0 errors/0
+      warnings; rustfmt installed, branch fmt-clean). Item 3 (main-crate
+      wiring) landed — see item 3's DONE block for details;
+      item-3 gate GREEN: workspace check 0 errors/0 warnings, fmt clean,
+      suites dav 31 / scheduling 13 / caldav 34 / store_sqlite 13 / root
+      lib 20 + bin 5 (config back-compat) + http-integration 3 (spawns real
+       `cmd_serve` through the new wiring) + integration 19 (snapshots
+        unchanged). NEXT: item 6 (live iPhone test on
+        `nicholas@carltonaudio.com`: `logread -f` capture while re-saving the
+        account, confirm the Invitees field appears, invite internal + external
+        attendees, accept/reply round-trip, then batch-verify the other 6
+        identities and matrix rows 14–16).**
 
    Why a local patch: upstream has **no** scheduling implementation to adopt — checked
    2026-09-05: latest tag is still v0.16.1 and `origin/main` past it contains only
@@ -2259,9 +2264,71 @@ Every step is reversible; nothing destructive is done to the router.
             silently hides inbox objects — filter on the `/inbox/` path
             segment instead.
      5. Cross-build aarch64 via `scripts/build-rust.sh` (recipe D), size-gate
-      (binary was 26 MiB of the 35 MiB budget; expect ~+1 MiB), DB backup,
-      `deploy.sh`, router config with the 7 SMTP accounts rendered from pass,
-      server-side verify through dav-tls (`curl --resolve …:8443:192.168.1.21`).
+       (binary was 26 MiB of the 35 MiB budget; expect ~+1 MiB), DB backup,
+       `deploy.sh`, router config with the 7 SMTP accounts rendered from pass,
+       server-side verify through dav-tls (`curl --resolve …:8443:192.168.1.21`).
+       — **DONE (2026-09-06, 00:40–01:00; session started the evening of
+       2026-09-05) — ALL gates green; the extension is LIVE on the router.**
+       - **Cross-build:** `scripts/build-rust.sh` (clang recipe D) on
+         `omnical-scheduling` — 2 m 33 s; `out/rustical` = static stripped
+         aarch64 ELF, 29,074,968 B = **27.7 MiB of the 35 MiB budget** (+1.2 MiB
+         over stock, as predicted); `out/dav-tls` byte-identical to the deployed
+         one (sha256-verified; rustical `--version` + `gen-config` printing the
+         `[scheduling]` section sanity-checked under `qemu-aarch64`).
+       - **Pre-deploy safety net:** hot SQLite `.backup` pulled to
+         `~/backups/omnical/db-pre-sched-deploy-20260905.sqlite3` (3.5 MB,
+         integrity ok, live counts 517/209/8 — exactly the pre-deploy state).
+       - **Config render:** new `scripts/render-router-config.sh` (0755) —
+         appends `[scheduling]` `enabled = true` + the 8 default UA exclusions
+         (written explicitly) + 7 `[[scheduling.smtp]]` accounts to the
+         secret-free base template and prints the result to **stdout** (piped
+         into `ssh router 'cat > /etc/rustical/config.toml'`; deploy.sh holds it
+         in a shell variable). Passwords from `pass secrets/email/<id>/smtp`;
+         TOML-escaped; missing/empty entry aborts the render. Verified with
+         python `tomllib` (7 accounts, correct hosts/ports/users, password
+         lengths sane). `zero@novo-ordo.com` maps to the shared
+         `nfcalaway@novo-ordo.com` pass entry (user `nfcalaway@novo-ordo.com`),
+         exactly per the msmtp topology. **`~/router-dav` remains secret-free**
+         (rendered config never touches dev disk).
+       - **deploy.sh hardening (two real findings):** (1) **ENOSPC — the
+         overlay (~9.4 MB free) cannot hold a second 28 MB binary copy next to
+         the running one** (scp failed "write remote: Failure"; the first
+         attempt left a 26 MB partial `rustical.new` that had to be rm'd); and a
+         RUNNING binary's blocks are only reclaimed when its process stops.
+         Fix: stage both binaries in `/tmp` (**tmpfs — zero overlay cost**),
+         then a tight stop → flash-copy → start swap (~5–10 s outage).
+         (2) **Order-critical: stock 0.16.1's `Config` is
+         `deny_unknown_fields`** — the new `[scheduling]` config must never meet
+         the old binary (crash-respawn would loop), so the binary is swapped
+         while stopped and the config lands before the start. Also: dav-tls is
+         swapped in place and restarted **only if its sha256 changed** (it
+         didn't — the running process kept serving, no TLS blip); the render
+         runs **before** any service stop (fail-fast if pass breaks). All of
+         this is codified in deploy.sh comments — future re-deploys
+         (post-sysupgrade) are safe/idempotent.
+       - **Deployed + verified on the router:** rustical healthy (new PID),
+         127.0.0.1:4000 only; startup log `Scheduling extension enabled (7
+         SMTP identities)`; dav-tls untouched and running; migration
+         `20260905120000_scheduling` auto-applied to the live DB
+         (`scheduling_inbox_objects` table, 0 rows); live counts **517/209/8 —
+         identical to the pre-deploy backup**, integrity ok; WAL checkpointed
+         (32 KB → 0) → overlay **7,012 KB free (floor ≥ 5 MB intact)**.
+       - **Server-side verify through dav-tls** (all with
+         `curl --resolve 0115d8cf.duckdns.org:8443:192.168.1.21`, full LE chain
+         validation, `ssl_verify_result=0`, no `-k`; vdirsyncer app token):
+         `/.well-known/caldav` → 308; OPTIONS advertises
+         `calendar-scheduling, calendar-auto-schedule` on the principal
+         (**both** `/caldav` and `/caldav-compat` trees), the calendar (+
+         `webdav-push`), `/inbox`, `/outbox`; PROPFIND principal (Depth 0,
+         named props) 207 with all three schedule URLs filled
+         (`…%40gmail.com/inbox/`, `…/outbox/`, `…/personal/`); PROPFIND the
+         inbox collection → 207 `{collection, schedule-inbox}` displayname
+         "Schedule Inbox" (compat tree also 207); personal calendar Depth 1
+         serves its 196 objects; full `vdirsyncer sync` clean (0 errors,
+         idempotent second run — the hub never noticed the swap).
+       - Note: the item-6 live iPhone test has NOT started; the phone's
+         accounts may need a re-save to pick up the newly advertised
+         scheduling support.
    6. Live iPhone test (test identity `nicholas@carltonaudio.com`): `logread -f`
       capture while re-saving the account (also resolves the still-open "unverified
       phone→server traffic" item), confirm the Invitees field now appears, create
