@@ -687,6 +687,11 @@ Append to `/etc/sysupgrade.conf`:
 (`/etc/init.d/*` files are preserved by default as conffiles; `/usr/sbin/rustical` and
 `/usr/sbin/dav-tls` are **not** — after any sysupgrade, re-run
 `~/router-dav/deploy.sh`. Document in the project README.)
+**CORRECTED (2026-09-06, Phase 8.3, via `sysupgrade -b` ground truth): custom
+init.d scripts are NOT preserved either** — the conffile mechanism covers only
+package-provided scripts; `/etc/init.d/{rustical,dav-tls}` are wiped along with
+the binaries (and `/usr/bin/rustical-watchdog`). `deploy.sh` re-pushes them, so
+the re-run instruction stands (see 8.3's runbook).
 
 ### 2.7 Optional: duckdns updater cron (only if Phase 0 step 4 found nothing) — **DONE (curl -4 pinned; see STATUS finding)**
 
@@ -1107,7 +1112,8 @@ migration, then hourly.
 
 **Deliverable: every approved client class working against the router.**
 
-> **STATUS (2026-09-05, updated three times same day): IN PROGRESS — host side DONE
+> **STATUS (2026-09-05, updated three times same day; 2026-09-06 row-12 session
+> appended below): IN PROGRESS — host side DONE
 > (row 11 fully verified: khal create/edit/delete + khard create/edit/remove, each
 > step synced and server-verified — see the row-11 bullets); the i3status-rust
 > blocker is FIXED (rebuilt with quick-xml 0.42 +
@@ -1120,6 +1126,92 @@ migration, then hourly.
 > - Scope for this session (user decision): **this host (khal/khard + i3status-rust) and
 >   the iPhone**. DAVx5/Tasks.org, Thunderbird, iMIP (rows 12–13, 15–16) remain for future
 >   sessions.
+> - **Android / DAVx5 + Tasks.org (matrix row 12): STARTED 2026-09-06 — server-side
+>   pre-flight + client research DONE (all green); device work NOT started. The session
+>   was stopped by user before any phone/server change; nothing was created, no state
+>   changed anywhere.**
+>   - **User requirements (decisions, 2026-09-06):** the Android phone is a **wholly
+>     separate identity — NOT one of the 7 existing ones** (none of the Google accounts
+>     are on the phone); the row-12 test is **predicated on being able to invite this
+>     new user** (exercises the §17.2 scheduling extension with an internal attendee)
+>     and on **hosting them server-side** (a new principal to create). Credential
+>     transfer must be **a direct URL with the login token embedded — no typing on the
+>     phone**. The phone currently runs **stock Google Calendar only** — DAVx5 and
+>     Tasks.org are NOT installed yet (install notes: DAVx5 is free on F-Droid, paid on
+>     Play; Tasks.org is free on both; also grab a QR scanner that fires ACTION_VIEW,
+>     e.g. Binary Eye from F-Droid).
+>   - **Server-side pre-flight (all green, 2026-09-06):** router healthy, running the
+>     current build — startup log shows `Scheduling extension enabled (7 SMTP
+>     identities)` + `Subscriptions extension enabled (public export feeds)`
+>     (rustical PID 22534 since 20:17); dav-tls LISTEN on `192.168.1.21:8443` as
+>     expected. `OPTIONS` on a calendar collection (nfcarlton `personal`, vdirsyncer
+>     token) returns `dav: 1, 3, access-control, calendar-access, webdav-push,
+>     calendar-scheduling, calendar-auto-schedule` — every DAV token DAVx5 needs,
+>     including WebDAV Push and the scheduling tokens. `[dav_push]` in the router
+>     config is commented out but **that means DEFAULTS, and `DavPushConfig::default()`
+>     has `enabled: true`** (src/config.rs:223) — the WebPush transport is live without
+>     any config change (the config comment "enable … after Phase 7 tests" predates
+>     this verification; no action needed). `davx5` app tokens already exist in `pass`
+>     for all 7 identities (69 chars each) — but per the new requirement the Android
+>     account will NOT use them; a fresh token for the new principal instead.
+>   - **Research findings that fix the row-12 design:**
+>     1. **Zero-typing login = QR-coded DAVx5 deep link.** DAVx5 manual §8.1.2
+>        (fetched 2026-09-06): implicit-Intent URLs of the form
+>        `davx5://user:password@server.example.com/path/` open the DAVx5 login screen
+>        pre-filled (scheme rewritten to `https://`), and **this URL form is
+>        explicitly documented for QR codes** ("generate a QR code of the URL … then
+>        scan … to open DAVx5"; the manual's "don't encode programmatically" warning
+>        targets app developers building Intents — the QR use case is the intended
+>        purpose). Scanner must fire ACTION_VIEW (Binary Eye documented; the stock
+>        camera app may only offer a web search instead — to be confirmed on-device).
+>     2. **App tokens are URI-safe by construction.** `generate_app_token()`
+>        (`src/commands/app_token.rs`) samples 64 `Alphanumeric` chars; the CLI prints
+>        `<id4>_<token64>` (first 4 chars = validator hint). Pure `[A-Za-z0-9_]` → the
+>        `davx5://user:pass@host:8443/` QR URL needs NO percent-encoding. Row-12 QR
+>        will be `davx5://<new-id>:<id4>_<token64>@0115d8cf.duckdns.org:8443/`
+>        (discovery via `/.well-known/*` then UA-sniffing → DAVx5 gets the standard
+>        tree, not caldav-compat).
+>     3. **Internal-attendee delivery is inbox-only — so the invited Android user must
+>        see the event through a normal calendar, not the inbox.** Source
+>        (`crates/scheduling/src/scheduler.rs` `deliver_status`): for an internal
+>        (local-principal) attendee the REQUEST is injected into their schedule-inbox
+>        only — no email, no auto-filing into a calendar. DAVx5 has no RFC 6638 inbox
+>        support at all. **Design consequence:** put the new principal in the
+>        `family` group (membership already exists as a concept; sharing = row 15
+>        material) → the organizer invites them to an event stored in the `family`
+>        calendar → DAVx5 syncs that calendar → the Android user RSVPs by editing the
+>        event there → the attendee-PUT path (`scheduler.rs` `attendee_put`) sees the
+>        PARTSTAT change by the acting principal, updates the organizer's stored
+>        copies and files a REPLY in the organizer's inbox. One row-12 pass thus
+>        exercises rows 12+15 together and a live §17.2 internal-attendee round-trip.
+>     4. **WebDAV Push details (row-12 "near-instant" check):** DAVx5 ≥ 4.4.10
+>        implements WebDAV-Push over the **WebPush transport**, requiring Google FCM
+>        (Play services) or a UnifiedPush distributor on the device (choose in
+>        DAVx5 settings → bottom). RustiCal's `dav_push` is exactly that WebPush
+>        (VAPID) transport (`crates/dav_push` uses the `web_push` crate; VAPID keypair
+>        auto-generated/persisted via `dav_push_store.get_vapid_keypair()` at
+>        src/lib.rs:154 — no manual key setup). After account creation, refresh the
+>         collection list so DAVx5 fetches the push props, then check a collection
+>        detail shows "Push support: subscribed" and a change on the server arrives
+>        within seconds.
+>   - **Next steps for row 12 (NOT started; ready to execute next session):**
+>     1. Pick the new principal id (user decision — any email-style id, e.g. a real
+>        address of the Android user; drives iMIP-vs-inbox delivery if ever invited
+>        cross-identity). Create it on the router (`principals create --password`
+>        piped), assign `family` membership, create a `davx5` app token, store both
+>        in `pass` under `secrets/omnical/<id>/`.
+>     2. Seed collections if desired (`personal`/`tasks`/`personal` ab — mirror the
+>        Phase 5.4 pattern) — the family calendar is the sharing vehicle.
+>     3. Generate + display the QR (`qrencode -t ANSIUTF8` in a terminal, or save PNG;
+>        the §7 QR attempt's tooling still exists), scan with Binary Eye on the phone
+>        → verify DAVx5 login pre-filled → finish account creation.
+>     4. Install Tasks.org, point it at the DAVx5 account's task lists.
+>     5. Run the row-12 checks: two-way event/contact/task create+edit+delete
+>        (server-verify each via curl REPORT like row 11), WebDAV Push latency, then
+>        the invitation leg (khal or iPhone as organizer → invite the Android identity
+>        → event appears in family calendar on Android → RSVP → organizer copy
+>        updated + REPLY in organizer inbox; `logread -f` on the router during the
+>        RSVP to capture the scheduler lines).
 > - Pre-flight: router healthy (rustical `127.0.0.1:4000`, dav-tls `192.168.1.21:8443`),
 >   full `vdirsyncer sync` clean, safety-net DB backup pulled to
 >   `~/backups/omnical/db-pre-phase7-20260905.sqlite3` (3.5 MB) before any change.
@@ -1325,6 +1417,9 @@ migration, then hourly.
 >     "Add Subscribed Calendar" accepts the URL with embedded or prompted credentials,
 >     and the family export via impersonation (that curl was lost to a shell quoting
 >     bug). Note: subscribed calendars are read-only and offer no invitations either.
+>     **→ SUPERSEDED 2026-09-06 (user decision): §17.7 token-URL subscriptions
+>     replace owner-credential subscriptions — both open items become moot (the URL
+>     carries its own token; no credentials involved).**
 >   - **Unverified: phone → server traffic.** rustical `logread` shows zero iOS UAs
 >     (`dataaccessd`/`accountsd`/`remindd`) and zero requests from the phone IP — only
 >     scanner noise (matches the benign observation below; the two dav-tls
@@ -1361,7 +1456,9 @@ inbox/outbox/scheduling queue (see §17 for the future custom extension).
 
 **Deliverable: nightly verified backups, health monitoring, sysupgrade runbook.**
 
-> **STATUS (2026-09-05): 8.1 + 8.4 DONE — all gates green; 8.2–8.3 not yet started.**
+> **STATUS (2026-09-06): 8.1 + 8.2 + 8.3 + 8.4 ALL DONE — all gates green (8.3's
+> DONE block records the ground-truth preservation list, two corrections to
+> earlier claims, and two deploy.sh post-sysupgrade bug fixes).**
 > - Implemented as a POSIX sh script `~/router-dav/scripts/nightly-backup.sh` (0755) +
 >   user-crontab entry `30 2 * * * /home/burningserenity/router-dav/scripts/nightly-backup.sh`
 >   (the plan's inline one-liner became a script so 8.4's later df-log addition is a
@@ -1403,6 +1500,51 @@ inbox/outbox/scheduling queue (see §17 for the future custom extension).
 >   `*.tar.gz`. Warning-branch logic unit-tested with a fabricated 2048-KB value;
 >   first real logged line 2026-09-05: `overlayfs:/overlay 98.4M 89.1M 9.3M 91% /`
 >   (floor intact).
+> - **8.2 DONE (2026-09-06)** — monitoring live: `/usr/bin/rustical-watchdog`
+>   (0755) on the router + `*/5 * * * *` line in `/etc/crontabs/root`, exactly
+>   the screech-watchdog pattern (silent when healthy — zero log lines;
+>   `logger -t rustical-watchdog` + corrective restart on drift). Two checks:
+>   (1) `rustical --config-file /etc/rustical/config.toml health` — the health
+>   subcommand HTTP-GETs `http://<bind>/ping`, so it catches the
+>   **hung-but-running** state that procd respawn cannot (respawn only covers
+>   exited processes; `--config-file` precedes the subcommand per the Phase 2
+>   finding); (2) dav-tls keeps a LISTEN socket on `:8443` (port-based grep on
+>   `netstat -tln` — deliberately NOT `netstat -p` process resolution: fewer
+>   dependencies, no false restarts of the public TLS front end). All verified:
+>   healthy manual run = exit 0 with zero log lines; failure-path test (brief
+>   planned stop of rustical, same ~10 s class as a deploy swap, timed away from
+>   the `*/15` vdirsyncer tick): watchdog logged `rustical health FAILED —
+>   restarting service`, service returned on a new PID, dav-tls PID untouched
+>   (no false positive), live counts identical (517/209); cron delivery proven
+>   end-to-end at the 20:00:00 tick (crond job-start line present, watchdog
+>   silent = healthy). Reproducibility: script lives in the project overlay
+>   `router/usr/bin/rustical-watchdog`; `deploy.sh` pushes it and manages the
+>   cron line idempotently (`grep -qxF || echo`) — ~~`/etc/crontabs/root` is
+>   NOT a sysupgrade conffile, so the post-sysupgrade `deploy.sh` re-run is
+>   what restores the watchdog.~~ **CORRECTED (2026-09-06, Phase 8.3): it is
+>   not a *conffile*, but `/lib/upgrade/keep.d/busybox` lists
+>   `/etc/crontabs/` — the crontab (DuckDNS token line included) IS preserved
+>   across sysupgrade; deploy.sh's cron block is belt-and-suspenders.** `logread -e rustical | tail` triage one-liner
+>   verified working; tracing stays at the default INFO level (compliant with
+>   "warn/info": `TracingConfig` has no level knob — the level comes from
+>   RUST_LOG, which the init script leaves unset → info).
+>   **Two findings (2026-09-06):**
+>   1. **busybox crond does NOT rescan on file appends** — `>>` to
+>      `/etc/crontabs/root` alone leaves the new job INACTIVE (verified: the
+>      19:55 tick did not fire it); crond rescans only when the *directory*
+>      `/etc/crontabs` changes (mtime) — `touch /etc/crontabs` activates the
+>      line (verified: the 20:00 tick fired it). `deploy.sh` now appends AND
+>      touches. (Relevant to any future crontab edit on this router, including
+>      Phase 2.7's DuckDNS line.)
+>   2. **Pre-existing (NOT caused by this task, left unfixed): TWO crond
+>      daemons run on the router** — the procd-managed
+>      `/usr/sbin/crond -f -c /etc/crontabs -l 5` (PID 1259) plus a stray
+>      `crond cru a` (PID 7566, junk args, started ~2026-09-05). Every cron job
+>      (srvzone, duckdns, screech-watchdog, rustical-watchdog) **double-runs**
+>      every cycle — logread shows both pids spawning each job, already visible
+>      at 19:50 *before* this task's changes. Benign (all jobs are
+>      convergence/idempotent by design) but wasteful and confusing — kill PID
+>      7566 (`kill 7566`) whenever convenient; the procd one is the keeper.
 
 ### 8.1 Nightly pull-based backup (dev machine cron; reuses `router` SSH alias) — **DONE (2026-09-05; see STATUS)**
 
@@ -1418,18 +1560,72 @@ ssh router 'sqlite3 /usr/local/share/rustical/db.sqlite3 ".backup /tmp/omnical-b
 - **Restore drill:** test-restore the DB into a scratch RustiCal instance on the dev
   machine at least once (this is part of the verification matrix).
 
-### 8.2 Monitoring
+### 8.2 Monitoring — **DONE (2026-09-06; see STATUS — watchdog script + 5-min cron, two findings recorded)**
 
 - procd respawn covers crashes; add `rustical health` to the existing
   `screech-watchdog`-style pattern if desired (every 5 min cron on router).
 - `logread -e rustical | tail` for triage; keep `tracing` at warn/info.
 
-### 8.3 Sysupgrade runbook (router firmware updates)
+### 8.3 Sysupgrade runbook (router firmware updates) — **DONE (2026-09-06)**
 
 1. Backups are current (check nightly artifact exists).
 2. `/etc/sysupgrade.conf` already preserves `/etc/rustical` + data dir (Phase 2.6).
 3. After sysupgrade: re-run `~/router-dav/deploy.sh` (re-pushes binaries + init
    scripts), verify `rustical health` + external reachability.
+
+> **8.3 STATUS (2026-09-06): DONE — runbook written into `~/router-dav/README.md`,
+> verified against the router's ground truth, and the restore path re-proven
+> live.**
+> - **Step 1 verified:** nightly artifact `~/backups/omnical/2026-09-06.tar.gz`
+>   (02:30 cron, 1,756,613 B, 0600) present and valid — members = DB +
+>   `/etc/rustical` (config + TLS key); extracted DB passes
+>   `PRAGMA integrity_check` (= ok); counts principals 8 / memberships 7 /
+>   cal_live 517 / addr_live 209 / app_tokens 29 / sched_inbox 0 (the backup
+>   predates the 14:29 subscriptions deploy, hence no `subscriptions` table —
+>   expected; that deploy's own pre-deploy backup covers the window).
+> - **Step 2 verified:** `/etc/sysupgrade.conf` on the router contains
+>   `/etc/rustical` + `/usr/local/share/rustical` (deploy.sh re-asserts them
+>   idempotently on every run).
+> - **Ground-truth preservation list** (authoritative — from a `sysupgrade -b`
+>   tarball listing, 42 files; supersedes assumptions). SURVIVES: the DB
+>   (+`-wal`/`-shm`), `/etc/rustical/config.toml` + `tls/` certs,
+>   **`/etc/crontabs/root` with ALL five cron lines incl. the DuckDNS token
+>   updater** (via `/lib/upgrade/keep.d/busybox`), all `/etc/config/*` uci
+>   (incl. the firewall 8443 rule + uhttpd), dropbear keys, `passwd`/`shadow`.
+>   WIPED: `/usr/sbin/{rustical,dav-tls}`, `/etc/init.d/{rustical,dav-tls}`
+>   (custom init.d scripts are NOT conffiles — Phase 2.6 corrected above),
+>   `/usr/bin/rustical-watchdog`, opkg packages (`sqlite3-cli`). Post-flash
+>   first boot: rustical + dav-tls absent → public 8443 down until the
+>   deploy.sh re-run; LuCI fine on LAN :443.
+> - **Two deploy.sh post-sysupgrade bugs found & fixed** (without these, the
+>   runbook's central command would have ABORTED on exactly the state a
+>   sysupgrade leaves): (1) the binary-swap block ran
+>   `/etc/init.d/rustical stop` under `set -e` — post-flash that script is
+>   wiped → "not found" (exit 127) → abort before pushing anything; now
+>   `[ -f … ] && … stop || true`. (2) the crontab block lacked the
+>   `touch /etc/crontabs` the 8.2 finding mandates (regression from the §17.2
+>   item-5 rewrite, whose comment also inverted the verified rescan
+>   semantics) — restored; the touch fires only when a line was actually
+>   appended.
+> - **Verification — the FIXED deploy.sh re-run live on the router (16:16,
+>   timed between the `*/15` vdirsyncer ticks):** render fail-fast OK (7 SMTP
+>   accounts), /tmp staging, rustical stop→swap→start (~10 s outage, new
+>   PID 22534), **dav-tls NOT restarted** (sha256 identical → PID 3964
+>   unchanged — the no-TLS-blip path proven live), config re-rendered
+>   byte-identical (md5 match), crontab untouched (line present → no append),
+>   `rustical healthy`, both services running, both extension lines logged by
+>   the new PID, external `/.well-known/caldav` → **308 with
+>   `ssl_verify_result=0`** on both the `--resolve` hairpin and the
+>   public-DNS path, overlay 6668 KB free (≥ 5120 KB floor intact).
+> - **Runbook:** `~/router-dav/README.md` now carries the survives/wiped lists,
+>   pre-flash checklist (incl. the `-n` warning), the deploy.sh procedure
+>   (incl. the benign `ubus … Not found` first-start note), the verify
+>   commands, and recovery notes; its stale 443-era header lines were fixed
+>   (dav-tls bind + public URL now carry :8443, layout updated to the current
+>   tree).
+> - Not in 8.3's scope (still open, tracked elsewhere): matrix rows 12–16
+>   (user's client devices), row 18 (restore drill), row 19 (port-scan
+>   hygiene); §17.2 / §17.7 item 6 (live iPhone tests).
 
 ### 8.4 Storage watch — **DONE (2026-09-05; see STATUS)**
 
@@ -1456,7 +1652,7 @@ before row 10 passes.
 | 9 | Well-known | `curl -sI https://…/.well-known/caldav` and `…/carddav` | 30x to correct roots (client autodiscovery path) |
 | 10 | vdirsyncer | `vdirsyncer discover && sync` (new pairs) | clean two-way sync incl. ETags; no items lost (diff before/after) — **✓ verified 2026-09-04 (Phase 6: 721 items a→b, 0 errors; server-side PUT/DELETE round-trip b→a; idempotent re-sync; server counts == local counts)** |
 | 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients — **✓ verified 2026-09-05 (Phase 7: khal create + edit + delete and khard create + edit + remove, each step synced and verified server-side via curl REPORT — calendar-query time-range for events, addressbook-query FN-filter for contacts; deletion propagation confirmed on BOTH hub sides for the event (Google + RustiCal) via vdirsyncer action logs; "other clients" beyond the hub = rows 12–14 clients, still pending)** |
-| 12 | DAVx5 + Tasks.org | Android account; create/edit event, contact, task | syncs both directions; WebDAV Push = near-instant when enabled |
+| 12 | DAVx5 + Tasks.org | Android account; create/edit event, contact, task | syncs both directions; WebDAV Push = near-instant when enabled — **pre-flight + design DONE 2026-09-06 (Phase 7 STATUS Android bullet): server advertises webdav-push + scheduling tokens, WebPush transport live by default; Android re-scoped as a NEW invited identity (QR deep-link login `davx5://user:token@host:8443/`, family-calendar sharing vehicle for the invite); device work not started** |
 | 13 | Thunderbird | calendar + cardbook/tasks accounts at root URL | discovers all own collections + group calendars |
 | 14 | Apple Calendar/Contacts | caldav-compat path or config profile | account works; create/edit round-trips; contacts sync |
 | 15 | Sharing | group collection visible to member identities (all 4 domains) | cross-domain share works via membership |
@@ -2346,8 +2542,634 @@ Every step is reversible; nothing destructive is done to the router.
 4. **IPv6**: publish AAAA on duckdns once a stable GUA exists on WAN; same firewall
    rule already covers it (`family='any'`).
 5. **Ujail/seccomp hardening** of both services via procd jail params, once stable.
-6. **Dedicated VM off-site replica** (via existing wg-vm tunnels) running the same
-   binaries — a warm standby with hourly DB copy.
+  6. **Dedicated VM off-site replica** (via existing wg-vm tunnels) running the same
+     binaries — a warm standby with hourly DB copy.
+  7. **Public read-only subscription feeds ("share links") for calendars + contacts
+     — PULLED FORWARD FROM "FUTURE" BY USER DECISION 2026-09-06** ("we need to add
+     to the plan: make this service a calendar/contacts people can subscribe to,
+     instead of having to send ics files all over the place"). Supersedes the
+     Phase 7 open item "Subscribed-calendar route": its unverified question
+     (whether iOS "Add Subscribed Calendar" accepts owner credentials on the
+     owner-authenticated `route_get` export) becomes moot — subscription URLs
+     carry their own credential, so subscribers need **no account, no app token,
+     no login prompt**.
+
+**STATUS (2026-09-06, updated again same day): item 1 DONE (see its
+         DONE block); item 2 DONE — code compiled, compile fixes applied, the
+         item-2 gate run and ALL GREEN incl. the new export_routes suite and a
+         full `cargo test --workspace` with 0 failures (see item 2's DONE block);
+         item 3 DONE (resumed from the user-stopped session 2026-09-06, later
+         session — import fix, test call-sites, and the enabled-path
+         http-integration test done; item-3 gate ALL GREEN: workspace check
+         0/0, fmt clean, full `cargo test --workspace` 0 failures with every
+         expected count exact — see item 3's execution log); item 4 DONE
+         (2026-09-06, later session — x86_64 smoke test, **all 25 gates green**
+         — see item 4's DONE block); item 5 DONE (2026-09-06, later session —
+         cross-build + deploy, **all gates green, the extension is LIVE on
+         the router** alongside scheduling — see item 5's DONE block, which
+         also records the unrecorded-intermediate-build drift found at recon);
+         item 6 NOT STARTED. NEXT: item 6 (live tests — needs the user's
+         physical iPhone: "Add Subscribed Calendar" with token URLs for
+         nicholas@carltonaudio.com personal + the family calendar, `.vcf`
+         fetch on the phone, watch `logread` poll cadence, then the PLAN.md
+         final status update).**
+
+     **Design (user decision = the Google Calendar "secret address" model):**
+     - Two public URL shapes, served WITHOUT authentication (the token in the
+       URL *is* the credential — the routes mount outside the DAV
+       `AuthenticationLayer`):
+       `https://0115d8cf.duckdns.org:8443/export/<64-char-token>.ics` — live
+       full export of a calendar, reusing the exact `route_get` payload builder
+       (`IcalCalendar::from_objects` + `X-WR-CALNAME/CALDESC/CALCOLOR/TIMEZONE`,
+       `text/calendar; charset=utf-8`;
+       `crates/caldav/src/calendar/methods/get.rs`);
+       `https://0115d8cf.duckdns.org:8443/export/<token>.vcf` — full export of
+       an addressbook (all live vCards concatenated, `text/vcard;
+       charset=utf-8` — NEW; the CardDAV tree has no GET export today).
+       Subscribers: iOS/macOS "Add Subscribed Calendar", Google Calendar "From
+       URL", `webcal://` (clients rewrite to https), any URL-fetching tool.
+       Contacts apps have no "subscribe" concept — a stable secret `.vcf` URL
+       is the contacts equivalent (open/import/refetch instead of mailing
+       vCards around).
+     - **URL semantics:** the extension must match the token's collection kind
+       (`.ics` ↔ calendar, `.vcf` ↔ addressbook); unknown token, kind/extension
+       mismatch, or vanished collection → **404** (never 401/403 — no auth
+       prompts, no token-validity oracle for the public-port scanners). GET/HEAD
+       only (polling clients); no write path exists by construction; scheduling
+       triggers are unaffected (they live on PUT/DELETE only).
+     - **Token format:** 64-char alphanumeric — the exact `generate_app_token`
+       shape (`crates/frontend/src/routes/app_token.rs`), ≈380 bits of entropy;
+       guessing gets 404s like any other path on the public port.
+     - **Storage decision (deliberate deviation from the app-token pbkdf2
+       pattern):** new `subscriptions` table with the token in **plaintext +
+       UNIQUE index**. Rationale: app tokens are hashed because they grant
+       **write** access; a subscription token grants **read** access to data
+       that sits in plaintext in the same DB file (`calendarobjects.ics`), so
+       hashing protects nothing the DB doesn't already contain (upstream's own
+       app-token note concedes the same about DB access), while plaintext
+       enables the O(1) indexed lookup the no-username request requires
+       (per-principal verify like app tokens is impossible) and lets
+       `subscriptions list` re-display a lost URL (Google-parity UX).
+     - **Management (CLI, server-admin like `principals`, no HTTP auth):**
+       `rustical subscriptions add <principal> --kind calendar|addressbook
+       <collection_id>` (generates the token, prints the full URL(s)),
+       `subscriptions list <principal>`, `subscriptions remove <principal>
+       <id>` (instant revoke). Group collections work (e.g. the `family`
+       calendar — the token targets principal `family`, collection `family`).
+     - **Config gate:** `[subscriptions] enabled = true` (serde-default false —
+       the existing router config keeps parsing and behaves byte-for-byte like
+       the current build until enabled; same pattern as `[scheduling]`). Routes
+       only mount when enabled.
+
+     **Implementation items (mirroring the scheduling extension's structure):**
+     1. **Store + token layer**: `SubscriptionKind`/`Subscription` model +
+        `SubscriptionStore` trait (no-op/NotFound defaults so test stores keep
+        compiling) in `crates/store`, SQLite impl + migration
+        `20260906120000_subscriptions` (runtime `sqlx::query` — keeps the
+        committed `.sqlx/` metadata untouched) in `crates/store_sqlite`, unit
+        tests in the store_sqlite harness. Gate: workspace check 0 errors/0
+        warnings + suites green + fmt clean.
+        — **DONE (2026-09-06): implemented + gate green. All on the same
+        uncommitted `omnical-scheduling` working tree in `~/router-dav/rustical`
+        (additive on top of the deployed scheduling build — commit the two
+        extensions together or split them when committing; the router still
+        runs the §17.2 item-5 binary until item 5 below deploys).**
+        - `crates/store/src/subscription_store.rs` (NEW): `SubscriptionKind`
+          (Calendar/Addressbook, `as_str` + `TryFrom<&str>` for row/CLI
+          decode), `Subscription` (id, principal, kind, collection_id, token,
+          created_at), `SubscriptionStore` trait — `add_subscription`
+          (caller-generated token, returns the new id; default
+          `Err(ReadOnly)` because a no-op has no honest id to return),
+          `get_subscription_by_token` / `delete_subscription` (defaults
+          `Err(NotFound)`), `get_subscriptions` (default empty) — the same
+          no-op-default pattern as `SchedulingStore`, so non-SQLite (test)
+          stores keep compiling untouched. Re-exported at the crate root
+          (`pub use subscription_store::*;`, mirroring `scheduling_store`).
+        - Migration `20260906120000_subscriptions.{up,down}.sql`:
+          `subscriptions` (id TEXT PK, principal, kind, collection_id, token
+          **UNIQUE**, created_at DEFAULT CURRENT_TIMESTAMP, FK
+          principal→principals ON DELETE CASCADE) +
+          `idx_subscriptions_principal`; the plaintext-token rationale lives
+          in a header comment in the migration.
+        - `crates/store_sqlite/src/subscription_store.rs` (NEW):
+          `SqliteSubscriptionStore` mirroring `SqliteSchedulingStore` (holds
+          the cloneable `SqliteCalendarStore` for its pool; runtime
+          `sqlx::query` only — `.sqlx/` untouched). Duplicate token →
+          `Error::AlreadyExists` for free via the existing unique-violation
+          mapping in `crates/store_sqlite/src/error.rs` (no new error code).
+          Registered in `lib.rs`.
+        - Tests: `crates/store_sqlite/src/tests/subscription_store.rs` — full
+          lifecycle (unknown token → NotFound [the export URL's 404 path] →
+          create → token lookup/list round-trip incl. created_at set by the DB
+          → delete under a foreign principal is a NotFound no-op → revoke
+          kills the token instantly → double-delete NotFound) + duplicate-token
+          rejection (uniqueness is global across kind/collection; addressbook
+          kind round-trips).
+        - **Compile findings (all fixed):** (a) `Error::Other` needs
+          `anyhow::anyhow!` — `String` has no `Into<anyhow::Error>`; (b)
+          `Row::get` takes two generic params — write `let kind: String =
+          row.get("kind")`, not a turbofish; (c) rstest `#[future]` fixture
+          args need `.await` before field access; (d) store test files must
+          wrap contents in `#[cfg(test)] mod tests { … }` (upstream's pattern,
+          easy to miss): under `cargo check --workspace --all-targets` the
+          feature-enabled **lib** target also compiles `pub mod tests`, and
+          `#[tokio::test]` fns are compiled OUT there (plain `#[test]` items
+          vanish outside `cfg(test)`), so unwrapped top-level `use` lines
+          warn as unused in that target. Pitfall re-confirmed: `cargo check -p
+          rustical_store_sqlite --all-targets` in ISOLATION fails on the bench
+          (`tests` module is feature-gated) — only the full-workspace
+          invocation unifies the `test` feature (§17.2 item-2.0 knew this).
+        - **Gate:** `SQLX_OFFLINE=true cargo check --workspace --all-targets`
+          → **0 errors / 0 warnings**; `cargo test -p rustical_store_sqlite`
+          → **15/15 green** (13 existing + the 2 new, 0.37 s);
+          `cargo fmt --check` clean (one line-wrapping nit in
+          `subscription_store.rs` fixed by `cargo fmt`). NOT re-run this
+          session (every touched line is additive; the new migration is
+          already proven valid by both the store_sqlite and caldav fixtures'
+          `:memory:` migrate-on-open): dav / scheduling / caldav / root
+          lib+bin+http-integration / integration suites — re-run alongside
+          item 2's gate before building further. **NEXT: item 2 (export
+          routes).**
+     2. **Export routes**: axum router mounted in `src/app.rs` **without** the
+        AuthenticationLayer (enabled-gated): `/export/{token}.ics` → token
+        lookup → `CalendarStore::get_calendar`+`get_objects` → factor the
+        `route_get` export body into a shared builder so owner-export and
+        token-export serve byte-identical payloads; `/export/{token}.vcf` →
+        `AddressbookStore` objects concatenated. 404 semantics above; HEAD;
+        ETag skipped (polling cadence is client-driven).
+         — **DONE (2026-09-06, later session — resumed from the stopped
+         session): code compiled, compile fixes applied, item-2 gate run and
+         ALL GREEN.** (Prior state: all item-2 code written but never
+         compiled — session stopped by user before the gate; task selection
+         as recorded there: item 2 was the first unfinished task a
+         dev-machine session could execute.) All on the same uncommitted
+         `omnical-scheduling` tree:
+        - `crates/caldav/src/calendar/methods/get.rs` — the `route_get`
+          export body is factored into `pub fn build_export_ics(&Calendar,
+          Vec<(String, CalendarObject)>) -> String` in the same file
+          (identical logic: `X-WR-CALNAME/CALDESC/CALCOLOR/TIMEZONE` props
+          from the calendar metadata); `route_get` now calls it —
+          byte-identical by construction. This is the shared builder.
+        - `src/export.rs` (NEW; one-line `pub mod export;` added to
+          src/lib.rs) — `pub fn export_router<AS: AddressbookStore,
+          CS: CalendarStore>(addr_store: Arc<AS>, cal_store: Arc<CS>,
+          sub_store: Arc<dyn SubscriptionStore>) -> Router`, one route
+          `GET/HEAD /export/{filename}`: axum/matchit cannot suffix-match a
+          path param, so `<token>.<ext>` is parsed in the handler via
+          `rsplit_once('.')` (missing or unknown extension → 404); token
+          lookup via `get_subscription_by_token`; kind/extension must match
+          (Calendar↔`.ics`, Addressbook↔`.vcf`); **every failure path
+          returns `Err(rustical_store::Error::NotFound)`**, so unknown
+          token, kind/extension mismatch and vanished collection render the
+          identical `(404, "Not found")` body — no auth prompt, no
+          token-validity oracle; both collection lookups use
+          `show_deleted = false`, so soft-deleted (trashed) collections 404
+          (the owner CalDAV `route_get` uses `true`; for a live collection
+          the body is unaffected); `.ics` served via the shared
+          `build_export_ics`, `.vcf` via the exact CardDAV `route_get`
+          concatenation (`get_vcf()` joined with `\r\n`); content types
+          identical to the owner exports (`text/calendar; charset=utf-8` /
+          `text/vcard; charset=utf-8`); ETag deliberately skipped; HEAD is
+          free (axum 0.8 `routing::get` auto-serves HEAD with the body
+          stripped — verified in the axum 0.8.9 source). `ExportState` has
+          a manual `Clone` impl without `AS`/`CS` bounds (a derived Clone
+          would add bounds generic stores don't have and break mounting).
+          NOT mounted anywhere yet — mounting (at app level, the dav-push
+          `subscription_service` pattern = outside the DAV
+          `AuthenticationLayer` by construction) + the `[subscriptions]`
+          config gate + store plumbing + CLI are item 3, per the item
+          split.
+        - Design correction found while implementing: "the CardDAV tree has
+          no GET export today" was WRONG — stock 0.16.1 already has one
+          (`crates/carddav/src/addressbook/methods/get.rs`) doing exactly
+          the planned vCard concatenation; the export router mirrors it,
+          so no carddav-side factoring was needed.
+        - Wiring note for item 3: `make_app` feeds the caldav trees the
+          `combined_cal_store` (cal + birthdays); passing the SAME combined
+          store into `export_router` keeps `_birthdays_*` collections
+          feed-capable and preserves owner-export parity — passing the raw
+          cal store would 404 birthday feeds (item 3's deliberate choice).
+        - Root `Cargo.toml` — `rustical_ical.workspace = true` added to
+          [dev-dependencies] (the test fixture needs `CalendarObjectType`
+          for the calendar's `components` field).
+        - `tests/export_routes.rs` (NEW, root crate) — 6 route-level tests
+          on real sqlite fixtures (`rustical_store_sqlite::tests::
+          test_store_context`; objects seeded through the real DAV PUT
+          paths of the caldav/carddav routers, basic auth against the
+          fixture principal; 66-char token-shaped constants — length not
+          load-bearing, item 3's CLI generates the real 64-char tokens):
+          `.ics` byte-parity vs the owner-authenticated CalDAV `route_get`
+          export (body + content-type, no ETag); `.vcf` byte-parity vs the
+          CardDAV one; HEAD = headers only; the 404 matrix (unknown token /
+           no extension / `.txt` / both kind-mismatches, asserting all
+           bodies IDENTICAL); revoked subscription → instant 404; vanished
+           (trashed) calendar + addressbook → 404. **Ran green 6/6 in the
+           item-2 gate (first execution).**
+         - ~~**Remaining work (next session resumes here):**~~ **EXECUTED
+           (2026-09-06, later session) — results:**
+           - **Step 0 (compile + fixes): far fewer problems than predicted —
+             1 error + 1 warning total, both in the NEW test file's
+             integration surface, none in the export code itself:** (a)
+             `SqliteSubscriptionStore` had only `#[derive(Debug)]` but the
+             test needs a direct handle next to the `Arc<dyn
+             SubscriptionStore>` handed to the router → `Clone` added to the
+             derive, matching every sibling store (`SqliteCalendarStore`,
+             `SqliteAddressbookStore`, `SqlitePrincipalStore`,
+             `SqliteDavPushStore` all derive `Clone`; only the
+             single-consumer `SqliteSchedulingStore` doesn't); (b) dead-code
+             warning: `TestApp.addr_sub_id` was never read → the revoked-
+             subscription test now revokes BOTH subscriptions (calendar +
+             addressbook) and asserts both URLs 404 — warning gone, "instant
+             revoke" now proven for both kinds. `cargo fmt` made no changes
+             (the never-compiled code was already fmt-clean).
+           - **Step 1 (item-2 gate) — ALL GREEN:**
+             `SQLX_OFFLINE=true cargo check --workspace --all-targets` →
+             **0 errors / 0 warnings**; `cargo fmt --check` clean; suites:
+             dav 31, scheduling **17** (14 + the 3 new iOS-fix tests below),
+             caldav **35** (34 + the iOS regression test below), store_sqlite
+             15, root lib 20 + bin 5 + **export_routes 6/6 (NEW, first run
+             ever: both byte-parity tests incl. content-type + no-ETag, HEAD
+             headers-only, the full 404 matrix with identical bodies, revoke
+             both kinds, vanished calendar + addressbook)** +
+             http-integration 3 + integration 19 (snapshots unchanged). A
+             full `cargo test --workspace` was also run beyond the listed
+             gate suites: **every target green, 0 failures anywhere**
+             (covers dav_push/frontend/xml/ical/oidc/store too).
+           - **Step 2:** this block flipped to DONE (this text).
+           - **Step 3:** NEXT = item 3 (main-crate wiring + CLI).
+         - **The earlier unrecorded iOS principal-URL-ORGANIZER fix
+           (~08:50, 2026-09-06) — now recorded; validated by this gate run.**
+           Root cause (from the regression test's comment): iOS writes the
+           account owner's ORGANIZER (and self-ATTENDEE) as the CalDAV
+           **principal URL** — RustiCal's advertised calendar-user-address,
+           e.g. `/caldav/principal/user/` — not as `mailto:`; the scheduler
+           then didn't recognize the organizer and delivered nothing (same
+           silent-no-op class as the `as_email` `@` bug). Fix, on the same
+           uncommitted `omnical-scheduling` tree: `crates/scheduling/src/
+           ics.rs` gained `principal_url_id()` (recognizes path-only
+           `/caldav[-compat]/principal/<id>/…` AND absolute
+           `scheme://host:port/…` forms; id = percent-decoded segment after
+           `/principal/`) which `as_email()` now accepts as an address form,
+           plus `pub fn normalize_caladdresses(ics)` rewriting principal-URL
+           ORGANIZER/ATTENDEE values to `mailto:` (leaves bare/random values
+           untouched); `crates/scheduling/src/scheduler.rs` `deliver_status`
+           applies it before building the delivered copy, so both inbox
+           copies and iMIP attachments carry `mailto:` CAL-ADDRESSes that
+           remote and local clients can work with. Tests: caldav
+           `test_principal_url_organizer_delivers_request` (iOS-shaped PUT
+           with principal-URL ORGANIZER/self-ATTENDEE → REQUEST delivered,
+           stored copy normalized to `mailto:user`) + 3 scheduling ics.rs
+           unit tests (`principal_url_organizer_is_an_address`,
+           `principal_url_forms` incl. percent-encoded absolute forms,
+           `normalize_rewrites_principal_urls`) — hence the 17/35 suite
+           counts above.
+     3. **Main-crate wiring + CLI**: `[subscriptions]` config section,
+        `get_data_stores` 7th tuple element `Arc<dyn SubscriptionStore>`,
+        `make_app` param + router mount, `rustical subscriptions` subcommands
+(token generator = 64-char Alphanumeric; model types from item 1).
+         — **DONE (2026-09-06, later session — resumed from the stopped
+         session): the "Remaining work" list executed in full, item-3 gate
+         run and ALL GREEN — see the execution log at the end of this
+         item.**
+        All changes on the same uncommitted `omnical-scheduling` tree; nothing
+        deployed (the router still runs the §17.2 item-5 binary). **What was
+        written this session:**
+        - `src/config.rs` — `SubscriptionsConfig { enabled, public_url }`
+          (`#[serde(deny_unknown_fields, default)]`, derive Default → enabled
+          defaults to false = zero footprint until enabled; `public_url` is
+          `Option<String>` with `skip_serializing_if`) + `Config.subscriptions`
+          field (`#[serde(default)]` — old configs keep parsing, the 5→6
+          existing main.rs config tests remain the back-compat proof).
+        - `src/commands/subscriptions.rs` (NEW) — the CLI:
+          `SubscriptionsCommand::{Add,List,Remove}` mirroring `principals
+          app-token`; `add <principal> <collection_id> --kind
+          calendar|addressbook` (local `KindArg` clap ValueEnum wrapper —
+          orphan rule forbids deriving it on the foreign `SubscriptionKind`),
+          token = reuse of `generate_app_token()` (64-char Alphanumeric,
+          exactly the designed shape), prints `Subscription created (id: …)`
+          + the full export URL; `list` re-displays `id - kind - collection -
+          URL - created`; `remove <principal> <id>` prints removal. `add`
+          validates the target collection exists first (fail-fast instead of
+          a forever-404 URL): calendars via the **combined** store (same view
+          the export routes serve — keeps `_birthdays_*` subscribable per
+          item 2's deliberate choice), addressbooks via the addr store,
+          `show_deleted = false` both; and prints a stderr note when
+          `[subscriptions] enabled = false` (routes not mounted). URL base =
+          `public_url` when set, else `http://{http.bind_config()}` (covers
+          the deprecated host form), path-only on Unix-socket binds.
+        - `src/commands/mod.rs` — module registered + re-exported
+          (`SubscriptionsArgs, cmd_subscriptions`); gen-config literal gained
+          `subscriptions: SubscriptionsConfig::default()` → `rustical
+          gen-config` now prints `[subscriptions]` (enabled = false;
+          public_url skipped when None).
+        - `src/lib.rs` — `Command::Subscriptions` variant; `get_data_stores`
+          returns a **7-tuple** (new last element `Arc<dyn SubscriptionStore>`;
+          `SqliteSubscriptionStore::new(cal_store.clone())` in the sqlite
+          branch next to the scheduling store, pre-Arc, same pool);
+          `cmd_serve` destructures 7, builds `subscriptions =
+          config.subscriptions.enabled.then_some(subscription_store)`
+          (scheduler pattern — Some only when enabled), logs
+          `Subscriptions extension enabled (public export feeds)`, threads it
+          into `make_app` (new param after `scheduler`).
+        - `src/commands/principals.rs` — destructure 6→7 (extra `_`).
+        - `src/app.rs` — `make_app` param
+          `subscriptions: Option<Arc<dyn SubscriptionStore>>` (after
+          `scheduler`); when Some, merges `export_router(addr_store.clone(),
+          combined_cal_store.clone(), sub_store)` **before the frontend
+          block** (`combined_cal_store` is moved into `frontend_router` there;
+          cloning first preserves the item-2 deliberate choice to feed the
+          export routes from the combined store) — outside the DAV
+          `AuthenticationLayer` by construction, same as the dav-push
+          `subscription_service` pattern.
+        - `src/main.rs` — dispatch `Command::Subscriptions` →
+          `cmd_subscriptions(args, parse_config()?)`; NEW bin config test
+          `test_config_toml_subscriptions` (TOML with enabled+public_url
+          parses; without the section → disabled defaults; bin tests now 6).
+        **Design decisions beyond the item-3 text (recorded while fresh):**
+        (a) `[subscriptions]` gained a second key **`public_url`** —
+        required to fulfill "prints the full URL(s)": the production public
+        URL (`https://0115d8cf.duckdns.org:8443`, dav-tls front end) differs
+        from the HTTP bind (`127.0.0.1:4000`), so the CLI cannot derive it;
+        unset falls back to the bind-derived URL (correct but only
+        locally-reachable). **Item 5's config render must set it** (e.g.
+        `public_url = "https://0115d8cf.duckdns.org:8443"`). (b) CLI works
+        regardless of `enabled` (admin may pre-provision; the note warns).
+        (c) The CLI reuses `get_data_stores` like `cmd_principals` (migrations
+        run, same DB as the server — proven concurrent-access-safe by
+        test_initial_setup).
+~~**Verified compile state (2026-09-06, incremental
+         `SQLX_OFFLINE=true cargo check -p rustical --lib --bins`): FAILS —
+         2 errors + 2 warnings, ALL in the new `subscriptions.rs`, everything
+         else compiles:**~~ **(RESOLVED by the later session: the recorded
+         "Known fix" was correct — see the execution log below.)**
+        - 2× E0599: `get_calendar` (line ~116, on `CombinedCalendarStore`) and
+          `get_addressbook` (line ~121) — the defining traits
+          (`CalendarReadStore`, `AddressbookReadStore`) are not in scope;
+          export.rs escapes this because its `CS: CalendarStore` generic
+          bound brings supertrait methods into scope, but a CONCRETE type
+          needs the trait imported. **Known fix: in subscriptions.rs line 6,
+          replace the import set with `use rustical_store::{
+          AddressbookReadStore, CalendarReadStore, CombinedCalendarStore,
+          SubscriptionKind };`** (the current
+          `AddressbookStore, CalendarStore, SubscriptionStore` are exactly
+          the 2 unused-import warnings — none of the three is needed).
+        - Consequence: the bins target (main.rs dispatch + the new test) is
+          unchecked behind the lib failure.
+~~**Remaining work (next session resumes here):**~~ **EXECUTED IN
+         FULL (2026-09-06, later session) — results:**
+        1. Apply the known import fix above in
+           `src/commands/subscriptions.rs`, re-run
+           `SQLX_OFFLINE=true cargo check -p rustical --lib --bins` → expect
+           clean; **expect fmt nits** (the file was never `cargo fmt`ed).
+        2. Test call-sites (NOT yet updated — `--all-targets` will E0063
+           until then): `tests/common/mod.rs` Config literal +
+           `tests/http_integration.rs` ×3 Config literals need
+           `subscriptions: Default::default()`; `tests/integration_tests/
+           mod.rs` `make_app` call needs the new `None` arg (after the
+           scheduler `None`).
+        3. Planned but NOT written: ONE enabled-path http-integration test
+           (`test_subscriptions_export`) + a `rustical_process_with(db_url,
+           customize-config-closure)` variant in tests/common/mod.rs —
+           spawn real `cmd_serve` with `subscriptions.enabled = true`, seed
+           principal+calendar through the stores, `cmd_subscriptions` add,
+           unauthenticated GET `/export/<token>.ics` → 200
+           (`BEGIN:VCALENDAR…`), kind/extension mismatch `.vcf` → 404, CLI
+           remove → instant 404. This is the src wiring's only enabled-path
+           coverage (item 4 re-proves it at the real-binary level).
+        4. Item-3 gate (NOT yet run): `SQLX_OFFLINE=true cargo check
+           --workspace --all-targets` 0 errors/0 warnings; `cargo fmt
+           --check` clean; suites green — expected counts after the fix:
+           dav 31, scheduling 17, caldav 35, store_sqlite 15, root lib 20 +
+           bin 6 (5 + the new config test) + export_routes 6 +
+           http-integration 4 (3 + the new one) + integration 19.
+5. Flip this block to DONE (record the gate results), update the
+            STATUS line above, then NEXT = item 4 (x86_64 smoke test).
+
+         **Execution log (2026-09-06, later session) — item 3 completed,
+         gate ALL GREEN:**
+         - **Step 1 (import fix):** the recorded "Known fix" applied
+           verbatim and the compiler CONFIRMED its non-obvious claim —
+           `SubscriptionStore` is genuinely unneeded there. The reason
+           (scratch-verified with a 6-line rustc repro): method calls on a
+           `dyn Trait` receiver (the CLI's `Arc<dyn SubscriptionStore>`
+           destructure) resolve WITHOUT the trait being in scope; only
+           CONCRETE types need the defining trait imported (the
+           mirror-image of this rule then bit the new test — step 3b).
+           `SQLX_OFFLINE=true cargo check -p rustical --lib --bins` → clean
+           (0 errors, 0 warnings). **fmt nits: NONE** — the never-fmt'ed
+           file was already fmt-clean.
+         - **Step 2 (test call-sites):** 4 Config literals gained
+           `subscriptions: Default::default()` — 2× in test_initial_setup +
+           1× in test_principal_impersonation (both in
+           tests/http_integration.rs) + 1× in tests/common/mod.rs;
+           tests/integration_tests/mod.rs `make_app` gained the new `None`
+           arg after the scheduler `None`. Pitfall hit: the impersonation
+           literal sits at a SHALLOWER indent than the other two, so a
+           single-pattern replaceAll silently missed it — caught by the
+           follow-up E0063 and fixed with its own edit. The predicted error
+           set after fmt (4× E0063 + 1× E0061) was exactly right.
+         - **Step 3 (the enabled-path test):** `rustical_process_with(db_url,
+           customize: FnOnce(&mut Config))` added to tests/common/mod.rs
+           (`rustical_process` kept as a thin `|_| {}` wrapper);
+           `test_runner_with` added beside `test_runner` in
+           tests/http_integration.rs — with test_runner's body deliberately
+           RESTORED to call `rustical_process` directly: letting it delegate
+           through test_runner_with made `rustical_process` dead code in
+           this target and warned (dead_code + unused_import), violating
+           the 0-warnings bar. NEW `test_subscriptions_export`: spawns a
+           real `cmd_serve` with `[subscriptions] enabled`, creates the
+           principal via `cmd_principals`, seeds a `personal` calendar
+           through the stores, runs `cmd_subscriptions` add (asserts the
+           read-back token is exactly 64 chars), then: unauthenticated GET
+           `/export/<token>.ics` → 200 `text/calendar` + body starting
+           `BEGIN:VCALENDAR`; `.vcf` kind/extension mismatch → 404; CLI
+           remove → instant 404. The token is read back through
+           `SqliteSubscriptionStore::get_subscriptions` because in-process
+           tests cannot capture the CLI's stdout println!s. Two compile
+           fixes beyond the plan text: (a) `SqliteCalendarStore::new` is a
+           3-arg derive-Constructor `(db, mpsc::Sender<CollectionOperation>,
+           skip_broken)` — the store fixtures' `channel(1)` pattern used
+           for both constructions; (b) calling `get_subscriptions` on the
+           CONCRETE `SqliteSubscriptionStore` DOES need the
+           `SubscriptionStore` trait imported — the dyn exception from
+           step 1 does not apply to concrete types — trait added to the
+           test's import list.
+         - **Step 4 (item-3 gate) — ALL GREEN, every expected count exact:**
+           `SQLX_OFFLINE=true cargo check --workspace --all-targets` →
+           **0 errors / 0 warnings**; `cargo fmt --check` clean; full
+           `cargo test --workspace` → **0 failures anywhere** — dav 31,
+           carddav 15, dav_push 9, scheduling 17, caldav 35, store_sqlite
+           15, root lib 20 + bin 6 (5 + `test_config_toml_subscriptions`) +
+           export_routes 6/6 + http-integration 4/4 (3 +
+           `test_subscriptions_export`, green on first run) + integration
+           19/19 (snapshots unchanged) + xml 36 + ical 1 + frontend 1.
+         - **Step 5:** this block flipped to DONE, STATUS line updated.
+           **NEXT = item 4 (x86_64 smoke test)** — the src wiring now has
+           its enabled-path coverage; item 4 re-proves it at the
+           real-binary level. Nothing deployed (the router still runs the
+           §17.2 item-5 binary); the tree remains uncommitted as before.
+     4. **Local x86_64 smoke test** (scratch DB): CLI-created tokens →
+        unauthenticated curl of `.ics`/`.vcf` (byte-compare `.ics` against the
+        owner-authenticated `route_get` export), 404 matrix (bad token, wrong
+        extension, revoked, vanished collection), HEAD.
+          — **DONE (2026-09-06, later session): ALL gates green — 25/25 PASS
+          at the real-binary level (CLI-generated 64-char tokens, curl as the
+          unauthenticated client). Nothing deployed; the router still runs the
+          §17.2 item-5 binary.**
+         - **Build first:** `out/x86_64-unknown-linux-gnu/rustical` was the
+           2026-09-05 §17.2 build (pre-subscriptions) → rebuilt via
+           `scripts/build-rust.sh x86_64-unknown-linux-gnu` (1 m 08 s,
+           35 MB); `--version` OK and `gen-config` prints the `[subscriptions]`
+           section (item 3's plumbing confirmed in the real binary).
+         - **Harness in `/tmp/opencode/subs-smoke/`** (`/tmp` is wiped on
+           reboot — this log is the durable record; re-creating is minutes):
+           `config.toml` with bind `127.0.0.1:4000`, scratch DB, `[subscriptions]
+           enabled = true`, and `public_url = "http://127.0.0.1:4000"` so the
+           CLI prints directly curl-able URLs. Startup log: `Subscriptions
+           extension enabled (public export feeds)`; both extension
+           migrations auto-applied to the fresh DB.
+         - **Seeding via the real CLI + real DAV paths:** principal
+           `org@omnical.test` (piped `principals create --password`) + app
+           token; MKCOL calendar `personal` **with displayname +
+           `C:calendar-description` + `A:calendar-color`** so the export
+           carries the full `X-WR-CALNAME/CALDESC/CALCOLOR` header block;
+           MKCOL addressbook `personal`; PUT VEVENT + VCARD (201/201).
+           **MKCOL finding (restated for reuse): calendar MKCOL props are
+           namespaced — `D:description` → 400 "Invalid field name in
+           MkcolCalendarProp" (the calendar description prop is
+           `C:calendar-description`, CALDAV ns); `A:calendar-color` is
+           accepted. The addressbook took plain `D:` props fine.**
+         - **CLI verified live (concurrent with the running server — same
+           SQLite pool class as `cmd_principals`):** `subscriptions add`
+           prints the id + full URL (`public_url` base honored); tokens are
+           **exactly 64 chars** (checked); `subscriptions list` re-displays
+           id - kind - collection - URL - created (the Google-parity "lost
+           URL" UX); `remove` prints removal.
+         - **Gates — 25/25 PASS (`gates.sh` kept in the harness dir):**
+           - **Byte-parity:** unauthenticated `.ics`/`.vcf` **byte-identical
+             (`cmp`)** to the owner-authenticated `route_get` exports
+             (GET on the collection URLs, basic auth); content types
+             identical (`text/calendar; charset=utf-8` /
+             `text/vcard; charset=utf-8`); X-WR-CALNAME/CALDESC/CALCOLOR
+             lines present in both; **no `ETag`** on feed responses (design:
+             skipped); **no `WWW-Authenticate`** on feeds or 404s — the
+             routes are demonstrably outside the DAV `AuthenticationLayer`.
+           - **HEAD:** `.ics`/`.vcf` → 200 + content-type via `curl -I`.
+             (Tooling note: `curl -X HEAD` hangs — curl waits for a GET-style
+             body; use `-I`. Body-stripping is axum auto-HEAD behavior,
+             proven by the route test.)
+           - **404 matrix (6 cases):** unknown token (`.ics` + `.vcf`),
+             missing extension, `.txt`, calendar-token-as-`.vcf`,
+             addressbook-token-as-`.ics` — all 404 with **byte-identical
+             bodies** (no token-validity oracle) and no auth prompt.
+           - **Revoke:** removing the calendar subscription → its `.ics` URL
+             is an **instant 404 while the `.vcf` feed still serves 200**
+             (per-subscription scoping); removing the addressbook
+             subscription → its URL 404.
+           - **Vanished collections:** subscriptions re-added (new tokens —
+             re-add proven), then both collections DELETEd through the DAV
+             tree (owner auth, 200) → both **live-token URLs 404**
+             (`show_deleted = false` semantics live through the whole
+             stack).
+         - **Server log clean during the gates:** zero WARN/ERROR/PANIC —
+           the only ERROR lines are the two deliberate 400 MKCOL probes; the
+           404-matrix requests log as INFO "client error" exactly like any
+           other 404 (export requests visible in `rustical::app` spans).
+         - **Cleanup:** server stopped by PID (port 4000 free); scratch
+           artifacts remain in `/tmp/opencode/subs-smoke/` until reboot.
+           **NEXT: item 5 (cross-build + deploy).**
+      5. **Cross-build + deploy** (deploy.sh flow: `/tmp` staging + binary-swap;
+         config render adds `[subscriptions] enabled = true`; pre-deploy DB
+         backup — the additive migration auto-applies on start) + server-side
+         verify through dav-tls.
+         — **DONE (2026-09-06, later session): ALL gates green — the
+         subscriptions extension is LIVE on the router alongside scheduling.**
+         - **Drift found at recon (recorded here because no session recorded
+           it):** the router was NOT running the §17.2 item-5 binary as the
+           plan's item-1/4 blocks state, but an unrecorded intermediate
+           build — `/usr/sbin/rustical` 29,076,336 B, mtime 2026-09-06 12:54,
+           i.e. the 08:54 post-iOS-fix build, deployed by someone without a
+           PLAN.md entry (evidence: `out/rustical` carried the same 08:54
+           mtime/size; the running binary had no `subscriptions` table and no
+           `[subscriptions]` config support, so it predates the item-1 store
+           layer). Superseded by this deploy either way; baseline was taken
+           from the live DB, not from the plan text.
+         - **Pre-deploy baseline (live DB, integrity ok):** principals 8,
+           memberships 7, cal_live 517, addr_live 209, app_tokens 29,
+           sched_inbox 1; WAL 0 (already folded); overlay 7000 KB free.
+         - **Cross-build:** `scripts/build-rust.sh` (clang recipe D), 1 m 36 s
+           incremental; `out/rustical` = 29,289,304 B = **27.9 MiB of the
+           35 MiB budget** (+212,968 B vs the running binary). qemu sanity:
+           `--version` OK, `gen-config` prints `[subscriptions]` (enabled =
+           false default), `subscriptions --help` shows add/list/remove.
+           `out/dav-tls` sha256-identical to the deployed one → deploy.sh
+           skipped its restart (no TLS blip; dav-tls PID unchanged).
+         - **Pre-deploy backup:** hot `.backup` pulled to
+           `~/backups/omnical/db-pre-subs-deploy-20260906.sqlite3` (3,575,808
+           B, 0600); integrity ok; counts identical to live.
+         - **Config render:** `scripts/render-router-config.sh` extended with
+           the `[subscriptions]` section — `enabled = true` +
+           `public_url = "https://0115d8cf.duckdns.org:8443"` (item 3's
+           mandate: the CLI must print the public dav-tls front end, not the
+           127.0.0.1:4000 bind). Render validated with python `tomllib`
+           (piped — never on dev disk): 7 SMTP accounts with correct
+           hosts/identities, non-empty passwords, 8 UA exclusions,
+           subscriptions section correct. `~/router-dav` stays secret-free.
+         - **Deploy (deploy.sh, unchanged flow):** /tmp staging → stop →
+           binary swap → config → start; rustical healthy on new PID;
+           startup log shows BOTH lines: `Scheduling extension enabled (7
+           SMTP identities)` and `Subscriptions extension enabled (public
+           export feeds)`; migration `20260906120000_subscriptions` recorded
+           in `_sqlx_migrations`, `subscriptions` table 0 rows; live counts
+           identical (517/209/8/29/1); WAL 45 KB → 0 via checkpoint; overlay
+           **6768 KB free** (≥ 5120 KB floor intact). `deny_unknown_fields`
+           order-criticality handled by deploy.sh's stop→swap→config→start
+           sequence (the `[subscriptions]` config never met the old binary).
+         - **Server-side verify through dav-tls** (`curl --resolve
+           0115d8cf.duckdns.org:8443:192.168.1.21`, full LE chain
+           validation, `ssl_verify_result=0`, no `-k`):
+           - **CLI live on the router** (concurrent with the running server,
+             same pool class as `cmd_principals`): `subscriptions add family
+             family --kind calendar` / `--kind addressbook` / `nfcarlton@gmail.com
+             personal --kind calendar` → 64-char tokens, URLs printed with
+             the `public_url` base; `list` re-displays id - kind - collection
+             - URL - created; `remove` prints removal.
+           - **Unauthenticated feeds:** family `.ics` → 200 `text/calendar;
+             charset=utf-8` with `X-WR-CALNAME:Family` + `X-WR-CALCOLOR`;
+             family `.vcf` → 200 `text/vcard; charset=utf-8`; populated
+             nfcarlton `personal` `.ics` → 200, **229,201 bytes / 196
+             VEVENTs** — all three **byte-identical (`cmp`)** to the
+             owner-authenticated `route_get` exports (owner basic auth with
+             the vdirsyncer token; wrong-password control → 401, so auth on
+             the owner path is enforced).
+           - **HEAD** → 200 + content-type, zero body. **No `ETag` and no
+             `WWW-Authenticate`** on feeds or 404s (routes outside the DAV
+             `AuthenticationLayer`, live through the whole stack incl.
+             dav-tls).
+           - **404 matrix:** unknown token (`.ics` + `.vcf`), missing
+             extension, `.txt`, calendar-token-as-`.vcf`,
+             addressbook-token-as-`.ics` → all 404 with **byte-identical
+             bodies** (one md5 across all cases — no token-validity oracle);
+             the family-calendar token with its correct `.ics` extension
+             served 200 (positive control).
+           - **Revocation:** `remove` → **instant 404** on all three scratch
+             URLs; `subscriptions` table back to 0 rows; `list` empty. No
+             residue — the real subscriptions for item 6's live tests are
+             still to be created on the phone.
+           - **Scheduling regression intact:** `/.well-known/caldav` → 308;
+             OPTIONS compat principal → `dav: 1, 3, access-control,
+             calendar-access, calendar-scheduling, calendar-auto-schedule`;
+             PROPFIND principal 207 with all three schedule URLs filled.
+           - **Hub:** full `vdirsyncer sync` clean — 17 collections, 0
+             errors, idempotent second run (the hub never noticed the swap).
+           - Minor observation for the record: the stored vdirsyncer app
+             tokens are 69 chars, not the 64 the plan's app-token notes
+             assumed (single-line `pass` entries verified); subscription
+             tokens are exactly 64. Harmless — nothing depended on 64.
+     6. **Live tests**: iPhone "Add Subscribed Calendar" with a token URL for
+        `nicholas@carltonaudio.com` `personal` and for the `family` calendar
+        (contacts `.vcf` fetch on the phone), watch `logread` for the poll
+        cadence, then PLAN.md final status update.
 
 ---
 
