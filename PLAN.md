@@ -1508,8 +1508,10 @@ Every step is reversible; nothing destructive is done to the router.
  2. **Server-side scheduling (RFC 6638) / iMIP gateway** — **PULLED FORWARD FROM
    "FUTURE" BY USER DECISION 2026-09-05** ("we still need to setup the iphone properly,
    so I can invite people to events"; C8's client-side iMIP does not exist on iOS — the
-    invite UI itself requires scheduling support). **STATUS (2026-09-05, latest
-     session): IN PROGRESS — items 1, 2 and 3 DONE. Items 1–2 recap: the
+     invite UI itself requires scheduling support). **STATUS (2026-09-05, latest
+      session): IN PROGRESS — items 1–4 DONE (item 4 = the full local x86_64
+      smoke test, ALL gates green 2026-09-05 incl. both live SMTP legs — see
+      item 4's DONE block). Items 1–2 recap: the
      delivery bug that had 3 scheduling tests failing is FIXED (root cause:
      `Line::as_email` required `@` in every address, so the fixture's
      `ORGANIZER:mailto:user` — an `@`-less principal id — parsed to
@@ -1522,11 +1524,11 @@ Every step is reversible; nothing destructive is done to the router.
      suites dav 31 / scheduling 13 / caldav 34 / store_sqlite 13 / root
      lib 20 + bin 5 (config back-compat) + http-integration 3 (spawns real
       `cmd_serve` through the new wiring) + integration 19 (snapshots
-      unchanged). NEXT: item 4 (local x86_64 smoke test) — STARTED in the
-      latest session: x86_64 build from the branch DONE + full smoke harness
-      prepared; execution (server start, curl gates) not yet begun — resume
-      from item 4's session log. Nothing cross-built; nothing deployed — the
-      router still runs stock 0.16.1.**
+       unchanged). NEXT: item 5 (cross-build) — aarch64 via
+       `scripts/build-rust.sh` (recipe D), size-gate, pre-deploy DB backup,
+       `deploy.sh`, router config rendered with the 7 SMTP accounts from
+       `pass`, server-side verify through dav-tls. Nothing cross-built;
+       nothing deployed — the router still runs stock 0.16.1.**
 
    Why a local patch: upstream has **no** scheduling implementation to adopt — checked
    2026-09-05: latest tag is still v0.16.1 and `origin/main` past it contains only
@@ -1603,9 +1605,11 @@ Every step is reversible; nothing destructive is done to the router.
       **Correction (2026-09-05, item-1 session): `SqliteSchedulingStore` did NOT
       compile — "not yet exercised" meant never `cargo check`ed. See remaining-work
       item 1's finding; the store trait + migration side is fine.**
-      **RESOLVED (2026-09-05, item 2.0): the store now compiles clean — 38 errors
-      fixed, workspace check green (see remaining-work item 1 for details);
-      runtime behavior remains unexercised until item 4's smoke test.**
+       **RESOLVED (2026-09-05, item 2.0): the store now compiles clean — 38 errors
+       fixed, workspace check green (see remaining-work item 1 for details);
+       ~~runtime behavior remains unexercised until item 4's smoke test.~~
+       Runtime behavior NOW exercised and green (item 4's smoke test, incl.
+       the inbox store: REQUEST/REPLY/CANCEL objects listed, GET'd, DELETED).**
    - Fix recorded: first `Line::parse` draft split at the first `;`-or-:` instead of
      the first unquoted `:` — parameterized lines (ATTENDEE/ORGANIZER/DTSTART)
      lost their value; caught by the unit tests and fixed (11→12 green).
@@ -2009,16 +2013,14 @@ Every step is reversible; nothing destructive is done to the router.
     4. Local x86_64 smoke test: RFC 6638 curl checks (OPTIONS tokens, principal
        props, inbox PROPFIND/GET/DELETE, PUT with attendees → Python SMTP sink
        captures the iMIP email; accept/reply flow between two local principals).
-         — **IN PROGRESS (2026-09-05, latest session): former "Remaining steps"
-         1–3 EXECUTED and the internal-delivery gates are GREEN (OPTIONS tokens,
-         PROPFIND schedule URLs, PUT→REQUEST-in-inbox); the external-email leg
-         caught a REAL runtime bug invisible to the test suites — rustls
-         dual-provider panic in the spawned SMTP task — FOUND and FIXED in
-         smtp.rs (explicit aws-lc-rs provider + regression test; gate clean:
-         workspace 0/0, fmt, scheduling 14/14); the x86_64 rebuild is MID-FLIGHT
-         (fix compiled into cargo-target but the cp to out/ never ran — see the
-         session log). Resume at the NEW "Remaining steps" in the session log
-         below.**
+          — **DONE (2026-09-05, final session): ALL gates GREEN — every step of
+          the "NEW Remaining steps" list executed and verified, including both
+          live SMTP legs (the earlier rustls dual-provider panic in the spawned
+          SMTP task — found by this smoke test, fixed in smtp.rs with the
+          explicit aws-lc-rs provider + regression test — is now PROVEN fixed
+          end-to-end: STARTTLS → AUTH PLAIN → dot-stuffed DATA all succeed and
+          the sink captures the mail). Full results in the execution log after
+          the remaining-steps list below. Next: item 5 (cross-build).**
         - **Build DONE:** `scripts/build-rust.sh x86_64-unknown-linux-gnu` on
           `omnical-scheduling` — `out/x86_64-unknown-linux-gnu/{rustical,dav-tls}`
           (35 MB / 1.4 MB, host profile as in Phase 1.5). `rustical --version`
@@ -2068,7 +2070,9 @@ Every step is reversible; nothing destructive is done to the router.
           name was a misread — the name resolves via DNS; /etc/hosts never
           contained it). Also: ports 4000/8025 free; Python 3.14 (no aiosmtpd
           → hand-rolled sink).
-        - **Remaining steps (next session resumes here):** (1) write the
+         - ~~**Remaining steps (next session resumes here):**~~ **(executed —
+           steps 1–3 by the session log below; the rest by the final session's
+           execution log):** (1) write the
           override hosts file, confirm `getent hosts 0115d8cf.duckdns.org` →
           127.0.0.1 INSIDE the `sudo unshare -m` namespace; (2) start
           `smtp_sink.py` + the namespace-wrapped server (`rustical
@@ -2136,7 +2140,9 @@ Every step is reversible; nothing destructive is done to the router.
            the fix: `SQLX_OFFLINE=true cargo check --workspace --all-targets`
            0 errors/0 warnings, `cargo fmt --check` clean, scheduling suite
            **14/14** (13 + the regression test).
-         - **x86_64 rebuild left MID-FLIGHT (state verified 2026-09-05 ~19:55):**
+          - **x86_64 rebuild left MID-FLIGHT (state verified 2026-09-05 ~19:55;
+            → RESOLVED by the final session's step 0 — the cp was redone and
+            the smoke test ran from the fixed binary):**
            the fix compiled cleanly into
            `~/router-dav/build/cargo-target/x86_64-unknown-linux-gnu/release/rustical`
            (19:47, 35,844,376 B = +4.5 KB vs stock), but the script's `cp` to
@@ -2153,7 +2159,8 @@ Every step is reversible; nothing destructive is done to the router.
            out/ until the cp is redone. **pkill hygiene for next session: use
            a non-self-matching pattern, e.g. `pkill -f '[r]ustical
            .*sched-smoke'` or kill by PID from `ss`.**
-         - **NEW Remaining steps (next session resumes here):** (0) re-run
+          - ~~**NEW Remaining steps (next session resumes here):**~~ **EXECUTED
+            IN FULL (2026-09-05, final session):** (0) re-run
            `scripts/build-rust.sh x86_64-unknown-linux-gnu` (cp succeeds now —
            server dead) and sanity-check `out/…/rustical --version`; wipe the
            scratch DB + `mail/` + `out-*.xml` (the never-run rm) and re-seed
@@ -2172,9 +2179,86 @@ Every step is reversible; nothing destructive is done to the router.
            from att's SMTP identity in the sink; (6) DELETE of the
            organizer's invite → CANCEL in inbox (STATUS:CANCELLED ensured) +
            email; (7) outbox POSTs (REQUEST + REPLY) → 200 schedule-response
-           with per-recipient request-status; (8) cleanup (stop server/sink),
-           flip item 4 to DONE, proceed to item 5 (cross-build).
-    5. Cross-build aarch64 via `scripts/build-rust.sh` (recipe D), size-gate
+            with per-recipient request-status; (8) cleanup (stop server/sink),
+            flip item 4 to DONE, proceed to item 5 (cross-build).
+
+          **Session log (2026-09-05, final session) — item 4 completed, all
+          gates GREEN (server killed by PID, no pkill self-match; sink reused
+          from the prior session):**
+          - **Step 0:** rebuild cp'd the post-fix binary into
+            `out/x86_64-unknown-linux-gnu/rustical` (35,844,376 B = the 19:47
+            cargo-target build; `--version` OK); scratch DB/WAL/SHM + `mail/` +
+            `out-*.xml` wiped; namespace-wrapped server restarted (fresh DB →
+            migrations + `Scheduling extension enabled (2 SMTP identities)`);
+            hosts override re-verified (127.0.0.1 inside the unshare -m
+            namespace, 65.33.235.245 outside); principals + smoke app tokens
+            re-created (same `creds_*_token.txt` files); MKCOL `personal` 201
+            for both (D:-namespace body reused).
+          - **Step 1 — smtp.rs fix's LIVE PROOF:** PUT `invite.ics` as org
+            (custom UA `omnical-smoke/1.0`) → 201 + etag; REQUEST in att's
+            inbox (`req-smoke-invite-1_omnical.test.ics`, uid `@`→`_` as
+            predicted) **AND the iMIP email captured by the sink**: envelope
+            `mail_from <org@omnical.test> → <guest@example.net>`, **AUTH as
+            `org-smtp-user`, `tls: true`**; full SMTP transcript in the server
+            log (EHLO → STARTTLS → EHLO → AUTH PLAIN → MAIL/RCPT/DATA/QUIT, no
+            panic). Email verified: multipart/mixed, From
+            `Smoke Organizer <org@omnical.test>`, Subject "Invitation: …",
+            `Auto-Submitted: auto-generated`, human text/plain + base64
+            `text/calendar; method=REQUEST` attachment (decodes to the full
+            VEVENT with `METHOD:REQUEST` injected).
+          - **Step 2:** inbox GET as att → 200 + etag + `text/calendar`
+            (METHOD:REQUEST intact); GET as org (non-owner) → **401**
+            (owner-only auth); DELETE as att → 200, inbox empty after.
+          - **Step 3:** PUT `noua.ics` with curl's DEFAULT UA (curl/8.21.0) →
+            201 stored but **zero deliveries**: att inbox empty, no new email,
+            and every `send_mail` log line timestamps to the single earlier
+            invite delivery — UA exclusion live.
+          - **Step 4:** att PUTs the invite copy with PARTSTAT=ACCEPTED →
+            201; **organizer's stored copy rewritten** (org's
+            `personal/smoke-invite-1.ics` now shows
+            `ATTENDEE;…;PARTSTAT=ACCEPTED` for att) **+ REPLY in org's
+            inbox** (`reply-smoke-invite-1_omnical.test-att@omnical.test.ics`)
+            with METHOD:REPLY, same UID, correct ORGANIZER/ATTENDEE/PARTSTAT.
+            (Code-verified en route: the changed-PARTSTAT guard compares
+            against an existing old copy only — a first-time PUT with a
+            PARTSTAT fires the reply, which is exactly the iOS accept flow.)
+          - **Step 5:** att PUTs a `remote.ics` copy (external organizer
+            `remote@elsewhere.test`) with PARTSTAT=ACCEPTED → REPLY **email
+            captured: `mail_from <att@omnical.test> → <remote@elsewhere.test>`,
+            AUTH as `att-smtp-user`** (the attendee's own SMTP identity, per
+            design), attachment `method=REPLY`.
+          - **Step 6:** org DELETEs the invite → 200; **CANCEL in att's
+            inbox** (`cancel-smoke-invite-1_omnical.test.ics`, METHOD:CANCEL +
+            STATUS:CANCELLED, attendees preserved) **+ CANCEL email** to
+            guest@example.net (Subject "Cancelled: …", attachment
+            method=CANCEL, AUTH as org-smtp-user). Move-guard exercised
+            implicitly: only org's own calendars were searched (att's copy
+            correctly not treated as a "move").
+          - **Step 7:** outbox POST REQUEST as org → **200
+            `schedule-response`** with per-recipient `mailto:` hrefs and
+            `2.0;Success` for BOTH the internal (att) and external (guest)
+            recipient; deliveries verified (REQUEST in att's inbox + 4th email
+            captured). Outbox POST REPLY as att (single-attendee iTIP) → 200
+            `2.0;Success`; REPLY filed in org's inbox.
+          - **Internal gates re-verified on the FIXED binary + fresh DB (the
+            prior session's OPTIONS/PROPFIND greens predated the smtp.rs fix):
+            OPTIONS advertises `calendar-scheduling, calendar-auto-schedule` on
+            principal, calendar (which adds `webdav-push`), `/inbox`, `/outbox`;
+            PROPFIND principal fills all three schedule URLs
+            (inbox/outbox/default-calendar=personal).**
+          - **Totals:** 4 emails captured (001 REQUEST→guest from org, 002
+            REPLY→remote-organizer from att, 003 CANCEL→guest from org, 004
+            outbox REQUEST→guest from org) — every one with the correct
+            per-identity From + SMTP AUTH user. Cleanup: server + sink
+            stopped by PID (ports 4000/8025 free). `/tmp/opencode/sched-smoke/`
+            artifacts remain until reboot; this log is the durable record.
+          - **Gotcha worth remembering (verification tooling):** inbox-object
+            hrefs percent-encode `@` in object ids
+            (`reply-…-att%40omnical.test.ics`), so filtering PROPFIND output
+            with `grep -v %40` (meant to drop the principal self-hrefs)
+            silently hides inbox objects — filter on the `/inbox/` path
+            segment instead.
+     5. Cross-build aarch64 via `scripts/build-rust.sh` (recipe D), size-gate
       (binary was 26 MiB of the 35 MiB budget; expect ~+1 MiB), DB backup,
       `deploy.sh`, router config with the 7 SMTP accounts rendered from pass,
       server-side verify through dav-tls (`curl --resolve …:8443:192.168.1.21`).
