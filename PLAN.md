@@ -966,9 +966,17 @@ Notes from upstream docs:
 **Deliverable: the router is the convergence hub for all identities regardless of
 which provider hosts them.**
 
-> **STATUS (2026-09-04): DONE — 6.1, 6.2, and 6.3 steps 1–2 executed and verified;
-> 6.3 step 3 (canonicality flip) deliberately deferred per its own gate (needs the
-> verification matrix, i.e. Phase 7 client rows, to pass first).**
+> **STATUS (2026-09-04, updated 2026-09-06, completed 2026-09-07): DONE — 6.1, 6.2,
+> and 6.3 steps 1–2 executed and verified. 6.3 step 3 (canonicality flip) had been
+> deferred per its own gate (matrix Phase 7 client rows) but was **EXECUTED
+> 2026-09-06 by explicit user gate override** — the flip is LIVE (dedicated omnical
+> vdir trees synced from RustiCal, khal/khard repointed, conflict resolutions
+> flipped so the router is canonical end-to-end). ~~Only the two-way re-proof
+> remains open.~~ **The two-way re-proof is DONE (2026-09-07): khal and khard full
+> round-trips through the NEW omnical trees, every step synced and server-verified,
+> full sync idempotent — 6.3 is now FULLY DONE (see the step-3 record below, incl.
+> a new hub-chain deletion-resurrection finding).** Decisions,
+> results, and resume point: see the 6.3 step 3 record below.**
 > - **Safety net:** hot SQLite `.backup` pulled before any change
 >   (`~/backups/omnical/db-pre-phase6-20260904.sqlite3`, 148 KB) and again after
 >   migration (`db-post-phase6-20260904.sqlite3`, 3.5 MB).
@@ -1018,11 +1026,14 @@ which provider hosts them.**
 >   no-ops: `~/.calendars/local/` is **empty** (0 `.ics`), and
 >   `~/.contacts/contacts.csv` (90 rows) is a **stale Google export** — every
 >   phone (90/90) and email (6/6) already exists in the synced vCard addressbooks,
->   so importing would only create duplicates → skipped. Step 3 NOT done (matrix
->   gate). **Reminder for the 6.3 flip:** khal's `google_hawksnest` calendar points
->   at a *stale* dir (`~/.calendars/google/nicholas@hawksnestsoftware.com/`, 1
->   stale `.ics`) instead of the actively-synced `~/.calendars/hawksnest/…` — fix
->   when repointing khal.
+>   so importing would only create duplicates → skipped. Step 3 EXECUTED
+>   2026-09-06 (user gate override; record under 6.3 step 3 below).
+>   ~~Reminder for the 6.3 flip: khal's `google_hawksnest` calendar points at a
+>   *stale* dir (`~/.calendars/google/nicholas@hawksnestsoftware.com/`, 1 stale
+>   `.ics`) instead of the actively-synced `~/.calendars/hawksnest/…` — fix when
+>   repointing khal.~~ **RESOLVED by the flip: khal now reads the omnical trees
+>   (`omnical_hawksnest` ← RustiCal `personal`), so the stale dir is no longer
+>   referenced by any client.**
 > - **Two-way proof (Google-independent):** server-side PUT of a test vCard into
 >   carltonaudio's `personal` → downloaded into the local khard dir; server-side
 >   DELETE → deletion propagated locally (needed `--force-delete` — vdirsyncer's
@@ -1039,7 +1050,8 @@ which provider hosts them.**
 >     byte-identical) — that 104-contact set therefore now exists twice in
 >     RustiCal (once per identity), mirroring the user's existing khard topology.
 >     Kept deliberately (identity-based mapping per §3.4); revisit at the 6.3
->     flip if de-duplication is wanted.
+>     flip if de-duplication is wanted. — **REVISITED at the flip (2026-09-06):
+>     user decision = KEEP the duplicate.**
 >   - RustiCal hrefs = the item UID when UID-safe; UIDs containing `@` (all
 >     `…@google.com` ones) get generated UUID hrefs — harmless (vdirsyncer tracks
 >     hrefs via listing, not construction).
@@ -1093,18 +1105,142 @@ Add to cron/timer if no vdirsyncer scheduler exists today (this plan does not as
 one; check `crontab -l` / systemd timers first). Suggest every 15 min during
 migration, then hourly.
 
-### 6.3 Migration & khal/khard repointing — **steps 1–2 DONE 2026-09-04 (both no-ops — see STATUS); step 3 gated on the verification matrix as written**
+### 6.3 Migration & khal/khard repointing — **steps 1–2 DONE 2026-09-04 (both no-ops — see STATUS); step 3 FULLY DONE 2026-09-07 (flip live since 2026-09-06; two-way re-proof through the omnical trees verified 2026-09-07 — see the record under step 3)**
 
 1. Initial sync: vdirs (Google truth) → RustiCal collections.
 2. Import strays: `~/.calendars/local/*.ics` and `~/.contacts/contacts.csv`
    (convert to vCard, e.g. with `khard` tooling) via RustiCal's frontend import.
 3. After the verification matrix passes, flip conflict resolution and/or repoint
    khal/khard to the RustiCal-side vdir trees so the router becomes canonical:
-   ```ini
-   [[omnical_nfcarlton]]
-   path = ~/.calendars/omnical/nfcarlton@gmail.com/
-   type = calendar
-   ```
+    ```ini
+    [[omnical_nfcarlton]]
+    path = ~/.calendars/omnical/nfcarlton@gmail.com/
+    type = calendar
+    ```
+
+   — **EXECUTED (2026-09-06; flip LIVE, and the two-way re-proof completed
+   2026-09-07 — see the re-proof record at the end of this block). User
+   decisions (all 2026-09-06):**
+   proceed despite matrix rows 12–16 being open (gate override accepted — the
+   flip is dev-machine-only, the server untouched, fully reversible);
+   **topology** = dedicated omnical trees + conflict flips, hub pairs intact
+   (Google keeps mirroring both ways); **khal scope** = current set + holidays;
+   **contact de-dup** = KEEP the 104-card duplicate.
+   - **Pre-flight:** server healthy (`rustical health` OK); full `vdirsyncer
+     sync` baseline clean and idempotent; server-side live counts verified per
+     collection (calendars: nfcarlton `personal` **196**, hawksnest `personal`
+     **0**, hawksnest `holidays` **317**; addressbooks: burningserenity
+     **104**, nfcarlton **104**, nfcalaway@novo-ordo **1**, the other four
+     **0**). Count-checking oddity found en route (pre-existing, inside the
+     long-recorded 517 live total, untouched by the flip): 3 live object rows
+     still sit under the soft-deleted `_vdirtest` calendar and 1 live row sits
+     in nicholas@carltonaudio.com's `personal` CALENDAR — soft-deleting a
+     collection evidently does not tombstone its object rows.
+   - **Config backups (the rollback story):**
+     `~/.config/vdirsyncer/config.pre-phase63-20260906.bak`,
+     `~/.config/khal/config.pre-phase63-20260906.bak`,
+     `~/.config/khard/khard.conf.pre-phase63-20260906.bak` — and the ORIGINAL
+     vdir trees were never touched, so rollback = restore the three configs +
+     optionally delete the omnical pairs/trees.
+   - **vdirsyncer changes (`~/.config/vdirsyncer/config`):**
+     (1) the two Google CALENDAR pairs flipped `conflict_resolution`
+     "b wins"→"a wins" — the RustiCal-fed vdir now beats Google on conflict;
+     (2) explicit `conflict_resolution = "b wins"` added to the 7 rustical
+     CONTACT pairs (previously unset = hard error on conflict);
+     (3) **10 new pairs appended** (comment-marked "Omnical canonicality
+     flip"): `omnical_calendar_{nfcarlton,hawksnest}` covering 3 collections
+     (nfcarlton `personal`; hawksnest `personal` + `holidays`) and
+     `omnical_contacts_<id>` ×7, sharing two new filesystem storages —
+     `~/.calendars/omnical/` and `~/.config/khard/contacts/omnical/` (a-side
+     collection dirs = identity email; `holidays` for the holiday tree — the
+     plan's example path `~/.calendars/omnical/nfcarlton@gmail.com/` realized
+     verbatim) — with per-identity caldav/carddav remotes reusing the
+     `pass`-fetched vdirsyncer app tokens and Phase 6's three-item
+     `collections` form. All server pairs `b wins` (server canonical). The
+     existing `*/15` vdirsyncer cron picks the new pairs up automatically (it
+     syncs the whole config).
+   - **Initial sync verified:** discover + sync clean; the omnical trees
+     downloaded from the server with counts EXACTLY equal to the server live
+     counts above (196/317/0 `.ics`; 104/104/1/0×4 `.vcf`); full re-sync
+     idempotent (0 actions).
+   - **khal repointed (`~/.config/khal/config`):** `google`/`google_hawksnest`
+     REPLACED by `omnical_nfcarlton` (dark green) and `omnical_hawksnest`
+     (dark magenta — this is the stale-dir fix), `omnical_holidays` ADDED
+     (color `yellow`; **finding: khal 0.14's palette has no "dark yellow"**),
+     the empty `local` calendar kept as-is, `default_calendar =
+     omnical_nfcarlton`. Verified live: `khal printcalendars` lists the four;
+     `khal list` renders real events incl. "Labor Day :: Public holiday" from
+     the holidays tree.
+   - **khard repointed (`~/.config/khard/khard.conf`):** the 7 addressbook
+     NAMES kept identical (muscle memory/scripts), paths →
+     `~/.config/khard/contacts/omnical/<identity email>`. Verified live:
+     per-addressbook listings correct (nfcarlton-gmail 104, novo-ordo 1).
+     **Finding:** the combined `khard list` DEDUPLICATES the byte-identical
+     burningserenity/nfcarlton cards by UID (105 unique rows shown of 209) —
+     display behavior only, no data touched.
+    - **Two-way re-proof through the NEW trees — DONE (2026-09-07): all gates
+      green; 6.3 step 3 is now FULLY DONE.** Executed exactly per the former
+      resume list (with the recorded khal 0.14 `-a` / `"summary ::
+      description"` syntax); safety-net DB backup pulled first
+      (`~/backups/omnical/db-pre-63reproof-20260907.sqlite3`, 0600, integrity
+      ok, live counts 517/209). Final state: live counts back to EXACTLY
+      517/209 (soft-delete tombstones +1 event / +1 card → raw 521/212, as
+      designed); full sync idempotent; overlay 6580 KB free (floor intact).
+      - **khal leg:** `khal new -a omnical_nfcarlton 2026-09-10 15:00 16:00
+        "Omnical re-proof :: …"` → 197th `.ics` in the omnical tree (UID
+        `TLXS…`, UID-safe href); sync passes pushed it through the WHOLE
+        chain — one hop per pass, action-log evidence each: omnical pair →
+        server, rustical pair → old vdir, google pair → Google. Server-side
+        calendar-query REPORT (Sept-10 time-range, through dav-tls,
+        `ssl_verify_result=0`) → 207 with exactly the test event
+        (SUMMARY/DESCRIPTION/UID intact; the one extra REPORT match is the
+        known recurring-event over-match, not ours). Delete via `printf
+        'D\ny\n' | khal edit "Omnical re-proof"` → sync passes → deletion
+        logged on ALL three hops (server / old vdir / Google), GET of the
+        href → 404, REPORT window empty, `khal search` empty, omnical tree
+        back to 196.
+      - **khard leg:** full create → edit → remove cycle in `carltonaudio`
+        (the repointed omnical tree; khard 0.21 YAML template = the row-11
+        recipe: First/Last name + `Email: internet:`): create → 2 sync
+        passes (omnical pair → server, rustical pair → old flat tree
+        `~/.config/khard/contacts/carltonaudio/`) → server verified via
+        addressbook-query REPORT with an FN text-match (207, exact vcard);
+        edit (dump khard's own YAML via `khard show --format=yaml`, change
+        the email, `echo y | khard edit -a carltonaudio -i …`) → sync →
+        server shows the edited email on the SAME UID/href; remove
+        (`khard remove -a carltonaudio --force`) → `vdirsyncer sync
+        --force-delete` ×2 — the 1→0 empty-storage guard tripped exactly as
+        established, on BOTH hops (server addressbook 1→0 AND old flat tree
+        1→0; the plain boolean flag covers the whole run) → FN-filter REPORT
+        → empty multistatus + GET of the old href → 404; both trees back to
+        0 cards, `khard list -a carltonaudio` → "Found no contacts".
+      - **Idempotency (former resume item 2):** full `vdirsyncer sync` →
+        0 actions / 0 errors; immediate second run → 0 actions.
+      - **NEW FINDING — hub-chain deletions can be transiently REVERTED by
+        Google re-serialization (first delete attempt failed; retried
+        clean):** the first delete pass hit a **412 Precondition Failed**
+        (vdirsyncer 0.20 runs pairs CONCURRENTLY — the omnical pair deleted
+        the server item while the rustical pair was mid-PUT of the same item
+        from a stale listing; transient, self-resolves on re-run), and the
+        `*/15` cron ticks then RESURRECTED the event everywhere: Google had
+        re-serialized the uploaded event (PRODID `-//Google Inc//…`, new
+        DTSTAMP) and the google pair downloaded that version into the old
+        vdir — so the old-vdir etag was "changed on a" when the rustical
+        pair looked, and it re-UPLOADED the item to the server after the
+        omnical delete; the omnical pair then re-downloaded it into the
+        omnical tree. Root cause: a deletion racing a mid-chain content
+        change (the old-tree row-11 test couldn't hit this — its deletion
+        was single-hop from the shared a-side). **Clean procedure (proven,
+        used for the green result above): verify convergence first (one
+        sync = 0 actions), delete via the client, then run sync passes
+        back-to-back — from a converged state the deletion propagates
+        hop-by-hop in 3 passes with no interference.** Benign en route: one
+        transient `ConnectionResetError` on a listing (retry clean) and the
+        recurring `Deleting an item with no etag` warning on server/Google
+        deletes (vdirsyncer proceeds without If-Match; the deletes
+        demonstrably land).
+      - (Matrix rows 12–16 catch-up remains independent user-device work;
+        the flip no longer waits on it.)
 
 ---
 
@@ -1482,12 +1618,14 @@ inbox/outbox/scheduling queue (see §17 for the future custom extension).
 >   addressobjects 210, app_tokens 28). busybox tar quirk checked: absolute `/etc/rustical`
 >   gets its leading `/` stripped with a stderr notice only — stdout stays a clean gzip.
 > - WAL was already folded when this ran (router `-wal` file 0 bytes; overlay 9.3 M free,
->   91 % used — ≥ 5 M floor intact). **Restore drill into a scratch rustical instance
->   remains open (verification-matrix row 18).**
+>   91 % used — ≥ 5 M floor intact). ~~**Restore drill into a scratch rustical instance
+>   remains open (verification-matrix row 18).**~~ **DONE 2026-09-06 (later session) —
+>   all gates green; see the drill record under 8.1.**
 > - Elsewhere: 2.8 reboot gate **PASSED 2026-09-05** (natural reboot — services,
->   DB, certs, crons all intact; see Phase 2 STATUS); 6.3 step 3 still gated on
->   the matrix's Phase 7 client rows; Phase 7 client setup still requires the
->   user's physical devices.
+>   DB, certs, crons all intact; see Phase 2 STATUS); ~~6.3 step 3 still gated
+>   on the matrix's Phase 7 client rows~~ — **EXECUTED 2026-09-06 by user gate
+>   override; the flip is live and the two-way re-proof is DONE 2026-09-07 (see
+>   Phase 6.3 step 3's record)**; Phase 7 client setup still requires the user's physical devices.
 > - **8.4 DONE (2026-09-05)** — storage-watch line added to the nightly backup
 >   (implemented inside `nightly-backup.sh`, which the cron entry runs — no crontab
 >   change needed): each run appends one line to `~/backups/omnical/backup.log`
@@ -1559,6 +1697,42 @@ ssh router 'sqlite3 /usr/local/share/rustical/db.sqlite3 ".backup /tmp/omnical-b
 - Retention: 30 days local; optionally rsync a weekly copy to a VM (`wg-vm1`/`wg-vm3`).
 - **Restore drill:** test-restore the DB into a scratch RustiCal instance on the dev
   machine at least once (this is part of the verification matrix).
+  — **DONE (2026-09-06, later session): all gates green — matrix row 18 verified.**
+  Executed against the latest nightly artifact `~/backups/omnical/2026-09-06.tar.gz`
+  (02:30 cron, 1,756,613 B, 0600) in `/tmp/opencode/restore-drill/` (`/tmp` is wiped
+  on reboot — this record is the durable one):
+  - **Tar members verified:** `omnical-bu.db` + `etc/rustical/{config.toml,
+    tls/fullchain.pem,tls/key.pem}` (sensitive members 0600); extracted cert = the
+    live LE pair (CN=0115d8cf.duckdns.org, issuer Let's Encrypt YE2, valid
+    2026-09-04 → 2026-12-03); backed-up config carries `[scheduling]` (7
+    `[[scheduling.smtp]]` accounts) and no `[subscriptions]` — matches the artifact
+    predating the 14:29 subscriptions deploy (section headers checked only; SMTP
+    passwords never displayed).
+  - **DB-level gates (extracted file, read-only):** `PRAGMA integrity_check` = ok;
+    live counts (soft-delete-aware per the Phase 7 finding): principals 8,
+    memberships 7, calendars 17 live (18 raw — the tombstone is Phase 6's
+    `_vdirtest`), addressbooks 8, calendarobjects 517 live (519 raw),
+    addressobjects 209 live (211 raw), app_tokens 29, scheduling_inbox_objects 0;
+    `subscriptions` table absent (expected, see above); 10 migrations applied,
+    newest `20260905120000_scheduling`.
+  - **Scratch instance:** x86_64 `out/x86_64-unknown-linux-gnu/rustical` (the
+    subscriptions build) + minimal scratch config (bind `127.0.0.1:4001`, both
+    extensions left disabled) against a **copy** of the extracted DB (the artifact
+    stays pristine). Started clean (migrations → repair tasks → serving);
+    **auto-applied the pending `20260906120000_subscriptions` migration to the copy**
+    (10→11, 0 rows) — an older nightly restored into the current binary self-heals;
+    `rustical health` exit 0.
+  - **Data present through HTTP (vdirsyncer app token via `pass`, never echoed):**
+    OPTIONS 200; PROPFIND calendar home 207 (`personal` + `tasks` +
+    `_birthdays_personal` + `family` via membership); PROPFIND Depth 1 on nfcarlton
+    `personal` → **exactly 196 object hrefs == DB live count**; GET object → 200
+    `text/calendar` (real event, Google PRODID); REPORT calendar-query time-range
+    (Sept 2026) → 207 with 7 matches; CardDAV home PROPFIND 207; addressbook
+    `personal` → **104 `.vcf` hrefs == DB live count**; GET vcard → 200
+    `text/vcard`. Server log: 0 WARN/ERROR/PANIC lines.
+  - **Cleanup:** server stopped by PID (port 4001 free); scratch artifacts left in
+    `/tmp/opencode/restore-drill/` until reboot. **Row 19 (port-scan hygiene) is now
+    the only dev-machine-executable matrix row still open.**
 
 ### 8.2 Monitoring — **DONE (2026-09-06; see STATUS — watchdog script + 5-min cron, two findings recorded)**
 
@@ -1624,8 +1798,9 @@ ssh router 'sqlite3 /usr/local/share/rustical/db.sqlite3 ".backup /tmp/omnical-b
 >   (dav-tls bind + public URL now carry :8443, layout updated to the current
 >   tree).
 > - Not in 8.3's scope (still open, tracked elsewhere): matrix rows 12–16
->   (user's client devices), row 18 (restore drill), row 19 (port-scan
->   hygiene); §17.2 / §17.7 item 6 (live iPhone tests).
+>   (user's client devices), ~~row 18 (restore drill)~~ — **DONE 2026-09-06, see
+>   8.1's drill record**, row 19 (port-scan hygiene); §17.2 / §17.7 item 6
+>   (live iPhone tests).
 
 ### 8.4 Storage watch — **DONE (2026-09-05; see STATUS)**
 
@@ -1651,14 +1826,14 @@ before row 10 passes.
 | 8 | addressbook-query REPORT | curl REPORT on `/carddav/…` | 207, vCards match filter |
 | 9 | Well-known | `curl -sI https://…/.well-known/caldav` and `…/carddav` | 30x to correct roots (client autodiscovery path) |
 | 10 | vdirsyncer | `vdirsyncer discover && sync` (new pairs) | clean two-way sync incl. ETags; no items lost (diff before/after) — **✓ verified 2026-09-04 (Phase 6: 721 items a→b, 0 errors; server-side PUT/DELETE round-trip b→a; idempotent re-sync; server counts == local counts)** |
-| 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients — **✓ verified 2026-09-05 (Phase 7: khal create + edit + delete and khard create + edit + remove, each step synced and verified server-side via curl REPORT — calendar-query time-range for events, addressbook-query FN-filter for contacts; deletion propagation confirmed on BOTH hub sides for the event (Google + RustiCal) via vdirsyncer action logs; "other clients" beyond the hub = rows 12–14 clients, still pending)** |
+| 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients — **✓ verified 2026-09-05 (Phase 7: khal create + edit + delete and khard create + edit + remove, each step synced and verified server-side via curl REPORT — calendar-query time-range for events, addressbook-query FN-filter for contacts; deletion propagation confirmed on BOTH hub sides for the event (Google + RustiCal) via vdirsyncer action logs; "other clients" beyond the hub = rows 12–14 clients, still pending) — ✓ re-proofed 2026-09-07 through the NEW omnical trees (Phase 6.3 step 3: khal create + delete and khard create + edit + remove round-trips via the omnical pairs, every step synced and server-verified; deletion propagation omnical-tree → server → old-vdir → Google logged on all three hops; one transient hub-chain deletion-resurrection found and resolved — clean procedure recorded in the 6.3 step-3 record)** |
 | 12 | DAVx5 + Tasks.org | Android account; create/edit event, contact, task | syncs both directions; WebDAV Push = near-instant when enabled — **pre-flight + design DONE 2026-09-06 (Phase 7 STATUS Android bullet): server advertises webdav-push + scheduling tokens, WebPush transport live by default; Android re-scoped as a NEW invited identity (QR deep-link login `davx5://user:token@host:8443/`, family-calendar sharing vehicle for the invite); device work not started** |
 | 13 | Thunderbird | calendar + cardbook/tasks accounts at root URL | discovers all own collections + group calendars |
 | 14 | Apple Calendar/Contacts | caldav-compat path or config profile | account works; create/edit round-trips; contacts sync |
 | 15 | Sharing | group collection visible to member identities (all 4 domains) | cross-domain share works via membership |
 | 16 | iMIP invitation | Thunderbird invite to an external address on a different domain; attendee accepts | reply updates organizer's event |
 | 17 | Reboot persistence | `reboot` router; re-check services + data | everything returns; DB intact (proves not-in-/var) — **✓ verified 2026-09-05 (natural reboot: both services auto-started and healthy, DB integrity ok with identical live counts 517/209, certs + all crons intact, external 308/207 through the public URL; see Phase 2 STATUS)** |
-| 18 | Restore drill | restore nightly backup tar into scratch instance on dev machine | DB opens, data present |
+| 18 | Restore drill | restore nightly backup tar into scratch instance on dev machine | DB opens, data present — **✓ verified 2026-09-06 (Phase 8.1: nightly tar extracted, integrity ok, live counts 8/7/517/209/29; scratch x86_64 instance on a DB copy — health 0, pending `subscriptions` migration auto-applied, 196/196 events + 104/104 vcards served == DB, GET/REPORT 207; see 8.1's drill record)** |
 | 19 | Firewall hygiene | nmap 4000 from LAN/WAN; port-scan WAN IP | 4000 closed; only 22/443(+53) exposed |
 
 ---
