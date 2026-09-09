@@ -636,11 +636,11 @@ src/app.rs                             → pass auth_provider to api_router
               Alternatives rejected: unread-only ingest (status quo,
               fragile), keeping scheduling mailboxes out of the
               normal mail clients (workflow constraint, unreliable).
-   3. **IN PROGRESS — one-click RSVP links in invitation emails
-      (2026-09-09 session, stopped mid-flight per user direction):**
-      invited users should not have to download/open an `invite.ics` to
-      respond — invitation emails must carry links for accept, decline,
-      and maybe. Design decisions (recorded for the next session):
+   3. **DONE & DEPLOYED (2026-09-09) — one-click RSVP links in
+      invitation emails:**
+       invited users should not have to download/open an `invite.ics` to
+       respond — invitation emails must carry links for accept, decline,
+       and maybe. Design decisions (as implemented):
       - **One NEUTRAL link in the email → public response page carrying
         the actual Accept/Maybe/Decline links** (`GET /rsvp/{token}` is
         the page; `GET /rsvp/{token}?r=accept|maybe|decline` records).
@@ -658,15 +658,15 @@ src/app.rs                             → pass auth_provider to api_router
         anyway). The response word rides unsigned in `?r=` — the token
         holder can pick any of the three responses, which is exactly
         the capability the emailed invitation grants regardless.
-      - **Secret + base URL from config**: `[scheduling] rsvp_secret`
-      (render script to auto-generate `pass secrets/omnical/rsvp-secret`
-        on first render — NOT YET IMPLEMENTED) and
-        `[scheduling] rsvp_base_url` (falls back to `[subscriptions]
-        public_url` in `build_extensions` — already wired). Links are
-        minted only while BOTH are set; changing the secret invalidates
-        all outstanding links (endpoint then 404s until re-invited).
-        Startup log now reports "RSVP links enabled/disabled"; WARN if
-        a secret is set but no public URL resolves.
+       - **Secret + base URL from config**: `[scheduling] rsvp_secret`
+       (render script auto-generates `pass secrets/omnical/rsvp-secret`
+         on first render — DONE, see remaining-work item 4) and
+         `[scheduling] rsvp_base_url` (falls back to `[subscriptions]
+         public_url` in `build_extensions` — already wired). Links are
+         minted only while BOTH are set; changing the secret invalidates
+         all outstanding links (endpoint then 404s until re-invited).
+         Startup log now reports "RSVP links enabled/disabled"; WARN if
+         a secret is set but no public URL resolves.
       - **Zero new vendored crates**: `hmac 0.13` + `sha2 0.11` +
         `serde_json` were all already in Cargo.lock (hmac via pbkdf2,
         sha2/serde_json via caldav/frontend) — only `hmac` had to be
@@ -745,7 +745,9 @@ src/app.rs                             → pass auth_provider to api_router
            `caldav_router` merge now takes `scheduler.clone()` (an Arc
            refcount bump), so the RSVP mount block below it can still
            borrow `scheduler`; its comment updated accordingly.**
-       - **Remaining work (next session picks up here):**
+        - **Remaining work — ALL DONE (2026-09-09; items 1–5 in the
+           15:10–15:46 session, item 6 deployed + live-verified
+           19:55–20:05):**
          1. ~~Apply the 3 fixes above; root crate must `cargo check`
             clean.~~ **DONE (2026-09-09):** all three fixes applied as
             described above; `SQLX_OFFLINE=true cargo check -p rustical`
@@ -785,27 +787,197 @@ src/app.rs                             → pass auth_provider to api_router
             the route's 400-beats-404 semantics), foreign organizer →
             Invalid; every negative also asserts no REPLY was filed and
             nothing was applied.
-        3. Root HTTP tests for the /rsvp route (TestRig pattern from
-           `register.rs` tests): landing page 200 + three links present,
-           `?r=accept` → confirmation + stored PARTSTAT, bad token →
-           404, cancelled → 410, `?r=bogus` → 400, HTML escaping of
-           summary.
-        4. `~/router-dav/scripts/render-router-config.sh`: emit
-           `rsvp_secret` into the `[scheduling]` section, reading
-           `pass secrets/omnical/rsvp-secret` and AUTO-GENERATING the
-           entry on first render (`pass insert` with 32 random bytes
-           hex) so the deploy flow stays one command; no rsvp_base_url
-           needed (falls back to `[subscriptions] public_url` =
-           `https://0115d8cf.duckdns.org:8443`).
-        5. Full gate: `SQLX_OFFLINE=true cargo check --workspace
+         3. Root HTTP tests for the /rsvp route (TestRig pattern from
+            `register.rs` tests): landing page 200 + three links present,
+            `?r=accept` → confirmation + stored PARTSTAT, bad token → 404,
+            cancelled → 410, `?r=bogus` → 400, HTML escaping of summary.
+            — **DONE 2026-09-09: 6/6 pass** (`SQLX_OFFLINE=true cargo test
+            -p rustical --lib rsvp::`; full root lib suite 35/35 — the 29
+            pre-existing register/tasks tests still green). New
+            `#[cfg(test)] mod tests` in `src/rsvp.rs`, register.rs-TestRig
+            style: the rig merges `rsvp_router` next to the authenticated
+            `caldav_router` over one `Scheduler` + in-memory SQLite
+            (`test_store_context`, RSVP secret + base URL configured),
+            exactly mirroring `make_app`'s mounting; the organizer's copy
+            is PUT through the real CalDAV path with a vdirsyncer UA
+            (stored, delivery skipped). 6 tests: landing page (200,
+            event/organizer/attendee shown, the three `?r=` links, no
+            "already answered" note, `cache-control: no-store`);
+            `?r=accept` (confirmation "Response recorded"/"You have
+            accepted" + change-mind link back to the neutral page,
+            organizer's stored copy flips to `PARTSTAT=ACCEPTED` and is
+            still the full event, REPLY filed in the organizer's
+            scheduling inbox and retrievable as iTIP); bad token (garbage
+            shape + `?r=accept` → both 404 with the invalid-page body);
+            cancelled event (page + apply → both 410, nothing recorded);
+            `?r=bogus` (400 even for a garbage token — the 400-beats-404
+            word-check-first semantics pinned at the route level, back
+            link, stored copy untouched); HTML escaping (summary
+            `Tea & <script>party</script>` renders as
+            `Tea &amp; &lt;script&gt;party&lt;/script&gt;`, no raw
+            `<script>` in the page). `src/rsvp.rs` rustfmt-clean; clippy
+            adds zero warnings from the test module (the 6 pedantic
+            warnings in the file's pre-existing route code — lines ≤216 —
+            predate this task, left for item 5's full gate; same for the
+            fmt debt in `tests/integration_tests/{api,frontend_groups}.rs`).
+4. `~/router-dav/scripts/render-router-config.sh`: emit
+            `rsvp_secret` into the `[scheduling]` section, reading
+            `pass secrets/omnical/rsvp-secret` and AUTO-GENERATING the
+            entry on first render (`pass insert` with 32 random bytes
+            hex) so the deploy flow stays one command; no rsvp_base_url
+            needed (falls back to `[subscriptions] public_url` =
+            `https://0115d8cf.duckdns.org:8443`). — **DONE 2026-09-09:**
+            the script resolves the secret right after the base template
+            and emits `rsvp_secret = "…"` immediately after the
+            `[scheduling]` heredoc (still inside the table, before the
+            first `[[scheduling.smtp]]`). Auto-generation: probe `pass
+            show` → if empty, generate 32 random bytes hex (`od -An
+            -N32 -tx1 /dev/urandom | tr -d ' \n'`, 64 hex chars) →
+            `pass insert -m -f … <<<"$secret" >/dev/null` (stdout
+            discarded — pass's "Enter contents" prompt and mkdir chatter
+            must never leak into the rendered config that deploy.sh
+            captures on stdout) → re-read from pass to verify the
+            round-trip; a still-empty secret aborts the render with the
+            account-loop-style `!!` error (deploy.sh's `set -euo
+            pipefail` at line 30 then stops the deploy before anything
+            reaches the router). Two non-obvious bits found while
+            testing: (a) the probes need `|| true` inside the command
+            substitution — `pass show` exits 1 on a missing entry and
+            the script's `set -o pipefail` fails the whole probe
+            pipeline under `set -e`, aborting before the generate branch
+            could ever run (first test run died exactly there); (b)
+            pass 1.7.4's `cmd_insert` without `-f` prompts via `yesno`
+            on an existing entry and without `-m` double-reads
+            (password + retype) from stdin, so `-m -f` with a herestring
+            is the only non-interactive shape; the store is not a git
+            repo, so insert has no git side-effects. Verified: bash -n;
+            first real render auto-generated
+            `secrets/omnical/rsvp-secret` (64 hex chars, now in pass —
+            first render consumed), rendered config parses as TOML with
+            `scheduling.rsvp_secret` set, `rsvp_base_url` absent, 7
+            SMTP + 7 IMAP accounts + both novo-ordo `ca_file` pins
+            intact, `subscriptions.public_url` = the duckdns URL (the
+            runtime fallback confirmed in src/lib.rs `build_extensions`);
+            zero pass-insert stdout pollution in the rendered output;
+            re-render is idempotent — no regeneration message,
+            byte-identical config; stub-pass negative test (insert
+            "succeeds" but stores nothing) → clean `!! pass entry
+            missing or empty` abort, exit 1. Not committed to the
+            router: deploy is item 6.
+        5. ~~Full gate: `SQLX_OFFLINE=true cargo check --workspace
            --all-targets` 0e/0w, `cargo fmt`, clippy, all suites (dav,
            scheduling, caldav, store_sqlite, root lib+bin+http-int
-           +integration — register.rs TestRig precedent).
-        6. Cross-build (`scripts/build-rust.sh`) + `deploy.sh` + live
-           test: invite an external address from a configured identity,
-           confirm the email carries the response link, click through
-           accept → organizer PARTSTAT flips + inbox REPLY (same
-           verification shape as the 2026-09-09 IMAP live test).
+           +integration — register.rs TestRig precedent).~~ **DONE
+           (2026-09-09): all gates green.**
+           - `SQLX_OFFLINE=true cargo check --workspace --all-targets`
+             → **0 errors / 0 warnings** (re-verified after every
+             later step).
+           - `cargo fmt` **applied** (the deferred fmt debt): 11 files
+             reformatted — `crates/api/src/{collections,error,groups,
+             lib,members,users}.rs`, `crates/frontend/src/lib.rs` +
+             `routes/groups.rs`, `crates/scheduling/src/{rsvp,scheduler}.rs`,
+             `crates/store_sqlite/src/principal_store.rs`,
+             `tests/integration_tests/{api,frontend_groups}.rs` — all
+             pure line-collapsing nits in feature code; `cargo fmt
+             --check` clean afterwards.
+           - clippy: **all 16 warnings in the RSVP feature's own code
+             FIXED** (workspace 221 → 205 warnings; the remaining 205
+             are pre-existing pedantic debt outside the RSVP feature —
+             same "pre-existing debt only" standard as the IMAP gate):
+             `src/rsvp.rs` ×11 (doc-markdown backticks ×7 incl. the
+             test-module docs; `rsvp_router` doc split into a short
+             first paragraph; `#[must_use]` dropped — `Router` is
+             already `must_use`; `page()` now takes `&str` with all 8
+             call sites passing `&render_…()` — behavior-neutral; the
+             escaping test's `r#"…"#` → `r"…"`), scheduling
+             `rsvp.rs` ×2 (SafeLinks backtick; `verify_token` doc
+             split), `config.rs` `rsvp_links_enabled` → `const fn`,
+             `mime.rs` RSVP URL line `push_str(&format!)` → `write!`
+             (with `use std::fmt::Write as _`; the pre-RSVP Event/When
+             `format_push_string` lines left as pre-existing), root
+             `lib.rs` `rsvp_base_url` fallback → `clone_from`. The
+             scheduler.rs/mime.rs/config.rs warnings on pre-RSVP lines
+             and the 4 doc nits in caldav `scheduling/tests.rs`
+             (iPhone-regression + IMAP-era helpers) left as
+             pre-existing debt, matching prior gates.
+           - All suites **248 passed / 0 failed**:
+             dav 30 · scheduling 55 (+1 pre-existing live-network
+             `#[ignore]` — `connect_novo_ordo_with_pinned_intermediate`)
+             · caldav 46 · store_sqlite 21 · root lib 35 · root bin 6 ·
+             `tests/export_routes` 6 · `tests/http_integration` 6 ·
+             `tests/run_integration_tests` (= the `integration_tests/`
+              dir incl. the sharing `api` + `frontend_groups` suites) 43.
+         6. ~~Cross-build (`scripts/build-rust.sh`) + `deploy.sh` + live
+            test: invite an external address from a configured identity,
+            confirm the email carries the response link, click through
+            accept → organizer PARTSTAT flips + inbox REPLY (same
+            verification shape as the 2026-09-09 IMAP live test).~~
+            **DONE 2026-09-09, live test PASSED end-to-end:**
+            - **Cross-build:** `scripts/build-rust.sh` (clang recipe D)
+              2 m 49 s — rustical 29 M file (28 MiB stripped, within the
+              35 MiB budget), dav-tls 1.3 M byte-identical to the
+              deployed one (deploy.sh SHA-skipped its restart — no TLS
+              blip, dav-tls PID unchanged).
+            - **Pre-deploy backup** (established convention): hot SQLite
+              `.backup` pulled to
+              `~/backups/omnical/db-pre-rsvp-deploy-20260909.sqlite3`
+              (3,653,632 B, 0600, `PRAGMA integrity_check` = ok).
+            - **Deploy** (`deploy.sh`): config rendered with 7 SMTP +
+              7 IMAP accounts + `rsvp_secret` from pass; migration clean
+              (none needed — stateless HMAC tokens); rustical healthy;
+              startup log now reads **"Scheduling extension enabled
+              (7 SMTP identities, RSVP links enabled)"** + "IMAP iMIP
+              ingestion enabled (7 mailboxes, every 120s)". Overlay
+              3.6 MB free after the swap. Public-route sanity: a bogus
+              `/rsvp/<garbage>` through the real
+              `https://0115d8cf.duckdns.org:8443` front end → 404 with
+              the invalid-link page.
+            - **Outbound leg:** PUT (Apple `CalendarAgent` UA) of event
+              uid `live-rsvp-1` (organizer burningserenity@gmail.com,
+              attendee external-test@example.com) into `personal/` →
+              201 + log `scheduling: emailed REQUEST to
+              external-test@example.com (attempt 1)` (Gmail SMTP).
+            - **The email carries the response link — verified against
+              the *delivered* message:** Gmail archives SMTP-sent mail
+              in `[Gmail]/Sent Mail`, so the archived copy is exactly
+              what Gmail's SMTP accepted. Fetched it over IMAP
+              (`imap.gmail.com`, pass creds): Subject "Invitation: RSVP
+              link live test", a `text/calendar; method=REQUEST` part,
+              the "Respond directly in your browser" lead-in, and
+              exactly ONE RSVP URL — the neutral response page
+              (`/rsvp/v1.<claims>.<mac>`), no direct `?r=accept`
+              action links in the mail body (the SafeLinks-safe
+              design, live-confirmed).
+            - **Click-through:** landing page GET → 200 with event
+              details (summary, organizer, attendee, "September 10,
+              2026 at 17:00 (UTC)") + the three `?r=` links and no
+              "already answered" note; `?r=accept` → 200 "Response
+              recorded" / "You have accepted this invitation" +
+              change-mind link. Router log:
+              `rsvp link: attendee reply applied uid="live-rsvp-1"
+              attendee="external-test@example.com" partstat="ACCEPTED"`.
+            - **Organizer state flipped exactly like an emailed REPLY:**
+              stored copy in `personal/` re-GET'd — still the full
+              event, attendee line now `PARTSTAT=ACCEPTED`; scheduling
+              inbox contains
+              `reply-live-rsvp-1-external-test%40example.com.ics`,
+              retrievable as iTIP (`METHOD:REPLY`, `PARTSTAT=ACCEPTED`).
+              Re-visiting the neutral page then shows "You have already
+              accepted this invitation" (change-mind flow live).
+            - **Post-cleanup Gone semantics:** after deleting the test
+              event the same link → 410 "Invitation no longer
+              available" (valid token + dead event, as designed).
+            - **Cleanup:** event DELETEd 200 with the default curl UA
+              (in the UA-exclusion list → scheduler-guarded, NO CANCEL
+              email — verified no "emailed CANCEL" log line), inbox
+              REPLY DELETEd 200, Gmail Sent copy expunged by UID
+              (1 matched, 0 left). The pre-existing
+              `reply-live-imap-1-nicholas%40carltonaudio.com.ics`
+              artifact from the previous session's live test was left
+              untouched, as recorded there. `curl -d @file` CRLF-stripping
+              pitfall avoided (`--data-binary` throughout).
+            → **With item 6 the one-click RSVP feature (item 3) is
+            fully deployed and live-verified end-to-end.**
         Alternatives rejected: three direct action links in the email
         (SafeLinks prefetch records responses nobody gave; Google-style
         per-action signed links only work with an interactive login
