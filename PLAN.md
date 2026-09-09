@@ -3532,9 +3532,35 @@ Every step is reversible; nothing destructive is done to the router.
      than wiping a calendar (providers that omit old events on later fetches are
      common — Google's "no longer in past" folding). **Remove** deletes the
      mapping but leaves the materialized calendar data (it is a copy by design).
-   - Provider notes: Google secret iCal address (webcal) and iCloud/Outlook
-     publish URLs work directly; a Google calendar without a secret link → use
-     Upload (download the `.ics`, then portal import).
+- Provider notes: Google secret iCal address (webcal) and iCloud/Outlook
+      publish URLs work directly; a Google calendar without a secret link → use
+      Upload (download the `.ics`, then portal import).
+   - **DONE 2026-09-09** — import engine wired into the portal end-to-end:
+      the portal `Linked Platforms` section (list of sources per calendar with
+      Refresh/Remove) is mounted and served by owner-only routes, and `get_app`
+      wires the real `SqliteCalendarSourceStore` (the `fetch → parse →
+      materialize → refresh → remove` pipeline under §17.8.7 item 3 moved from
+      the dead `src/linked_platforms.rs` into `crates/frontend/src/routes/
+      linked_platforms.rs`; the old file was deleted). SSRF: `ssrf_guard` parses
+      literal IPv4/IPv6 via `url::Host` (no resolver round-trip, rebind-proof)
+      and resolves domains with `to_socket_addrs`, refusing private/loopback/
+      link-local/ULA/multicast/unspecified before connect and again after every
+      redirect; only https is accepted; fetch is a 20 s / 25 MB reqwest GET with
+      the resolved IP pinned. Refresh diffs by UID (`refresh_plan`), aborts on a
+      >50% mass-delete, and `Remove` deletes only the mapping, keeping the
+      materialized copy. Coverage: 14 frontend-crate unit tests (SSRF ranges
+      both directions + rejection messages, non-https refusal, plan
+      add/update/delete/mass-abort/tolerate-half, and a `#[cfg(test)]`
+      `store_pipeline` module verifying materialize + UID-diff refresh +
+      mass-delete abort against the real SQLite stores via the `test`-feature
+      harness) + 11 http-integration tests (`frontend_linked_platforms`:
+      page lists sources with actions, empty state, add refusals
+      non-https/private-range store nothing, unknown calendar, foreign user 401,
+      remove keeps data / foreign 404, refresh failure banner / foreign 401).
+      Gate: workspace check 0/0, fmt clean, clippy clean on new files, all 65
+      http-integration tests + full workspace suite green. The real-remote-fetch
+      happy-path + SSRF-negative controls remain for the live-deploy phase
+      (§17.8.7 item 6).
 
    ### 17.8.4 Share/export surface (own subscribe URLs in the portal)
    - New portal section listing, per owned collection, the existing subscription
@@ -3547,6 +3573,21 @@ Every step is reversible; nothing destructive is done to the router.
      8443"`).
    - Store/table stays the §17.7 `subscriptions` table; the CLI remains the
      server-admin surface, the portal is the per-user surface (same rows).
+   - **DONE 2026-09-09** — share surface complete + verified: the portal
+     `Share` section lists every owned collection (own + owned-group
+     principals) with the existing subscription row + **full export URL** +
+     **Revoke**, or a **Create share link** button; create mints a 64-char
+     app-token-shaped token into the same `subscriptions` table (`export_url`
+     built by the factored shared module), ownership-checked per collection
+     (own principal or a group the user owns), then redirects to the section.
+     The URL-builder moved to `crates/frontend/src/url_builder.rs` and is
+     re-exported at the root (`pub use rustical_frontend::url_builder`), so
+     CLI + portal share one source of truth (byte-identical URLs). Gate green
+     2026-09-09: workspace check 0/0, `fmt --all` clean, zero clippy warnings
+     on new files, 10 new `tests/integration_tests/frontend_share.rs` tests
+     (list w/ create buttons, create → URL + `/export` 200, group + foreign
+     group, unknown kind/collection, revoke → 404, wrong-user 401) + all 53
+     integration tests + full workspace suite green.
 
    ### 17.8.5 Config reference
    ```toml
@@ -3631,12 +3672,34 @@ Every step is reversible; nothing destructive is done to the router.
        parse/materialize/refresh engine with the SSRF policy. Preceded by **gate
        g-1** (crates/ical parses a remote feed). **DONE 2026-09-08** — workspace
        check 0/0, fmt clean, clippy clean on new files, 9 register tests + 19
-       integration tests all green. Gate (real remote .ics fetch + SSRF-negative
-       controls + mass-delete abort) remains for the live-deploy phase.
-    4. **Admin tooling**: `scripts/add-user.sh` created (0755, idempotent with
-       --force, --dry-run, --no-share, --hub, --group; stores secrets in pass;
-       prints fast-start summary). `remove-user.sh` not yet created.
-       **IN PROGRESS** — dry-run mode works, real router create pending.
+integration tests all green. Gate (real remote .ics fetch + SSRF-negative
+        controls + mass-delete abort) remains for the live-deploy phase.
+        **AMENDED 2026-09-09** — the Share half is fully wired end-to-end: the
+        portal section (create button + URL display + revoke for own + group
+        collections) is implemented and covered by 10 new http-integration
+        tests (see §17.8.4 DONE note); the linked-platforms import engine that
+        was committed under this item is now WIRED into the router —
+        `LinkedPlatformsSection` + owner-only add/refresh/remove routes mounted,
+        real `SqliteCalendarSourceStore`, engine + routes in
+        `crates/frontend/src/routes/linked_platforms.rs` (dead `src/
+        linked_platforms.rs` deleted), covered by 14 frontend-crate unit tests
+        (incl. a real-sqlite `store_pipeline`) and 11 http-integration tests
+        (see §17.8.3 DONE note); real-remote-fetch gate remains for item 6.
+4. **Admin tooling**: `scripts/add-user.sh` created (0755, idempotent with
+        --force, --dry-run, --no-share, --hub, --group; stores secrets in pass;
+        prints fast-start summary). `scripts/remove-user.sh` created (0755; the
+        §17.8.6 companion teardown: resolves the live principal id from the
+        router, hard-deletes the caldav/carddav collections via DAV
+        `X-No-Trashbin: 1` (a soft delete would leave rows and trip the
+        `ON DELETE RESTRICT` FK on `principals remove`), revokes app tokens +
+        subscriptions, removes the principal over SSH, then purges pass entries
+        behind `--purge-pass` (default ON) with a backup note first; handles
+        both pass-store layouts (raw email and add-user.sh underscored key
+        names) and a `--force`/`--dry-run`);
+        **IN PROGRESS** — both scripts are dry-run-verified end-to-end against
+        the live router (dry-run is read-only: principals list + live PROPFIND
+        enumerate the real collections/tokens/subscriptions), real router
+        create/remove pending.
    5. **Cross-build + deploy** (existing deploy.sh flow: `/tmp` staging, stop →
       binary-swap → config → start so the new `[registration]` section only ever
       meets the NEW binary; pre-deploy DB backup; the additive migrations
@@ -3653,8 +3716,8 @@ Every step is reversible; nothing destructive is done to the router.
    |---|---|---|---|
 | 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body).
 | 21 | Portal CRUD (self-registered) | create/read/update/delete calendars + addressbooks + app tokens as a fresh no-group user | full CRUD works; family/module collections invisible (no auto-group) |
-| 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored |
-| 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green |
+| 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored | **DONE 2026-09-09 (offline/wired)** — portal section + owner-only add/refresh/remove routes mounted with the real `SqliteCalendarSourceStore`; SSRF guards, fetch guards, UID-diff refresh, mass-delete abort, Remove-keeps-copy and banner paths covered by 14 frontend-crate unit tests + 11 http-integration tests (see §17.8.3 DONE note). The real-remote-provider lines (fetch, Refresh propagation, size cap) are §17.8.7 items 5–6 (live-deploy phase). |
+| 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green | **DONE 2026-09-09** — http-integration tests assert create → token-in-path URL served + revoke → 404, incl. group-owned collections (PORTAL create/revoke; the CLI-side byte-identical line is §17.7, already green). |
 | 24 | Registration HTTP gate | `cargo test -p rustical --lib --test http_integration` | 9 unit + 2 integration tests green; `test_register_enabled_provisions` asserts principal + 5 app tokens + personal/tasks + addressbook + 2 share feeds via `/export/{token}.{ics,vcf}`; `test_register_disabled_unmounted` 404 |
 
    ### 17.8.9 Risks & mitigations (new)
