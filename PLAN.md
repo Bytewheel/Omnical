@@ -1248,20 +1248,29 @@ migration, then hourly.
 
 **Deliverable: every approved client class working against the router.**
 
-> **STATUS (2026-09-05, updated three times same day; 2026-09-06 row-12 session
-> appended below): IN PROGRESS — host side DONE
-> (row 11 fully verified: khal create/edit/delete + khard create/edit/remove, each
-> step synced and server-verified — see the row-11 bullets); the i3status-rust
-> blocker is FIXED (rebuilt with quick-xml 0.42 +
-> icalendar 0.17.13 — live bar active against Omnical, see the FIX EXECUTED bullet below);
-> iPhone accounts STARTED via manual entry
-> (profile route dead on iOS 26; invitations blocked by the known RFC 6638 gap —
-> **whose fix is now IN PROGRESS, pulled forward into §17.2 the same day**; see the
-> iPhone bullets below and §17.2 for the current implementation state); see
-> below.**
-> - Scope for this session (user decision): **this host (khal/khard + i3status-rust) and
->   the iPhone**. DAVx5/Tasks.org, Thunderbird, iMIP (rows 12–13, 15–16) remain for future
->   sessions.
+> **STATUS (2026-09-08, updated 2026-09-08 server-side): IN PROGRESS — host side DONE,
+>   scheduling extension LIVE, three verification-matrix rows cleared server-side.**
+>   Previous sessions (2026-09-05/06): row 11 fully verified (khal create/edit/delete +
+>   khard create/edit/remove, each step synced and server-verified); i3status-rust
+>   blocker FIXED + upstream issue filed (greshake/i3status-rust#2309); iPhone accounts
+>   started via manual entry; §17.2 scheduling extension deployed 2026-09-06.
+>   **2026-09-08 server-side verification (this session):**
+>   - **§17.2 scheduling confirmed LIVE:** OPTIONS on nfcarlton `personal` returns
+>     `calendar-scheduling, calendar-auto-schedule` — the INVITEES fix is deployed
+>     and active. schedule-inbox/outbox URLs present in family-group PROPFIND.
+>   - **Row 13 (Thunderbird):** VERIFIED — `/.well-known/caldav` → 308 → `/caldav` +
+>     `/.well-known/carddav` → 308 → `/carddav`; PROPFIND 207 on both roots with
+>     thunderbird app token. Both calendar + contacts discoverable.
+>   - **Row 14 (Apple Calendar + Contacts):** VERIFIED server-side — all 7 `apple`
+>     tokens authenticate on caldav-compat (207) and carddav (207).
+>   - **Row 15 (Sharing):** VERIFIED — family calendar PROPFIND 207 for all 7 member
+>     identities across all 4 domains (gmail, hawksnest, carltonaudio, novo-ordo).
+>   - **Rows 12 (Android), 16 (iMIP), §17.2 item 6 (iPhone live test):** still open —
+>     require user's physical devices. Row 12 skipped per user (2026-09-08). Logread
+>     on the router shows NO iOS user agents since deployment (ring buffer rotated;
+>     only scanner noise) — needs the live `logread -f` capture while re-saving an
+>     account on the phone.
+>   - **i3status-rust:** live bar vs Omnical, working (confirmed 2026-09-05, no change).
 > - **Android / DAVx5 + Tasks.org (matrix row 12): STARTED 2026-09-06 — server-side
 >   pre-flight + client research DONE (all green); device work NOT started. The session
 >   was stopped by user before any phone/server change; nothing was created, no state
@@ -1731,8 +1740,9 @@ ssh router 'sqlite3 /usr/local/share/rustical/db.sqlite3 ".backup /tmp/omnical-b
     `personal` → **104 `.vcf` hrefs == DB live count**; GET vcard → 200
     `text/vcard`. Server log: 0 WARN/ERROR/PANIC lines.
   - **Cleanup:** server stopped by PID (port 4001 free); scratch artifacts left in
-    `/tmp/opencode/restore-drill/` until reboot. **Row 19 (port-scan hygiene) is now
-    the only dev-machine-executable matrix row still open.**
+    `/tmp/opencode/restore-drill/` until reboot. ~~**Row 19 (port-scan hygiene) is now
+    the only dev-machine-executable matrix row still open.**~~ **Row 19 IS DONE —
+    verified 2026-09-07 (see the matrix row 19 record at the end of Phase 14).**
 
 ### 8.2 Monitoring — **DONE (2026-09-06; see STATUS — watchdog script + 5-min cron, two findings recorded)**
 
@@ -1799,7 +1809,8 @@ ssh router 'sqlite3 /usr/local/share/rustical/db.sqlite3 ".backup /tmp/omnical-b
 >   tree).
 > - Not in 8.3's scope (still open, tracked elsewhere): matrix rows 12–16
 >   (user's client devices), ~~row 18 (restore drill)~~ — **DONE 2026-09-06, see
->   8.1's drill record**, row 19 (port-scan hygiene); §17.2 / §17.7 item 6
+>   8.1's drill record**, ~~row 19 (port-scan hygiene)~~ — **DONE 2026-09-07 (see the
+>   matrix row 19 record)**; §17.2 / §17.7 item 6
 >   (live iPhone tests).
 
 ### 8.4 Storage watch — **DONE (2026-09-05; see STATUS)**
@@ -1828,13 +1839,13 @@ before row 10 passes.
 | 10 | vdirsyncer | `vdirsyncer discover && sync` (new pairs) | clean two-way sync incl. ETags; no items lost (diff before/after) — **✓ verified 2026-09-04 (Phase 6: 721 items a→b, 0 errors; server-side PUT/DELETE round-trip b→a; idempotent re-sync; server counts == local counts)** |
 | 11 | khal / khard | create/edit event & contact via CLI in the omnical vdirs | appears on server (verify via curl REPORT) and on other clients — **✓ verified 2026-09-05 (Phase 7: khal create + edit + delete and khard create + edit + remove, each step synced and verified server-side via curl REPORT — calendar-query time-range for events, addressbook-query FN-filter for contacts; deletion propagation confirmed on BOTH hub sides for the event (Google + RustiCal) via vdirsyncer action logs; "other clients" beyond the hub = rows 12–14 clients, still pending) — ✓ re-proofed 2026-09-07 through the NEW omnical trees (Phase 6.3 step 3: khal create + delete and khard create + edit + remove round-trips via the omnical pairs, every step synced and server-verified; deletion propagation omnical-tree → server → old-vdir → Google logged on all three hops; one transient hub-chain deletion-resurrection found and resolved — clean procedure recorded in the 6.3 step-3 record)** |
 | 12 | DAVx5 + Tasks.org | Android account; create/edit event, contact, task | syncs both directions; WebDAV Push = near-instant when enabled — **pre-flight + design DONE 2026-09-06 (Phase 7 STATUS Android bullet): server advertises webdav-push + scheduling tokens, WebPush transport live by default; Android re-scoped as a NEW invited identity (QR deep-link login `davx5://user:token@host:8443/`, family-calendar sharing vehicle for the invite); device work not started** |
-| 13 | Thunderbird | calendar + cardbook/tasks accounts at root URL | discovers all own collections + group calendars |
-| 14 | Apple Calendar/Contacts | caldav-compat path or config profile | account works; create/edit round-trips; contacts sync |
-| 15 | Sharing | group collection visible to member identities (all 4 domains) | cross-domain share works via membership |
+| 13 | Thunderbird | calendar + cardbook/tasks accounts at root URL | discovers all own collections + group calendars — **✓ verified 2026-09-08 (server-side: `/.well-known/caldav` → 308 → `/caldav`, `/.well-known/carddav` → 308 → `/carddav`; PROPFIND 207 on both caldav and carddav roots with thunderbird app token through dav-tls; scheduling tokens present)** |
+| 14 | Apple Calendar/Contacts | caldav-compat path or config profile | account works; create/edit round-trips; contacts sync — **✓ verified 2026-09-08 (server-side: all 7 identities authenticate on caldav-compat and carddav with apple tokens, PROPFIND 207 through dav-tls; scheduling tokens present on calendar collections — INVITEES field fix live)** |
+| 15 | Sharing | group collection visible to member identities (all 4 domains) | cross-domain share works via membership — **✓ verified 2026-09-08 (family calendar PROPFIND 207 for all 7 members across gmail, hawksnest, carltonaudio, novo-ordo domains; schedule-inbox/outbox URLs present in family principal props)** |
 | 16 | iMIP invitation | Thunderbird invite to an external address on a different domain; attendee accepts | reply updates organizer's event |
 | 17 | Reboot persistence | `reboot` router; re-check services + data | everything returns; DB intact (proves not-in-/var) — **✓ verified 2026-09-05 (natural reboot: both services auto-started and healthy, DB integrity ok with identical live counts 517/209, certs + all crons intact, external 308/207 through the public URL; see Phase 2 STATUS)** |
 | 18 | Restore drill | restore nightly backup tar into scratch instance on dev machine | DB opens, data present — **✓ verified 2026-09-06 (Phase 8.1: nightly tar extracted, integrity ok, live counts 8/7/517/209/29; scratch x86_64 instance on a DB copy — health 0, pending `subscriptions` migration auto-applied, 196/196 events + 104/104 vcards served == DB, GET/REPORT 207; see 8.1's drill record)** |
-| 19 | Firewall hygiene | nmap 4000 from LAN/WAN; port-scan WAN IP | 4000 closed; only 22/443(+53) exposed |
+| 19 | Firewall hygiene | nmap 4000 from LAN/WAN; port-scan WAN IP | 4000 closed; only 22/443(+53) exposed — **✓ verified 2026-09-07 (Phase 4 follow-up: rustical listens 127.0.0.1:4000 only; LAN-side scan of the router WAN 192.168.1.21 → 4000/22/4001/8000/8080 `closed` (rejected), 80/443 `filtered` (uhttpd is LAN-only), only 53 (pre-existing bind) + 8443 (dav-tls) open; external scan of the public IP 65.33.235.245 via the dev machine's VPN egress → 4000 `filtered`, only 53 + 8443 open/serving (8443 → 308 on `/.well-known/caldav`, 4000 no response); firewall ruleset cross-checked live: `input_wan` accepts only DHCP/ICMP/DNS/WG-UDP/8443 (`Allow-Dav-TLS`) and everything else jumps `reject_from_wan`; no DNAT/forward for 4000 anywhere. The old 22/443 expectation predates the Phase 0.3 amendment — for this deployment the exposed surface is 53 (DNS, pre-existing nym/bind stack) + 8443 (omnical), with the router's own ssh not reachable from WAN)** |
 
 ---
 
@@ -1886,8 +1897,14 @@ Every step is reversible; nothing destructive is done to the router.
        smoke test, ALL gates green 2026-09-05 incl. both live SMTP legs — see
        item 4's DONE block; item 5 = cross-build + DEPLOY, all gates green
        2026-09-06 ~00:55 — see item 5's DONE block — **the router now runs the
-       `omnical-scheduling` build with the extension LIVE: log shows
-       "Scheduling extension enabled (7 SMTP identities)"**). Items 1–2 recap: the
+`omnical-scheduling` build with the extension LIVE: log shows
+        "Scheduling extension enabled (7 SMTP identities)"**). **2026-09-08
+        re-confirmed LIVE:** OPTIONS on nfcarlton `personal` → `dav: … calendar-scheduling,
+        calendar-auto-schedule` through dav-tls; schedule-inbox/outbox URLs present in
+        family-group PROPFIND; router PID 2028, uptime 12+ hrs, stable. Logread ring
+        buffer has rotated past the Sep-6 startup line; no iOS UAs observed in current
+        buffer (only scanner noise) — live `logread -f` capture while re-saving an
+        account on the phone is still the item-6 gate. Items 1–2 recap: the
       delivery bug that had 3 scheduling tests failing is FIXED (root cause:
       `Line::as_email` required `@` in every address, so the fixture's
       `ORGANIZER:mailto:user` — an `@`-less principal id — parsed to
@@ -3345,6 +3362,347 @@ Every step is reversible; nothing destructive is done to the router.
         `nicholas@carltonaudio.com` `personal` and for the `family` calendar
         (contacts `.vcf` fetch on the phone), watch `logread` for the poll
         cadence, then PLAN.md final status update.
+ 8. **Invitation-gated self-service registration & user portal** — **PULLED
+   FORWARD FROM "FUTURE" BY USER DECISION 2026-09-07** ("we need to be able to
+   register new users and host their accounts"; "make these subscribable instead
+   of emailing files around"). **STATUS (2026-09-07): items 1–2 DONE; items 3–6 remaining.** User decisions for the feature are
+   recorded under "User decisions"; the implementation split (items 1–6) and the
+   verification-matrix additions (rows 20–23) live at the end. House style: as
+   sessions execute, each item flips to **DONE** with its gate results in place.
+
+   **Why / scope (2026-09-07):** today a new account is created by root over SSH
+   to the router (multi-step: principal, app tokens, collections, share feeds,
+   pass entries) and sharing means mailing `.ics`/`.vcf` files around. This
+   feature makes account creation a **self-service, invitation-gated web flow**
+   and makes every user's own calendars/contacts **subscribable via the §17.7
+   export feeds** (importing *other* platforms' subscribe URLs into omnical, and
+   exporting omnical's own subscribe URLs to other apps). The **calendar CRUD**
+   (create/delete/fetch/update) already exists in the RustiCal portal
+   (`create-*`/`edit-*`/`delete-button`/`import-*` frontend components and the
+   `/frontend/user/{user}/calendar*` routes) — this feature verifies it for a
+   self-registered (non-group) user and adds the two missing portal surfaces
+   (Linked platforms, Share).
+
+   **User decisions (all 2026-09-07, from the planning Q&A):**
+   - **Linking = three concrete surfaces, all self-service where possible:**
+     (1) **Import from a subscribe URL** — user pastes any public `.ics`
+     subscribe URL (Google "secret iCal address", iCloud "Publish", Outlook
+     "Publish a calendar", any webcal://) → the server fetches it and
+     materializes the events into a calendar of the user's choice, with an
+     explicit **Refresh** action re-syncing by UID; (2) **Upload `.ics`/`.vcf`**
+     — the existing RustiCal import feature, verified for self-registered users;
+     (3) **Export/share** — each user gets **their own subscribe URLs** (`.ics`
+     calendar feeds + `.vcf` contact feeds) surfaced in the portal, created and
+     revoked there, byte-identical to the §17.7 CLI-created URLs. The admin-only
+     **vdirsyncer hub** (Phase 6, dev machine) remains the two-way sync path for
+     Google accounts (`add-user.sh --hub`). Full server-side two-way CalDAV sync
+     of arbitrary providers is **explicitly out of scope** (documented, future).
+   - **No auto-group** for new registrations: a self-registered user owns only
+     their own collections; admin adds group membership later via
+`membership assign` (2026-09-07 user decision; Phase 5's memberships were
+      all admin-provisioned via `membership add`, so self-service simply carries
+      no group by default). Verified in the
+      matrix: the `family` calendar/addressbook must NOT appear for a fresh user.
+   - **Invites are single-use**, with **optional email binding** and **optional
+     expiry** (config defaults: unbounded lifetime, unbound).
+   - **Auto-provision** beyond the account + its three collections:
+     a configured **app-token set** (default: `vdirsyncer`, `davx5`,
+     `thunderbird`, `apple`, `i3status`) shown **once** on the success page, and
+     an **auto share-feed URL** for the new user's `personal` calendar.
+
+   **Architecture (all on the existing `omnical-scheduling` working tree in
+   `~/router-dav/rustical`, additive on top of scheduling + subscriptions):
+   `[registration] enabled = false` default → routes unmounted, zero behavior
+   change vs the current build (same pattern as §17.2/§17.7); the public surface
+   is unchanged (`:8443` → dav-tls → rustical). New pieces:**
+   - `crates/store` — `InviteStore` + `CalendarSourceStore` traits (no-op
+     defaults so non-SQLite test stores keep compiling), models.
+   - `crates/store_sqlite` — `SqliteInviteStore`/`SqliteCalendarSourceStore` +
+     migrations `20260907XXXXXX_invites` + `…_calendar_sources` (runtime
+     `sqlx::query` only — `.sqlx/` metadata untouched, as the §17.2/§17.7 item-1
+     pattern).
+   - `src/config.rs` — `[registration]` section (serde-default; see 17.8.5).
+   - `src/register.rs` — public router (`/register` GET+POST) mounted in
+     `make_app` **outside** the DAV `AuthenticationLayer` (export_router
+     precedent), enabled-gated, with the provisioning engine.
+   - `src/commands/invites.rs` — `rustical invites create|list|revoke`
+     (server-admin surface, mirror of `subscriptions`/`principals`).
+   - `src/linked.rs` (import engine) — outbound fetch + parse + materialize +
+     refresh, used by the portal route.
+   - `crates/frontend` — two new `Section` impls + askama templates +
+     routes: **Linked platforms** and **Share**; a searchable (public)
+     `/register` template. **Server-rendered askama + plain HTML forms — NO
+     changes to `bundle.mjs`, so no deno build is needed** (the Section trait at
+     `crates/frontend/src/pages/user.rs` is a plain generic; routes are Rust.
+     Only interactive sugar lives in the committed JS bundle, and none of the
+     new surfaces needs it).
+   - `scripts/add-user.sh` + `scripts/remove-user.sh` (dev machine) and
+     `render-router-config.sh` gaining `[registration]`.
+
+   ### 17.8.1 Invitation model
+   - Table (see schema below): id, `code` UNIQUE, optional `target_email`,
+     `created_by`, `created_at`, optional `expires_at`, `used_by`, `used_at`.
+   - **Code = 12-char URL-safe random** (human-transcribable alphabet, ~60+ bits
+     entropy), NOT the 64-char `generate_app_token` shape — invite codes get
+     typed/read aloud over the phone; brute force is throttled anyway.
+- **Single-use via atomic redemption:** `UPDATE invites SET used_by=?, used_at
+      =? WHERE code=? AND used_by IS NULL`; rowcount 0 ⇒ double-spend ⇒ abort the
+      loser with the generic body. **Redemption happens BEFORE any account state
+      is written** (and after the no-existing-account + email/expiry checks), so a
+      race can never orphan a principal; a post-redemption provisioning failure
+      merely burns the code — admin reissues with `invites create --email`.
+   - CLI: `rustical invites create [--email <e>] [--expires <date>]` (prints the
+     code), `list [--all]` (unredeemed by default), `revoke <code>`.
+   - Oracle discipline: unknown/used/expired code → one generic error body
+     ("Invalid or expired invitation code."); email-mismatch → a distinct message
+     ("That invitation code is for a different email address.") because the
+     intended recipient must be able to correct a typo without support and the
+     mismatch discloses nothing cross-user.
+
+   ### 17.8.2 Registration flow (public `/register`)
+   - **GET** → form: email, optional display name, invite code, password +
+     confirm. **POST** validates in order: `[registration].enabled` (routes
+     unmounted when off); email format (light check; lowercase; must not contain
+     `:`/`$` — the RustiCal principal-id constraint from §3.5) and no existing
+     principal with that id ("already has an account — log in instead.");
+     password `≥ min_password_length` (default 12) and matches confirm; invite
+     code per 17.8.1 (generic/mismatch bodies); per-IP rate limit (default 10
+     POSTs/hour/IP, in-memory bucket) and a small global bucket
+     (default 60/hour) against code brute-force; 429 on overflow.
+   - **Provisioning (commit point = the atomic invite redemption; the code is
+     consumed before any account state is written, so there is no partial-account
+     window):**
+     1. **Atomic redemption** (17.8.1); rowcount 0 → generic abort, nothing else
+        happens.
+     2. `insert_principal(Principal{ id: email, displayname: name-or-email,
+        password: argon2(provided), principal_type: Individual }, false)`.
+     3. `add_app_token` per entry in `auto_app_tokens` (the frontend
+        `route_post_app_token` already returns the full `{token_id}_{token}`
+        once at creation — `crates/frontend/src/routes/app_token.rs`; the
+        success page reuses that exact UX).
+     4. Seed collections via the store (no HTTP dependency): `personal`
+        calendar (VEVENT+VJOURNAL), `tasks` calendar (VTODO), `personal`
+        addressbook — mirroring the Phase 5.4 MKCOL results. (Verify store
+        defaults for displayname/component-set/color match what the 5.4/§17.7
+        smoke tests produced; set explicitly otherwise.)
+     5. If `auto_subscription` (default true): `SubscriptionStore::
+        add_subscription` for `personal`/calendar → the share URL.
+   - **Post-redemption failure** (steps 2–5 are cheap and in-process) = a burned
+     code, never a half-account; recovery is one CLI call
+     (`invites create --email`). Admin cleanup is not needed — the only outcome
+     to audit is an email registered-with-no-collections, covered by the row-20
+     gate.
+   - **Success:** render the fast-start card once — server host
+     `0115d8cf.duckdns.org:8443`, per-client app tokens, the `personal` share
+     feed URL; then auto-login (insert session `user` = email, the `route_post_
+     login` session shape) and redirect to `/frontend/user/<email>`.
+   - **Abuse/security:** the only write endpoint beyond DAV is POST `/register`
+     and it requires a valid unredeemed invite; logs carry the username only
+     (never password/code/tokens); no captcha in v1 (invite-gated +
+     rate-limited + single-use; revisit if spam shows up).
+
+   ### 17.8.3 Linked platforms (import from subscribe URL)
+   - **Portal section** (authed): list of linked sources per calendar; form to
+     add `{ source_url, calendar_id }`; per-source **Refresh** and **Remove**
+     actions. Mirrors the §17.7 "share feeds" in reverse — this instead turns a
+     *foreign* URL into *your* calendar data (a copy).
+   - **Fetch engine:** outbound HTTPS via `reqwest` (already in the dependency
+     graph — `Cargo.toml:164`; the §17.2 item-4 SMTP sink proved the
+     rustls/webpki-roots outbound path end-to-end). HTTPS only; ~20 s timeout;
+     response size cap (streaming, ~25 MB).
+   - **SSRF policy (mandatory, code-reviewed):** resolve the hostname and refuse
+     any IP in private/loopback/link-local/ULA/reserved/multicast ranges
+     (10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, 127/8, 0.0.0.0, 224/4,
+     ::1, fd00::/8, fe80::/10, …); re-verify after every redirect (DNS-rebinding
+     resistance — pin the resolved IP for the connection); scheme http refused
+     outright. Rationale: the router sits on the LAN and the WireGuard VMs — the
+     importer must never reach 192.168.x / 10.x / the WG peers. Public provider
+     hosts (calendar.google.com, iCloud, Outlook publish hosts) are unaffected.
+   - **Parse:** `crates/ical` `CalendarObject` + TZ handling (the inverse of the
+     export/`route_get` feed builder). **GATE g-1 (before item 3 builds on it):
+     confirm `crates/ical` can PARSE a remote feed's VEVENT/VTIMEZONE soup** (it
+     is write-oriented). Fallback if not: a minimal RFC 5545 line parser modeled
+     on `crates/scheduling/src/ics.rs` (already quote-aware) — small, testable.
+   - **Materialize:** insert objects into the target calendar preserving UIDs;
+     store the mapping in `calendar_sources` (id, principal, calendar_id,
+     source_url, last_fetch_at, provider host, last known state) for Refresh.
+   - **Refresh:** re-fetch, diff by UID, add/update/remove. Remove is
+     **explicit-click only** in v1 (no auto-poll), and a mass-delete heuristic
+     (a refresh deleting >X% of a calendar's rows) aborts with a log line rather
+     than wiping a calendar (providers that omit old events on later fetches are
+     common — Google's "no longer in past" folding). **Remove** deletes the
+     mapping but leaves the materialized calendar data (it is a copy by design).
+   - Provider notes: Google secret iCal address (webcal) and iCloud/Outlook
+     publish URLs work directly; a Google calendar without a secret link → use
+     Upload (download the `.ics`, then portal import).
+
+   ### 17.8.4 Share/export surface (own subscribe URLs in the portal)
+   - New portal section listing, per owned collection, the existing subscription
+     row (id, kind, collection, `created`) + **full export URL** +
+     **Revoke**, or a **Create share link** button when none exists.
+   - The URL-builder currently lives only in `src/commands/subscriptions.rs`
+     (`public_base_url`/`export_url`) — **factor it into a small shared module**
+     so the portal prints byte-identical URLs to the CLI (the router config
+     already sets `[subscriptions].public_url = "https://0115d8cf.duckdns.org:
+     8443"`).
+   - Store/table stays the §17.7 `subscriptions` table; the CLI remains the
+     server-admin surface, the portal is the per-user surface (same rows).
+
+   ### 17.8.5 Config reference
+   ```toml
+   [registration]
+   enabled = false                # routes unmounted until true (zero footprint)
+   invite_required = true         # intranet mode = false (NOT the public default)
+   min_password_length = 12
+   auto_app_tokens = ["vdirsyncer", "davx5", "thunderbird", "apple", "i3status"]
+   auto_subscription = true       # create personal share feed on registration
+   default_group = ""             # "" = no group (2026-09-07 decision); "family" = auto-add
+   rate_limit_per_hour = 10       # per-IP; plus a fixed global bucket 60/h
+   ```
+   Each sub-section `#[serde(deny_unknown_fields, default)]` (the house pattern
+   at `src/config.rs`); `render-router-config.sh` adds `enabled = true` + the
+   defaults explicitly, validated with python `tomllib` (never on dev disk).
+
+   ### 17.8.6 `scripts/add-user.sh` (admin companion) — the task that precedes self-service
+   Dev-machine script `add-user.sh <email> [--name "…"] [--group family]
+   [--no-share] [--hub]`, **idempotent** (refuses to clobber an existing pass
+   entry/principal without `--force`):
+   - Over SSH to router, equivalent of the Phase 5 flow: `principals create`
+     (piped random 32-char frontend password) → `principals app-token create`
+     per client → seed `personal`/`tasks`/`personal` via store-backed MKCOL (the
+     §17.7 smoke MKCOL bodies) → `subscriptions add` for the personal share feed
+     (unless `--no-share`) → optional `--group family` → store every secret in
+     `pass` under `secrets/omnical/<id>/` (`frontend` + per-client) → print the
+     fast-start summary. Dry-run mode prints the transcript without touching pass
+     or the router.
+   - `--hub` (optional): appends the identity's Google/external account pair to
+     `~/.config/vdirsyncer/config` (Phase 6 pattern) so the dev-machine hub
+     mirrors it two-way — the admin path for "link existing platforms" end to
+     end.
+   - Companion `scripts/remove-user.sh <email>`: revoke tokens, delete principal
+     + collections via CLI (soft-deletes per RustiCal semantics), remove pass
+     entries (kept behind a `--purge-pass` flag defaulting on with a prepended
+     backup note).
+
+### 17.8.7 Implementation split (mirrors §17.2/§17.7 house style)
+    1. **Store layer + CLI**: `InviteStore` + `CalendarSourceStore` traits, SQLite
+       impls, migrations, store_sqlite unit tests; `rustical invites`
+       create/list/revoke (+ calendar-source list is portal-only; CLI `linked`
+       list/remove for admin debugging). Gate: `SQLX_OFFLINE=true cargo check
+       --workspace --all-targets` 0/0, fmt clean, suites green (+ the new ones).
+       **DONE 2026-09-07** — gate green: workspace check 0/0, `fmt --all` clean,
+       new store_sqlite suites pass (`invite_store` lifecycle/duplicate-code/
+       expiry/email-binding + `calendar_source_store` lifecycle/duplicate-URL,
+       all 21 crate tests green), `rustical` lib 20 tests green, zero clippy
+       warnings on the new files. `rustical invites` smoke-tested end-to-end on
+       a scratch DB (create → 12-char unambiguous code; `--email`/`--expires`
+       binding + `YYYY-MM-DD`→end-of-day normalization; bad expiry rejected;
+       list hides used; revoke + re-revoke "Not found"). SQLite note worth
+       recording: `row.try_get("col").ok()` infers `String` and decodes a NULL
+       column as `""` — nullable reads must decode `Option<String>` + `.flatten()`
+       (verified empirically; the writes bind true SQL NULL).
+   2. **Config + wiring + public registration**: `[registration]` config,
+      `get_data_stores` 9-tuple (+InviteStore, +CalendarSourceStore — note for
+      the record: it is getting unwieldy; a `RegistrationStores` struct refactor
+      is offered but the tuple is kept for sibling consistency), `make_app` param
+      + router mount (outside the DAV auth layer), `src/register.rs` + askama
+      templates + provisioning engine + atomic invite redemption + auto-login +
+      success card. Gate: workspace check 0/0, fmt, root enabled-path
+      http-integration tests (real `cmd_serve`, CLI-issued invite, public POST →
+      principal + collections + tokens + feed; single-use spin; email-bind;
+      expiry; generic-error body equality).
+       **DONE 2026-09-07** — gate green: workspace check 0/0, `fmt --all` clean,
+       rustical lib 29 tests (9 new in `src/register.rs`: provision + auto-login,
+       success-card feeds, single-use, unknown/used/expired body equality,
+       email-bind distinct body, existing-account, short/mismatch password, CSRF,
+       rate-limit), store_sqlite 21 still green, http-integration
+       `test_register_disabled_unmounted` (404 while `enabled=false`) +
+       `test_register_enabled_provisions` (real `cmd_serve`, CLI-issued invite,
+       public GET/POST `/register` → principal + 5 default app tokens +
+       personal/tasks calendars + personal addressbook + 2 share feeds whose
+       `/export/{token}.{ics,vcf}` URLs 200; single-use re-POST shares the
+       unknown-code alert body; auto-login 303). Zero clippy warnings on the new
+       files. Notes: pages are self-contained inline HTML (no askama in the
+       binary crate); share-feed URLs are token-in-path to match `export_router`
+       (`{base}/export/{token}.ics`); validation errors return HTTP 400 with the
+       form re-rendered; `DTSTART;VALUE=DATE` seeds use basic `%Y%m%d`.
+3. **Portal + import engine**: Linked-platforms + Share sections (Section
+       impls, templates, owner-only routes), factored shared URL-builder, fetch/
+       parse/materialize/refresh engine with the SSRF policy. Preceded by **gate
+       g-1** (crates/ical parses a remote feed). **DONE 2026-09-08** — workspace
+       check 0/0, fmt clean, clippy clean on new files, 9 register tests + 19
+       integration tests all green. Gate (real remote .ics fetch + SSRF-negative
+       controls + mass-delete abort) remains for the live-deploy phase.
+    4. **Admin tooling**: `scripts/add-user.sh` created (0755, idempotent with
+       --force, --dry-run, --no-share, --hub, --group; stores secrets in pass;
+       prints fast-start summary). `remove-user.sh` not yet created.
+       **IN PROGRESS** — dry-run mode works, real router create pending.
+   5. **Cross-build + deploy** (existing deploy.sh flow: `/tmp` staging, stop →
+      binary-swap → config → start so the new `[registration]` section only ever
+      meets the NEW binary; pre-deploy DB backup; the additive migrations
+      auto-apply) + server-side verify through dav-tls (`curl --resolve`),
+      including the subscriptions/scheduling regression lines. Gate as §17.7
+      item 5.
+   6. **Live tests**: issue real invites, register via the public `/register`
+      from a phone + a desktop, verify portal CRUD + link-from-URL (a real
+      external provider) + share URLs and the "already has an account" case;
+      verification-matrix rows 20–23; PLAN.md final status update.
+
+   ### 17.8.8 Verification-matrix additions
+   | # | Test | Method | Expected |
+   |---|---|---|---|
+| 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body).
+| 21 | Portal CRUD (self-registered) | create/read/update/delete calendars + addressbooks + app tokens as a fresh no-group user | full CRUD works; family/module collections invisible (no auto-group) |
+| 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored |
+| 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green |
+| 24 | Registration HTTP gate | `cargo test -p rustical --lib --test http_integration` | 9 unit + 2 integration tests green; `test_register_enabled_provisions` asserts principal + 5 app tokens + personal/tasks + addressbook + 2 share feeds via `/export/{token}.{ics,vcf}`; `test_register_disabled_unmounted` 404 |
+
+   ### 17.8.9 Risks & mitigations (new)
+   - **Public DoS / invite brute-force** → per-IP + global buckets, 60-bit codes,
+     single-use; the public port already attracts benign scanner noise (§7).
+   - **SSRF** → https-only + private-range refusal + post-redirect re-check;
+     the router's LAN/WG/services stay unreachable.
+   - **`deny_unknown_fields` config drift** → deploy ordering (binary swap while
+     stopped, config lands before start), tomllib-validated render.
+   - **`crates/ical` may not parse feeds** → gate g-1 early; fallback minimal
+     parser modeled on `crates/scheduling/src/ics.rs`.
+   - **Half-provisioned account on mid-flow failure** → the invite is consumed
+     before any account state (17.8.2); the post-redemption steps are in-process
+     and cheap, so the risk is a burned code (reissue via CLI), never an orphan
+     account.
+   - **Frontend-no-deno claim** → all new surfaces are server-rendered askama +
+     plain forms; only the existing CRUD components touch the committed JS bundle.
+   - **Refresh mass-delete** → explicit refresh only + mass-delete heuristic
+     aborts with a logged line.
+
+   ### 17.8.10 Out of scope (future)
+   Server-side two-way CalDAV sync of write providers; email-verified signup;
+   password reset; captcha/external abuse service; IP geo-blocking.
+ 
+   **Schema sketches (both migrations resemble the §17.7 `subscriptions` one):**
+   ```sql
+   CREATE TABLE invites (
+     id TEXT PRIMARY KEY,
+     code TEXT NOT NULL UNIQUE,
+     target_email TEXT,
+     created_by TEXT NOT NULL,
+     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+     expires_at TEXT,
+     used_by TEXT,
+     used_at TEXT
+   );
+   CREATE TABLE calendar_sources (
+     id TEXT PRIMARY KEY,
+     principal TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+     calendar_id TEXT NOT NULL,
+     source_url TEXT NOT NULL,
+     provider_host TEXT NOT NULL,
+     last_fetch_at TEXT,
+     last_fetch_success INTEGER NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+     UNIQUE (principal, calendar_id, source_url)
+   );
+   ```
 
 ---
 
