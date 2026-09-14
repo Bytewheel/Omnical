@@ -3860,19 +3860,32 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
             `rustical principals remove live-test-20260914@example.com`
             succeeded; verified via sqlite3: principal row gone, all 5 app
             tokens cascaded away (0 rows), no collections/addressbooks/
-            memberships had ever been created for it; the burned invite row
-            `9mdmUPMXmwm2` (used_by=live-test…) stays by design; `rustical
-            health` OK. Next → re-issue a fresh invite and redo the
-            registration flow, then portal CRUD + share links + group-join
-            invite (existing-user case) + linked-platform real-URL import +
-            the forced password-change gate live on a test account. The two
-            seeded users' own rotation remains theirs (their logins, not
-            ours).
+           memberships had ever been created for it; the burned invite row
+           `9mdmUPMXmwm2` (used_by=live-test…) stays by design; `rustical
+           health` OK.
+           **REGISTRATION REDO DONE 2026-09-14 (later session)** — rustical
+           restarted first (clears the in-memory rate-limit buckets), fresh
+           CLI invite `yoCehFdvHLer` (email-bound), full public flow
+           through dav-tls: GET `/register` (csrf) → POST → **200**
+           provisioned summary; sqlite3 server-side: principal + 5 app
+           tokens + personal/tasks calendars + personal addressbook all
+           displayname NULL + 2 subscription rows; both `/export/{token}.
+           {ics,vcf}` 200; single-use re-POST and unknown-code POST share
+           the 400 "Invalid or expired invitation code." body; auto-login
+           GET `/register` → 303 `/frontend/user/live-test…`; no ERROR
+           lines for the successful registration. Account + portal password
+           (pass) kept for the remaining live tests. Recorded under
+           verification-matrix row 20.
+           **Next** → portal CRUD + share links + group-join invite
+           (existing-user case) + linked-platform real-URL import + the
+           forced password-change gate live on a test account, then the
+           phone-based registration. The two seeded users' own rotation
+           remains theirs (their logins, not ours).
 
    ### 17.8.8 Verification-matrix additions
    | # | Test | Method | Expected |
    |---|---|---|---|
-| 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body). **LIVE: IN PROGRESS 2026-09-14, blocked** — first real public registration 500'd on the global-unique displayname collision ("Personal"/"Tasks" already held); fix (seed displayname NULL) implemented + regression-locked 2026-09-14: `test_register_enabled_provisions` now asserts NULL seeded displaynames and runs a second registration (reverting the fix fails the test); full workspace suite green. Rebuild + redeploy **DONE 2026-09-14** (§17.8.7 item 6 step 7: commit `f80074c0`, 4.8 MiB packed binary deployed, server-side verify green); live registration redo pending. |
+| 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body). **LIVE: DONE 2026-09-14 (redo after the fix)** — fresh CLI invite `yoCehFdvHLer` (email-bound `live-test-20260914@example.com`), public GET/POST `/register` through dav-tls (`--resolve 0115d8cf.duckdns.org:8443:192.168.1.21`): POST → **200** with the provisioned summary + both `/export/{token}.{ics,vcf}` URLs (200, `BEGIN:VCALENDAR…RustiCal Export`, empty vcf); server-side verify: principal row, **5 app tokens**, `personal`+`tasks` calendars and `personal` addressbook **all displayname NULL** (the `f80074c0` fix holding live), 2 subscription rows; invite row consumed (`used_by`+`used_at` set); single-use re-POST → 400 with the exact unknown-code body ("Invalid or expired invitation code."); auto-login GET `/register` on the registered session → 303 `/frontend/user/live-test-20260914@example.com`; zero ERROR lines for the 200 registration (the only 400 ERRORs logged are the intentional negative probes). Rate-limiter buckets cleared by restarting rustical first (in-memory). Portal password stored in pass (`secrets/omnical/live-test-20260914@example.com/portal`). **Finding for the record:** the `route_post_register` ERROR span logs the whole `RegisterForm` including the password in cleartext — pre-existing upstream behavior, noted for a future hardening item. Account kept for the remaining item-6 live tests. |
 | 21 | Portal CRUD (self-registered) | create/read/update/delete calendars + addressbooks + app tokens as a fresh no-group user | full CRUD works; family/module collections invisible (no auto-group) |
 | 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored | **DONE 2026-09-09 (offline/wired)** — portal section + owner-only add/refresh/remove routes mounted with the real `SqliteCalendarSourceStore`; SSRF guards, fetch guards, UID-diff refresh, mass-delete abort, Remove-keeps-copy and banner paths covered by 14 frontend-crate unit tests + 11 http-integration tests (see §17.8.3 DONE note). The real-remote-provider lines (fetch, Refresh propagation, size cap) are §17.8.7 items 5–6 (live-deploy phase). |
 | 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green | **DONE 2026-09-09** — http-integration tests assert create → token-in-path URL served + revoke → 404, incl. group-owned collections (PORTAL create/revoke; the CLI-side byte-identical line is §17.7, already green). |
