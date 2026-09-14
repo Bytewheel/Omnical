@@ -3739,12 +3739,49 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
         the live router (dry-run is read-only: principals list + live PROPFIND
         enumerate the real collections/tokens/subscriptions), real router
         create/remove pending.
-   5. **Cross-build + deploy** (existing deploy.sh flow: `/tmp` staging, stop →
-      binary-swap → config → start so the new `[registration]` section only ever
-      meets the NEW binary; pre-deploy DB backup; the additive migrations
-      auto-apply) + server-side verify through dav-tls (`curl --resolve`),
-      including the subscriptions/scheduling regression lines. Gate as §17.7
-      item 5.
+    5. **Cross-build + deploy** (existing deploy.sh flow: `/tmp` staging, stop →
+       binary-swap → config → start so the new `[registration]` section only ever
+       meets the NEW binary; pre-deploy DB backup; the additive migrations
+       auto-apply) + server-side verify through dav-tls (`curl --resolve`),
+       including the subscriptions/scheduling regression lines. Gate as §17.7
+       item 5.
+       **DONE & DEPLOYED 2026-09-14** — pre-deploy DB backup
+       (`nightly-backup.sh`, 2026-09-14.tar.gz); `render-router-config.sh`
+       now emits `[registration] enabled = true` + explicit defaults
+       (§17.8.5), rendered config validated with python `tomllib` (secrets
+       never on dev disk); cross-build via `build-rust.sh` (clang recipe D):
+       rustical 4.8 MiB UPX-packed (16.4 MiB raw, within the 35 MiB budget),
+       dav-tls unchanged (596 KiB, sha-identical → no restart); `deploy.sh`
+       swap clean (deploy.sh's 2 s health probe raced UPX decompress +
+       migrations + repair — the immediate `rustical health` re-check exits 0).
+       Live server-side verification through dav-tls, all green:
+       - **Migrations applied:** `principals.needs_password_change` column
+         present; `lynscarlton@gmail.com` + `chris@carltonaudio.com` seeded
+         `= 1` (verified via sqlite3 on the router).
+       - **Startup log:** "Scheduling extension enabled (7 SMTP, RSVP)",
+         "Subscriptions extension enabled", "**Registration extension enabled
+         (public /register)**", "IMAP iMIP ingestion enabled (7 mailboxes)",
+         serving on 127.0.0.1:4000; zero panics; no non-request ERROR/WARN
+         lines.
+       - **`GET /register` → 200** (form renders: email, displayname,
+         password `minlength=12`, confirm, invitation code, hidden csrf);
+         **CSRF live** (missing/wrong token → 400 "This form has expired");
+         **validation order live** (short password → "Password must be at
+         least 12 characters." before the invite check); **rate limiter
+         live** (the test POSTs tripped the per-IP 10/h bucket → 429).
+       - **Portal:** `GET /frontend/login` → 200. **Regressions:**
+         `/.well-known/caldav` → 308; OPTIONS on a caldav principal → 200;
+         live share feeds 200 (the two 404s during the sweep were
+         soft-deleted collections — indistinguishable-by-design, not a
+         regression); normal DAV traffic (iOS remindd PROPPATCH etc.)
+         flowing on the new binary.
+       - Negative POST `/register` with a valid CSRF but a wrong invite code
+         is integration-tested; the live invalid-code body check is deferred
+         to item 6 (the rate-limit bucket was consumed by the CSRF/limiter
+         probes; the limiter is in-memory and clears on restart).
+       - Record: deploy.sh's own health line raced startup (2 s) this time —
+         not a service problem (service `running`, listener up, health exit
+         0 on re-check); worth a longer wait in the script later.
    6. **Live tests**: issue real invites, register via the public `/register`
       from a phone + a desktop, verify portal CRUD + link-from-URL (a real
       external provider) + share URLs and the "already has an account" case;
@@ -3758,7 +3795,7 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
 | 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored | **DONE 2026-09-09 (offline/wired)** — portal section + owner-only add/refresh/remove routes mounted with the real `SqliteCalendarSourceStore`; SSRF guards, fetch guards, UID-diff refresh, mass-delete abort, Remove-keeps-copy and banner paths covered by 14 frontend-crate unit tests + 11 http-integration tests (see §17.8.3 DONE note). The real-remote-provider lines (fetch, Refresh propagation, size cap) are §17.8.7 items 5–6 (live-deploy phase). |
 | 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green | **DONE 2026-09-09** — http-integration tests assert create → token-in-path URL served + revoke → 404, incl. group-owned collections (PORTAL create/revoke; the CLI-side byte-identical line is §17.7, already green). |
 | 24 | Registration HTTP gate | `cargo test -p rustical --lib --test http_integration` | 9 unit + 2 integration tests green; `test_register_enabled_provisions` asserts principal + 5 app tokens + personal/tasks + addressbook + 2 share feeds via `/export/{token}.{ics,vcf}`; `test_register_disabled_unmounted` 404 |
-| 25 | Portal group-join invites | Share section per collection: "Send invite" (email-bound) / "Generate invite link" (unbound); redeem through `/register` as a new AND as an existing user | invite row stores `target_group` (+ optional email); new user provisions + joins group; existing user is auto-logged-in and joins; unbound link needs no email; invalid email rejected; foreign group 403 | **DONE 2026-09-13 (offline)** — 4 new `frontend_share.rs` integration tests; existing-user redemption covered by commit 44afb366 (see §17.8.2/17.8.4 AMENDED); live redeems pending §17.8.7 items 5–6 |
+| 25 | Portal group-join invites | Share section per collection: "Send invite" (email-bound) / "Generate invite link" (unbound); redeem through `/register` as a new AND as an existing user | invite row stores `target_group` (+ optional email); new user provisions + joins group; existing user is auto-logged-in and joins; unbound link needs no email; invalid email rejected; foreign group 403 | **DONE 2026-09-13 (offline)** — 4 new `frontend_share.rs` integration tests; existing-user redemption covered by commit 44afb366 (see §17.8.2/17.8.4 AMENDED). **DEPLOYED 2026-09-14** (item 5): portal + `/register` live; real redeems are item 6 |
 | 26 | Forced password change | a flagged user (seeded or first-join) logs into the portal | every portal page except `/user/{u}/password` redirects there; rotation clears the flag and lifts the gate (303); wrong current / short / mismatch rejected with the form re-rendered; passwordless users never gated | **DONE 2026-09-13** — seed migration `20260913120000_needs_password_change`; 7 `frontend_password.rs` + 5 store-principal tests; `test_principal_impersonation` amended (see §17.8.11) |
 
    ### 17.8.9 Risks & mitigations (new)
@@ -3836,7 +3873,10 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
      6 http_integration + 5 store principal tests), fmt + clippy clean on
      the new files. Note: a fresh registrant's flag is cleared during
      provisioning (§17.8.2 AMENDED 2026-09-13); an existing user redeeming a
-     group-join invite keeps the flag.
+     group-join invite keeps the flag. **DEPLOYED 2026-09-14** (§17.8.7
+     item 5): column + seeds live on the router; the two seeded users will be
+     forced to rotate on their next portal login — the live gate flow itself
+     is exercised by the item-6 live tests (their logins, not ours).
 
    **Schema sketches (both migrations resemble the §17.7 `subscriptions` one):**
    ```sql
