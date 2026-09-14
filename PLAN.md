@@ -3496,10 +3496,25 @@ Every step is reversible; nothing destructive is done to the router.
      `0115d8cf.duckdns.org:8443`, per-client app tokens, the `personal` share
      feed URL; then auto-login (insert session `user` = email, the `route_post_
      login` session shape) and redirect to `/frontend/user/<email>`.
-   - **Abuse/security:** the only write endpoint beyond DAV is POST `/register`
-     and it requires a valid unredeemed invite; logs carry the username only
-     (never password/code/tokens); no captcha in v1 (invite-gated +
-     rate-limited + single-use; revisit if spam shows up).
+- **Abuse/security:** the only write endpoint beyond DAV is POST `/register`
+      and it requires a valid unredeemed invite; logs carry the username only
+      (never password/code/tokens); no captcha in v1 (invite-gated +
+      rate-limited + single-use; revisit if spam shows up).
+   - **AMENDED 2026-09-11/12 (invite → group join):** invites carry an optional
+      `target_group` (set when minted from the portal Share section — §17.8.4 —
+      or the CLI), so redemption auto-joins the group. **Existing users** are now
+      handled instead of rejected: `lookup existing principal` runs after the
+      atomic redemption, and an already-registered user simply joins the invite's
+      `target_group` (if any) and is auto-logged-in to the success page — the
+      account is never duplicated and no collections are re-seeded. Group FK note
+      for the record: `memberships.member_of` → `principals.id`, so
+      `add_membership` requires the group principal to exist already.
+   - **AMENDED 2026-09-13 (needs_password_change interplay):** because the
+      registrant chooses their password in this very POST, provisioning ends with
+      `set_needs_password_change(email, false)` (error-logged, non-fatal) so the
+      first-join nudge (§17.8.11) never double-forces a fresh user. An EXISTING
+      user redeeming a group-join invite keeps the flag set by
+      `add_membership` (booking one forced change).
 
    ### 17.8.3 Linked platforms (import from subscribe URL)
    - **Portal section** (authed): list of linked sources per calendar; form to
@@ -3586,8 +3601,32 @@ Every step is reversible; nothing destructive is done to the router.
      2026-09-09: workspace check 0/0, `fmt --all` clean, zero clippy warnings
      on new files, 10 new `tests/integration_tests/frontend_share.rs` tests
      (list w/ create buttons, create → URL + `/export` 200, group + foreign
-     group, unknown kind/collection, revoke → 404, wrong-user 401) + all 53
-     integration tests + full workspace suite green.
+group, unknown kind/collection, revoke → 404, wrong-user 401) + all 53
+      integration tests + full workspace suite green.
+   - **AMENDED 2026-09-12/13 (registration invites per collection):** the Share
+      section now also mints one-time registration invites, in addition to the
+      export feeds:
+      - **Send invite** (2026-09-12): a per-collection email form
+        (`{principal, email}`) creates an unbounded-lifetime one-time invite
+        bound to that email AND to the collection's group principal
+        (`target_group`) — on redemption the new user (or an existing user,
+        §17.8.2 AMENDED) joins the group and gets full r/w to its shared
+        collections. Own collections (`principal == own id`) mint an invite
+        with `target_group = None`.
+      - **Generate invite link** (2026-09-13): the same invite with NO email
+        binding — `SendInviteForm.email` became `Option<String>`
+        (`#[serde(default)]`; empty/absent ⇒ unbound, invalid NON-empty still
+        rejected). The button prints a copy-pasteable `/register?code=…` link
+        to hand out out of band (`invite_url` + `invited_email` surfaced in
+        `share_section.html`, with a distinct banner per case).
+      Both mint the 12-char unambiguous code via `generate_invite_code()`
+      (§17.8.1) and store through `invite_store.add_invite(&code, &email,
+      &target_group, &user.id, &None)`; ownership is enforced per collection
+      (own principal or a group the user owns — foreign group 403).
+      Gate 2026-09-13: 4 new `frontend_share.rs` http-integration tests
+      (unbound link stored with `target_group`, email-bind, invalid email
+      rejected, unowned group Forbidden) + the whole §17.8.11 suite + full
+      `cargo test --workspace` green; fmt/clippy clean on new files.
 
    ### 17.8.5 Config reference
    ```toml
@@ -3719,6 +3758,8 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
 | 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored | **DONE 2026-09-09 (offline/wired)** — portal section + owner-only add/refresh/remove routes mounted with the real `SqliteCalendarSourceStore`; SSRF guards, fetch guards, UID-diff refresh, mass-delete abort, Remove-keeps-copy and banner paths covered by 14 frontend-crate unit tests + 11 http-integration tests (see §17.8.3 DONE note). The real-remote-provider lines (fetch, Refresh propagation, size cap) are §17.8.7 items 5–6 (live-deploy phase). |
 | 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green | **DONE 2026-09-09** — http-integration tests assert create → token-in-path URL served + revoke → 404, incl. group-owned collections (PORTAL create/revoke; the CLI-side byte-identical line is §17.7, already green). |
 | 24 | Registration HTTP gate | `cargo test -p rustical --lib --test http_integration` | 9 unit + 2 integration tests green; `test_register_enabled_provisions` asserts principal + 5 app tokens + personal/tasks + addressbook + 2 share feeds via `/export/{token}.{ics,vcf}`; `test_register_disabled_unmounted` 404 |
+| 25 | Portal group-join invites | Share section per collection: "Send invite" (email-bound) / "Generate invite link" (unbound); redeem through `/register` as a new AND as an existing user | invite row stores `target_group` (+ optional email); new user provisions + joins group; existing user is auto-logged-in and joins; unbound link needs no email; invalid email rejected; foreign group 403 | **DONE 2026-09-13 (offline)** — 4 new `frontend_share.rs` integration tests; existing-user redemption covered by commit 44afb366 (see §17.8.2/17.8.4 AMENDED); live redeems pending §17.8.7 items 5–6 |
+| 26 | Forced password change | a flagged user (seeded or first-join) logs into the portal | every portal page except `/user/{u}/password` redirects there; rotation clears the flag and lifts the gate (303); wrong current / short / mismatch rejected with the form re-rendered; passwordless users never gated | **DONE 2026-09-13** — seed migration `20260913120000_needs_password_change`; 7 `frontend_password.rs` + 5 store-principal tests; `test_principal_impersonation` amended (see §17.8.11) |
 
    ### 17.8.9 Risks & mitigations (new)
    - **Public DoS / invite brute-force** → per-IP + global buckets, 60-bit codes,
@@ -3738,10 +3779,65 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
    - **Refresh mass-delete** → explicit refresh only + mass-delete heuristic
      aborts with a logged line.
 
-   ### 17.8.10 Out of scope (future)
+### 17.8.10 Out of scope (future)
    Server-side two-way CalDAV sync of write providers; email-verified signup;
    password reset; captcha/external abuse service; IP geo-blocking.
- 
+
+   ### 17.8.11 Forced one-time password change (`needs_password_change`)
+   When a real user (one with a stored password) is added to their FIRST-EVER
+   membership, they are now nudged to change their password on the next portal
+   login — the admin/user who chose the initial password no longer controls it
+   once a shared calendar is involved. Design and implementation (2026-09-13):
+   - **Flag:** `Principal.needs_password_change: bool` (`#[serde(default)]`,
+     so old serialized principals stay decodeable); column
+     `principals.needs_password_change BOOLEAN NOT NULL DEFAULT 0` via
+     migration `20260913120000_needs_password_change`. **Seeded `true`** for
+     `lynscarlton@gmail.com` + `chris@carltonaudio.com` — the two initial
+     shared-calendar users whose passwords were admin-chosen.
+   - **Set on first join:** `PrincipalStore::add_membership` now runs in a
+     transaction: reads the principal's membership count (0 when none) and
+     `password_hash` (has one?), does the `REPLACE INTO memberships`, and —
+     only when `count == 0 && has_password && rows_affected() == 1` — sets
+     the flag. Group principals / passwordless (OIDC) users are never
+     flagged. Runtime `sqlx::query` + `Row::get` for the new reads; the
+     `.sqlx/` offline metadata and the checked `query!` texts are untouched
+     (house pattern).
+   - **Store API:** `get_needs_password_change` / `set_needs_password_change`
+     (runtime-row reads), and `update_password(principal, argon2_hash)` which
+     writes the hash AND clears the flag in one UPDATE — rotation is the only
+     un-flag. Trait defaults: `update_password` → `Err(Error::ReadOnly)`,
+     get/set → `Ok(false)`/`Ok(())` no-ops (non-SQLite test stores).
+   - **Frontend gate:** middleware `password_change_gate`, layered LAST on
+     `user_router` (outermost, so it runs after `AuthenticationLayer` and the
+     `Principal` extension is present), redirects EVERY portal page except
+     `/frontend/user/{u}/password` while
+     `user.needs_password_change && user.password.is_some()` — passwordless
+     users are never gated even if flagged.
+   - **Change page** `/frontend/user/{u}/password` (GET+POST, askama
+     `password_change.html`, new `routes/password.rs`): GET renders the form
+     (a plain redirect when `allow_password_login` is off); POST verifies
+     current password via `validate_password`, `new_password ==
+     new_password_confirm`, `len >= FrontendConfig.min_password_length`
+     (new config field, default 12), argon2-hashes (frontend crate gained the
+     `argon2` workspace dep) and calls `update_password` → 303 to
+     `/frontend/user/{id}`. No JS, no config — consistent with the rest of
+     the server-rendered portal.
+   - **Gate 2026-09-13 (all green):** store_sqlite `tests/principal_store.rs`
+     +5 (first-join sets flag, later joins don't re-trigger, passwordless
+     never flagged, set/clear round-trip, `update_password` rotates + clears)
+     and `tests/principal_store` registered as `#[cfg(test)]`;
+     http-integration `frontend_password.rs` +7 (gate redirect, passwordless
+     skip, page render, wrong current, short, mismatch, success clears flag +
+     lifts the gate + redirect); `http_integration.rs::
+     test_principal_impersonation` amended to the now-forced change flow
+     (login → `/frontend/user` → SEE_OTHER `/frontend/user/user/password` →
+     change → SEE_OTHER `/frontend/user/user`); workspace `cargo check`
+     0/0, `cargo test --workspace` fully green (76 run_integration +
+     6 http_integration + 5 store principal tests), fmt + clippy clean on
+     the new files. Note: a fresh registrant's flag is cleared during
+     provisioning (§17.8.2 AMENDED 2026-09-13); an existing user redeeming a
+     group-join invite keeps the flag.
+
    **Schema sketches (both migrations resemble the §17.7 `subscriptions` one):**
    ```sql
    CREATE TABLE invites (

@@ -985,3 +985,26 @@ src/app.rs                             → pass auth_provider to api_router
         + GC for no benefit over stateless HMAC), signing the response
         into the token (the emailed invitation grants all three
         responses anyway; the secret gates WHO can respond, not WHAT).
+
+- **Portal one-time registration invites + forced password change (DONE
+   2026-09-12/13, on the `omnical-scheduling` working tree — full record in
+   PLAN.md §17.8.2/17.8.4/17.8.11, verification matrix rows 25–26):** the
+   portal Share section mints one-time registration invites per calendar
+   collection — **Send invite** (email-bound, 2026-09-12) and **Generate
+   invite link** (unbound `/register?code=…`, 2026-09-13, after
+   `SendInviteForm.email` became `Option<String>`); both carry the
+   collection's group as `target_group`, and redemption auto-joins new
+   registrants AND already-registered users (who are auto-logged-in).
+   New `Principals.needs_password_change` flag (migration
+   `20260913120000_needs_password_change`, seeded `true` for
+   lynscarlton@gmail.com + chris@carltonaudio.com) is set on a real user's
+   first-ever membership (transactional `add_membership`) and forces a
+   one-time current-password-verified rotation on the next portal login via a
+   `password_change_gate` middleware + `/frontend/user/{u}/password` page
+   (`FrontendConfig.min_password_length`, default 12); `update_password`
+   clears the flag; fresh registrants are un-flagged during provisioning.
+   Gates green 2026-09-13: workspace check 0/0, fmt + clippy clean on new
+   files, `cargo test --workspace` fully green (76 run_integration +
+   6 http_integration + 21 store_sqlite incl. 5 new principal-store tests),
+   incl. the amended `test_principal_impersonation` (now a forced-change
+   flow).
