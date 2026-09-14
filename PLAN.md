@@ -3809,14 +3809,33 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
           have 500'd identically, leaving a half-provisioned account and a
           burned code. The integration test never caught it because its fresh
           test DB has no other user holding "Personal".
-       5. **Fix drafted (uncommitted, untested, working tree only):** seed
-          `displayname: None` for the personal/tasks calendars and the
-          personal addressbook — the exact shape the Phase 5.4 MKCOL results
-          have in production (chris/lynscarlton/nfcalaway/nicholas rows are
-          all NULL; DAV clients fall back to the collection id "personal",
-          which is what Apple/DAVx5 display today). Also planned: extend
-          `test_register_enabled_provisions` with a SECOND registration so
-          the collision is regression-locked.
+        5. **Fix drafted (uncommitted, untested, working tree only):** seed
+           `displayname: None` for the personal/tasks calendars and the
+           personal addressbook — the exact shape the Phase 5.4 MKCOL results
+           have in production (chris/lynscarlton/nfcalaway/nicholas rows are
+           all NULL; DAV clients fall back to the collection id "personal",
+           which is what Apple/DAVx5 display today). Also planned: extend
+           `test_register_enabled_provisions` with a SECOND registration so
+           the collision is regression-locked.
+           **IMPLEMENTED & TESTED 2026-09-14 (session continued):** the fix
+           is applied in the rustical working tree (`src/register.rs`,
+           committed 2026-09-14 as `f80074c0` — see step 7) and
+           `test_register_enabled_provisions` is extended
+           two ways: (a) explicit `displayname == None` assertions on the
+           first registration's personal/tasks calendars and personal
+           addressbook, and (b) a full SECOND registration
+           (`second@example.com`, fresh invite + fresh cookie session)
+           asserting 200, principal + 5 app tokens + collections with NULL
+           displaynames. Regression proof: temporarily reverting
+           `src/register.rs` makes the test fail exactly at the old bug
+           (`left: Some("Personal")`, `right: None`) — the pre-fix code
+           cannot pass the extended test. Gates green:
+           `SQLX_OFFLINE=true cargo check --workspace --all-targets` 0/0,
+           full `cargo test --workspace` all suites ok (incl. 35 rustical
+           lib + 6 http-integration tests). The two touched files add zero
+           new clippy/fmt findings (whole-repo rustfmt/clippy drift from the
+           newer toolchain exists in untouched files — pre-existing, noted
+           for the record).
        6. **Observation for the record (rate limiter):** dav-tls sets no
           `X-Forwarded-For`, so the register per-IP bucket (10/h) keys every
           client as `"<global>"` — i.e. it is effectively one shared global
@@ -3824,9 +3843,19 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
           bucket, not a per-IP one). Either dav-tls should forward XFF or the
           limiter should fall back to the TCP peer. Not urgent: the shared
           bucket is *stricter*, not weaker.
-       7. **Remaining live work (rows 20–23, 25, 26 flows):** run the fix's
-          unit/integration tests → `cargo test` → rebuild → redeploy →
-          clean up the half-provisioned `live-test-20260914@example.com`
+        7. **Remaining live work (rows 20–23, 25, 26 flows):**
+           ~~run the fix's unit/integration tests → `cargo test`~~ **DONE
+           2026-09-14 (see step 5 above)**; ~~rebuild → redeploy~~ **DONE
+           2026-09-14** — fix committed `f80074c0` (rustical tree);
+           `build-rust.sh` (clang recipe D) green: rustical 4.8 MiB
+           UPX-packed (within the 35 MiB budget), dav-tls unchanged
+           (596 KiB, sha-identical → no restart); `deploy.sh` swap clean,
+           `rustical health` exits 0 on first probe, service `running`;
+           server-side verify through dav-tls (`--resolve
+           0115d8cf.duckdns.org:8443:192.168.1.21`): `/register` 200,
+           `/.well-known/caldav` 308, `/frontend/login` 200; startup log
+           "Registration extension enabled (public /register)". Next →
+           clean up the half-provisioned `live-test-20260914@example.com`
           (principal + 5 app tokens, no collections; the burned invite row
           stays by design) → re-issue a fresh invite and redo the
           registration flow, then portal CRUD + share links + group-join
@@ -3838,7 +3867,7 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
    ### 17.8.8 Verification-matrix additions
    | # | Test | Method | Expected |
    |---|---|---|---|
-| 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body). **LIVE: IN PROGRESS 2026-09-14, blocked** — first real public registration 500'd on the global-unique displayname collision ("Personal"/"Tasks" already held); fix drafted (seed displayname NULL), untested/unbuilt (see §17.8.7 item 6). |
+| 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body). **LIVE: IN PROGRESS 2026-09-14, blocked** — first real public registration 500'd on the global-unique displayname collision ("Personal"/"Tasks" already held); fix (seed displayname NULL) implemented + regression-locked 2026-09-14: `test_register_enabled_provisions` now asserts NULL seeded displaynames and runs a second registration (reverting the fix fails the test); full workspace suite green. Rebuild + redeploy **DONE 2026-09-14** (§17.8.7 item 6 step 7: commit `f80074c0`, 4.8 MiB packed binary deployed, server-side verify green); live registration redo pending. |
 | 21 | Portal CRUD (self-registered) | create/read/update/delete calendars + addressbooks + app tokens as a fresh no-group user | full CRUD works; family/module collections invisible (no auto-group) |
 | 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored | **DONE 2026-09-09 (offline/wired)** — portal section + owner-only add/refresh/remove routes mounted with the real `SqliteCalendarSourceStore`; SSRF guards, fetch guards, UID-diff refresh, mass-delete abort, Remove-keeps-copy and banner paths covered by 14 frontend-crate unit tests + 11 http-integration tests (see §17.8.3 DONE note). The real-remote-provider lines (fetch, Refresh propagation, size cap) are §17.8.7 items 5–6 (live-deploy phase). |
 | 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green | **DONE 2026-09-09** — http-integration tests assert create → token-in-path URL served + revoke → 404, incl. group-owned collections (PORTAL create/revoke; the CLI-side byte-identical line is §17.7, already green). |
