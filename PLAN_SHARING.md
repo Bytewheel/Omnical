@@ -1008,3 +1008,56 @@ src/app.rs                             → pass auth_provider to api_router
    6 http_integration + 21 store_sqlite incl. 5 new principal-store tests),
    incl. the amended `test_principal_impersonation` (now a forced-change
    flow).
+
+---
+
+## 10. Privilege-Based Access Control (user request 2026-09-14)
+
+**Request:** replace "membership = full r/w" with three per-member privilege
+levels on shared groups:
+- **view** — read-only: see and subscribe to the group's collections, no writes
+- **edit** — full CRUD on the group's calendars/addressbooks (today's member level)
+- **admin** — edit + member management: change other members' privileges, invite and remove users
+
+(Also requested, recorded in PLAN.md §17.9.1: generated invite links persist
+and show in the same tile as the calendar they were generated for.)
+
+### 10.1 Design sketch (to be refined at implementation time)
+
+- **Data model:** new table `group_members (group_id TEXT, member_id TEXT,
+  privilege TEXT NOT NULL CHECK (privilege IN ('view','edit','admin')),
+  PRIMARY KEY (group_id, member_id))`, FK'd to `principals` with cascade on
+  delete. The existing `memberships` rows keep granting collection visibility
+  (the DAV tree's current membership semantics); `privilege` decides WRITE
+  access. Existing `group_owners` stays as the creator row (an implicit
+  admin, never demotable below admin).
+- **Migration defaults:** every existing membership becomes `edit` (matches
+  today's behavior exactly); every `group_owners` owner also gets an `admin`
+  row. Additive migration; zero behavior change for current groups.
+- **Enforcement points:**
+  - CalDAV/CardDAV write paths (PUT, DELETE, MKCOL, PROPPATCH, scheduling
+    triggers) reject with 403 when the acting member is `view`. Read paths,
+    `user$group` app-token impersonation, and share-feed exports all inherit
+    the same privilege.
+  - Portal/API member management (add member, remove member, change
+    privilege, generate group invites, delete group) → `admin` only (today:
+    owner only).
+  - Share-link create/revoke on group collections → `edit`+ (open decision:
+    share links are read-only exports, arguably `view` is enough to mint one
+    for a collection they can already read — keep `edit` for v1, revisit).
+- **Invariants:** at least one `admin` (owner) must remain; the last admin
+  cannot be demoted or removed; a member cannot change their own privilege.
+- **Read-only client UX:** DAVx5/iOS already handle read-only collections
+  cleanly (same as today's subscribed feeds); the 403s must be immediate and
+  consistent, not timeouts, or clients will retry-write forever.
+- **Tests:** per-privilege DAV matrix (view PUT/DELETE/MKCOL → 403; edit
+  full CRUD; admin member management), API privilege endpoints, invite gating
+  for non-admins, last-admin invariant.
+
+### 10.2 Open questions
+- Per-group or per-collection granularity for `view`? (Group-level v1; the
+  collections are shared as a unit today.)
+- Do addressbook collections participate in group invites/privileges the same
+  way calendars do? (Today's group invites are calendar-tile-only.)
+- Should `view` members see other members' names? (Today: yes, via the DAV
+  tree; revisit for the portal member list — admin-only might be wanted.)

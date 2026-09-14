@@ -3782,15 +3782,63 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
        - Record: deploy.sh's own health line raced startup (2 s) this time —
          not a service problem (service `running`, listener up, health exit
          0 on re-check); worth a longer wait in the script later.
-   6. **Live tests**: issue real invites, register via the public `/register`
-      from a phone + a desktop, verify portal CRUD + link-from-URL (a real
-      external provider) + share URLs and the "already has an account" case;
-      verification-matrix rows 20–23; PLAN.md final status update.
+    6. **Live tests**: issue real invites, register via the public `/register`
+       from a phone + a desktop, verify portal CRUD + link-from-URL (a real
+       external provider) + share URLs and the "already has an account" case;
+       verification-matrix rows 20–23; PLAN.md final status update.
+       **IN PROGRESS 2026-09-14 — BLOCKED by a production bug found on the very
+       first registration attempt (see below); fix drafted, not yet tested/
+       built/deployed.** What happened, in order:
+       1. Restarted rustical on the router (clears the in-memory rate-limit
+          buckets the 2026-09-14 deploy probes had consumed).
+       2. `rustical invites create` → code `9mdmUPMXmwm2` (unbound).
+       3. Browser-like public flow (curl with cookie jar through the real
+          dav-tls URL): GET `/register` (csrf token) → POST with email
+          `live-test-20260914@example.com` + password + code → **HTTP 500**,
+          log: `registration: collection seeding failed err=Resource already
+          exists and overwrite=false`.
+       4. **Root cause:** `seed_collections` (src/register.rs) hard-codes
+          displaynames `"Personal"`/`"Tasks"`/`"Personal"`, but calendar and
+          addressbook displaynames are **globally unique**
+          (`idx_calendars_displayname_unique` /
+          `idx_addressbooks_displayname_unique`, enforced app-side by
+          `check_displayname_unique`) — and `burningserenity@gmail.com`
+          already holds "Personal"/"Tasks". The provisioning order means the
+          invite is already consumed and the principal + 5 app tokens already
+          created when seeding fails ⇒ every production registration would
+          have 500'd identically, leaving a half-provisioned account and a
+          burned code. The integration test never caught it because its fresh
+          test DB has no other user holding "Personal".
+       5. **Fix drafted (uncommitted, untested, working tree only):** seed
+          `displayname: None` for the personal/tasks calendars and the
+          personal addressbook — the exact shape the Phase 5.4 MKCOL results
+          have in production (chris/lynscarlton/nfcalaway/nicholas rows are
+          all NULL; DAV clients fall back to the collection id "personal",
+          which is what Apple/DAVx5 display today). Also planned: extend
+          `test_register_enabled_provisions` with a SECOND registration so
+          the collision is regression-locked.
+       6. **Observation for the record (rate limiter):** dav-tls sets no
+          `X-Forwarded-For`, so the register per-IP bucket (10/h) keys every
+          client as `"<global>"` — i.e. it is effectively one shared global
+          10/h bucket instead of per-IP (the deploy-day 429s were this
+          bucket, not a per-IP one). Either dav-tls should forward XFF or the
+          limiter should fall back to the TCP peer. Not urgent: the shared
+          bucket is *stricter*, not weaker.
+       7. **Remaining live work (rows 20–23, 25, 26 flows):** run the fix's
+          unit/integration tests → `cargo test` → rebuild → redeploy →
+          clean up the half-provisioned `live-test-20260914@example.com`
+          (principal + 5 app tokens, no collections; the burned invite row
+          stays by design) → re-issue a fresh invite and redo the
+          registration flow, then portal CRUD + share links + group-join
+          invite (existing-user case) + linked-platform real-URL import +
+          the forced password-change gate live on a test account. The two
+          seeded users' own rotation remains theirs (their logins, not
+          ours).
 
    ### 17.8.8 Verification-matrix additions
    | # | Test | Method | Expected |
    |---|---|---|---|
-| 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body).
+| 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body). **LIVE: IN PROGRESS 2026-09-14, blocked** — first real public registration 500'd on the global-unique displayname collision ("Personal"/"Tasks" already held); fix drafted (seed displayname NULL), untested/unbuilt (see §17.8.7 item 6). |
 | 21 | Portal CRUD (self-registered) | create/read/update/delete calendars + addressbooks + app tokens as a fresh no-group user | full CRUD works; family/module collections invisible (no auto-group) |
 | 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored | **DONE 2026-09-09 (offline/wired)** — portal section + owner-only add/refresh/remove routes mounted with the real `SqliteCalendarSourceStore`; SSRF guards, fetch guards, UID-diff refresh, mass-delete abort, Remove-keeps-copy and banner paths covered by 14 frontend-crate unit tests + 11 http-integration tests (see §17.8.3 DONE note). The real-remote-provider lines (fetch, Refresh propagation, size cap) are §17.8.7 items 5–6 (live-deploy phase). |
 | 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green | **DONE 2026-09-09** — http-integration tests assert create → token-in-path URL served + revoke → 404, incl. group-owned collections (PORTAL create/revoke; the CLI-side byte-identical line is §17.7, already green). |
@@ -3891,19 +3939,62 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
      used_at TEXT
    );
    CREATE TABLE calendar_sources (
-     id TEXT PRIMARY KEY,
-     principal TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
-     calendar_id TEXT NOT NULL,
-     source_url TEXT NOT NULL,
-     provider_host TEXT NOT NULL,
-     last_fetch_at TEXT,
-     last_fetch_success INTEGER NOT NULL DEFAULT 0,
-     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-     UNIQUE (principal, calendar_id, source_url)
+      id TEXT PRIMARY KEY,
+      principal TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+      calendar_id TEXT NOT NULL,
+      source_url TEXT NOT NULL,
+      provider_host TEXT NOT NULL,
+      last_fetch_at TEXT,
+      last_fetch_success INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (principal, calendar_id, source_url)
    );
    ```
 
+## 17.9 Next feature requests (user, 2026-09-14)
+
+Two requested follow-ups on the §17.8 sharing surface. Not yet started;
+spec below is the design to be refined when the item is picked up.
+
+### 17.9.1 Invite links per collection tile
+**Request:** generated invite links should show in the **same tile** as the
+calendar they were generated for — not only in the one-time banner above the
+Share section (today's behavior).
+- **Data:** `invites` gains `collection_id` (+ kind) so an invite is traceable
+  back to the exact collection tile. Own-collection invites (no group) have
+  no `target_group` today, so they are currently untraceable — the column
+  fixes both cases. (Optional: reuse `target_group` when the collection is
+  group-owned and keep `collection_id` authoritative.)
+- **UI:** each calendar tile renders its unredeemed invite links (copy +
+  revoke); newly generated links still show the success banner, but the link
+  now persists under the tile. Addressbook tiles: invites are calendar-only
+  today — decide whether to extend or keep calendar-only.
+- **Compat:** portal-only change + one additive migration; the CLI and
+  redemption logic are unaffected.
+
+### 17.9.2 Privilege-based access control (view / edit / admin)
+**Request:** per-member privileges for shared groups —
+`view` (read-only), `edit` (CRUD), `admin` (change member privileges, invite
+users) — replacing today's "membership = full r/w". Full design lives in
+`PLAN_SHARING.md` §10. Sketch:
+- **Model:** new `group_members` rows `(group, member, privilege)` or a
+  `privilege` column beside the existing memberships row; owner/admin
+  determined from it. Default on group creation: owner=admin, other members
+  as chosen by the creator.
+- **Enforcement:** `view` members get read-only DAV access — the CalDAV/
+  CardDAV write paths (PUT/DELETE/MKCOL/PROPPATCH/ACL) must reject with 403
+  for view-level members; `edit` = current full r/w minus member management;
+  `admin` = edit + change privileges + invite. Portal member-management UI
+  becomes admin-only.
+- **Surfaces:** portal group detail (member list with per-member privilege
+  selector + invite), API `/groups/{id}/members` (privilege in body), DAV
+  authorization checks in `crates/caldav`/`crates/carddav` write routes.
+- **Risks:** read-only enforcement must not break clients (DAVx5/iOS may
+  attempt write operations and must get clean 403s, not timeouts); app-token
+  impersonation (`user$group`) inherits the same privilege.
+
 ---
+
 
 ## Appendix A — RustiCal Reference Notes
 
