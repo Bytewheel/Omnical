@@ -3854,15 +3854,20 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
            server-side verify through dav-tls (`--resolve
            0115d8cf.duckdns.org:8443:192.168.1.21`): `/register` 200,
            `/.well-known/caldav` 308, `/frontend/login` 200; startup log
-           "Registration extension enabled (public /register)". Next →
-           clean up the half-provisioned `live-test-20260914@example.com`
-          (principal + 5 app tokens, no collections; the burned invite row
-          stays by design) → re-issue a fresh invite and redo the
-          registration flow, then portal CRUD + share links + group-join
-          invite (existing-user case) + linked-platform real-URL import +
-          the forced password-change gate live on a test account. The two
-          seeded users' own rotation remains theirs (their logins, not
-          ours).
+            "Registration extension enabled (public /register)".
+            **CLEANUP DONE 2026-09-14** — hot backup
+            (`/tmp/db-pre-cleanup-20260914.sqlite3` on router) taken first;
+            `rustical principals remove live-test-20260914@example.com`
+            succeeded; verified via sqlite3: principal row gone, all 5 app
+            tokens cascaded away (0 rows), no collections/addressbooks/
+            memberships had ever been created for it; the burned invite row
+            `9mdmUPMXmwm2` (used_by=live-test…) stays by design; `rustical
+            health` OK. Next → re-issue a fresh invite and redo the
+            registration flow, then portal CRUD + share links + group-join
+            invite (existing-user case) + linked-platform real-URL import +
+            the forced password-change gate live on a test account. The two
+            seeded users' own rotation remains theirs (their logins, not
+            ours).
 
    ### 17.8.8 Verification-matrix additions
    | # | Test | Method | Expected |
