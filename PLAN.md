@@ -4025,8 +4025,10 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
 
 ## 17.9 Next feature requests (user, 2026-09-14)
 
-Two requested follow-ups on the §17.8 sharing surface. Not yet started;
-spec below is the design to be refined when the item is picked up.
+Two requested follow-ups on the §17.8 sharing surface. §17.9.1 DONE
+2026-09-14; §17.9.2 IN PROGRESS since 2026-09-14 (first implementation
+session; see the status block in §17.9.2 — code written but NOT yet
+compiled/gated).
 
 ### 17.9.1 Invite links per collection tile
 **Request:** generated invite links should show in the **same tile** as the
@@ -4043,6 +4045,30 @@ Share section (today's behavior).
   today — decide whether to extend or keep calendar-only.
 - **Compat:** portal-only change + one additive migration; the CLI and
   redemption logic are unaffected.
+- **DONE 2026-09-14** — additive migration
+  `20260914120000_invites_collection` (`collection_id`, `kind` columns);
+  `Invite` struct + `InviteStore::add_invite` extended with the two optional
+  columns (CLI/registration callers pass `None, None` — behavior unchanged;
+  redemption logic untouched). The Share section: `SendInviteForm` gained
+  `collection_id` + `kind` (per-tile hidden inputs); the route validates
+  ownership, calendar-only kind, and collection existence (same discipline
+  as share create) before storing; `build_share_entries` now threads the
+  invite store and attaches each calendar tile's unredeemed invites via
+  `tile_invite_links` (scoped by `collection_id` + kind + `target_group`:
+  own tiles match `target_group = NULL`, group tiles match the group — a
+  group calendar with the same id as a personal one cannot leak links
+  across tiles). Template renders the links under each calendar tile with
+  Copy (inline clipboard) + Revoke; new route
+  `POST /{user}/share/invite/{code}/revoke` (ownership-checked, deletes
+  the invite); the one-time success banner is unchanged. Addressbook tiles:
+  kept calendar-only (route rejects non-calendar kinds). Gate: fmt clean on
+  changed files, zero clippy warnings on changed files, 1 new store_sqlite
+  test (collection binding + NULL plain invite), 6 new/changed
+  `frontend_share.rs` http-integration tests (stored collection binding on
+  the two mint tests, unknown-collection + non-calendar-kind rejected with
+  no invite stored, tile shows link with exactly one revoke form + revoke
+  removes it, same-id cross-principal scoping) — 18/18 share tests green,
+  full `cargo test --workspace` green (all 39 targets).
 
 ### 17.9.2 Privilege-based access control (view / edit / admin)
 **Request:** per-member privileges for shared groups —
@@ -4064,6 +4090,443 @@ users) — replacing today's "membership = full r/w". Full design lives in
 - **Risks:** read-only enforcement must not break clients (DAVx5/iOS may
   attempt write operations and must get clean 403s, not timeouts); app-token
   impersonation (`user$group`) inherits the same privilege.
+
+**STATUS (2026-09-14, session 1 of the implementation): IN PROGRESS — all
+code written but NOT yet committed; session stopped by the user at the
+progress checkpoint. Follow-up items 1–3 DONE (see the "NOT yet done" list
+below: templates + lib.rs route registration landed, `cargo check -p
+rustical_frontend` 0 errors, fmt clean; items 4–6 remain).** Everything
+below is on the rustical tree
+at `~/router-dav/rustical` (uncommitted; stacks on the §17.9.1 changes, also
+still uncommitted there). Design decisions taken while implementing (per the
+"refine at implementation time" note in PLAN_SHARING §10):
+
+- **Model:** `Privilege` enum (`view`/`edit`/`admin`, lowercase serde,
+  `FromStr`/`Display`, helpers `can_write`/`can_admin`) in
+  `crates/store/src/auth/privilege.rs` (NEW). `Principal` gains
+  `privileges: BTreeMap<String, Privilege>` (`#[serde(default,
+  skip_serializing)]`) + `privilege_for` / `can_write` / `is_admin`
+  (self = admin unless an impersonation stamp lowered it; membership without
+  a stored row defaults to `edit` = today's behavior; non-member = `view`).
+  `Error` gains `LastAdmin` and `OwnerNotDemotable` (both → 403).
+- **Migration:** `20260914130000_group_members.{up,down}.sql` — table
+  `group_members (group_id, member_id, privilege CHECK IN ('view','edit',
+  'admin'), PK (group_id, member_id), FK principals ON DELETE CASCADE)`;
+  backfill: group memberships → `edit`, `group_owners` owners → `admin`
+  (upsert). Additive; zero behavior change for existing groups.
+- **Store (sqlite):** `get_principals`/`get_principal` attach privileges
+  (bulk query for the former, per-principal for the latter);
+  `add_membership` seeds a default `edit` row only when `member_of` is a
+  GROUP (`INSERT … ON CONFLICT DO NOTHING`, so the owner's `admin` row wins);
+  `remove_membership` enforces last-admin and deletes the privilege row;
+  `set_group_owner` upserts `admin`; new `get_privilege` / `set_privilege`
+  (last-admin + owner-never-demotable invariants) / `list_members_with_
+  privileges`. Trait defaults keep non-sqlite (test) stores compiling. All
+  `Principal {…}` literals across the workspace updated with
+  `privileges: Default::default()`.
+- **Auth middleware:** `user$group` impersonation now stamps the
+  impersonated principal's `privileges` with the acting user's privilege, so
+  impersonation inherits the privilege instead of bypassing it (design
+  requirement). Reads via impersonation still work (`is_principal`).
+- **DAV enforcement (403 for `view`, 401 for non-members):**
+  - Central `route_delete` + `route_proppatch` (dav crate): Read-but-no-
+    WriteProperties → `Error::Forbidden` (403); no privileges at all (non-
+    member) keeps the 401.
+  - `get_user_privileges` made privilege-aware on: caldav calendar +
+    calendar-object + scheduling inbox/inbox-object/outbox resources, carddav
+    addressbook + address-object resources (`view` member → read-only set).
+  - Explicit write-route checks (`is_principal` → 401, then `can_write` →
+    403) added to: caldav `put_event`, `mkcalendar`, calendar `import`,
+    scheduling `post_outbox`; carddav `put_object`, `mkcol`, `import`.
+  - Deliberately NOT gated: GET/REPORT read paths, calendar/addressbook
+    `POST` (WebDAV-Push subscription registration — read-support so `view`
+    members still get push), share-feed exports (read-only by construction).
+- **API (`/api/v1`):** members.rs rewritten — add/remove member admin-only;
+  `AddMemberRequest` accepts optional starting `privilege` (default `edit`);
+  new `PUT /groups/{g}/members/{m}` `{privilege}` (admin-only, self-change
+  forbidden); `list_members` now member-gated and returns `[{id,
+  privilege}]` (existing tests' `members[i]["id"]` assertions still hold).
+  groups.rs `delete_group` admin-only; collections.rs create-collection now
+  requires `can_write` (view members may subscribe, not create); api
+  error.rs maps `LastAdmin`/`OwnerNotDemotable` → 403.
+- **Portal:** share.rs — `shareable_principals` = groups with `edit`+ (view
+  members no longer see group share tiles); share create/revoke →
+  `can_write`; invite mint/revoke → `is_admin`; `ShareEntry.can_invite`
+  gated the invite forms + invite-revoke buttons in `share_section.html`.
+  groups.rs rewritten — `GroupInfo.admin`, `GroupDetailPage {admin,
+  members: Vec<GroupMember{principal, privilege}>, error}` via shared
+  `group_detail_page` builder, new POST routes `/{user}/groups/{g}/members/
+  {m}/privilege` and `…/remove` (admin-only, self-change/self-removal
+  forbidden, store invariants surface as `?error=` redirects).
+- **NOT yet done (next session, in order):**
+  1. ~~The new groups.rs routes reference `urlencoding::encode` which is NOT a
+     dependency yet — switch to the already-available `percent-encoding`
+     (workspace dep of crates/frontend) or add `urlencoding` to
+     crates/frontend/Cargo.toml.~~ **DONE 2026-09-14** — both
+     `urlencoding::encode` call-sites in
+     `crates/frontend/src/routes/groups.rs` (`route_group_member_privilege`,
+     `route_group_member_remove` error redirects) switched to
+     `percent_encoding::utf8_percent_encode(…, NON_ALPHANUMERIC)`; no
+     Cargo.toml change needed (workspace dep already present). Full
+     `cargo check` still blocked by a pre-existing compile error in the
+     uncommitted session-1 code (`crates/store/src/auth/middleware.rs:111-112`
+     — `privileges.insert(impersonating.to_owned(), user.privilege_for(impersonating))`
+     passes `Principal` where `String`/`&str` are expected; fixes are
+     `impersonating.id.to_owned()` / `user.privilege_for(&impersonating.id)`).
+     Will be resolved when the remaining items land before the item-6 gates.
+     **FIXED 2026-09-14 (with item 2)** — middleware.rs:111-112 now
+     `impersonating.id.to_owned()` / `user.privilege_for(&impersonating.id)`;
+     `rustical_store` compiles.
+  2. `group_detail.html` template still uses the OLD fields (`owner`,
+     `members: Vec<Principal>` with API-delete forms) — update to `admin` +
+     privilege selector/remove forms for `GroupMember`; `groups_section.html`
+     chip for `admin`. **DONE 2026-09-14** — `group_detail.html`: `owner` →
+     `admin` gating (delete group, add member), error banner
+     (`{% if let Some(error) = error %}`) above the actions; member rows are
+     `GroupMember` (`member.principal.displayname/id`); admins get a
+     per-member privilege `<select name="privilege">` (view/edit/admin,
+     current privilege pre-selected, auto-submit on change) POSTing to
+     `/frontend/user/{u}/groups/{g}/members/{m}/privilege` + a Remove form
+     POSTing to `…/remove` (both hidden for the acting user themselves);
+     non-admin members see a privilege chip only. `groups_section.html`:
+     chip now `{% if group.admin %}` "Admin" (was `owner`/"Owner"; owner is
+     an implicit admin). `GroupInfo.owner` field + `get_group_owner` call in
+     `route_groups` removed (dead code after the chip change). Two
+     session-1 compile blockers fixed to make the templates checkable:
+     `group_detail_page`'s non-async `filter_map(…).await` rewritten as a
+     for-loop over `list_members_with_privileges`, and the item-1
+     middleware.rs fix (above). Gate: `cargo fmt --check -p
+     rustical_frontend` clean, `cargo check -p rustical_frontend` 0 errors
+     (remaining warnings: the two unregistered routes + `SetPrivilegeForm`,
+     resolved by item 3; two pre-existing `auth_provider` warnings in
+     share.rs from session 1).
+  3. Register the two new group routes in `crates/frontend/src/lib.rs`.
+     **DONE 2026-09-14** — `frontend_router` gained
+     `POST /{user}/groups/{group}/members/{member}/privilege`
+     (`route_group_member_privilege`) and `POST /{user}/groups/{group}/
+     members/{member}/remove` (`route_group_member_remove`), stacked after
+     the group-detail route (same position as the share invite-revoke route
+     from §17.9.1); imports extended in the `groups` use block. Gate:
+     `cargo check -p rustical_frontend` 0 errors — the three item-2
+     warnings (two unregistered routes + `SetPrivilegeForm`) are gone,
+     leaving only the two pre-existing `auth_provider` warnings in
+     share.rs; `cargo fmt --check -p rustical_frontend` clean.
+  4. CLI: `rustical membership set-privilege <id> --to <group> --privilege
+     view|edit|admin`; `list` prints privileges (src/commands/membership.rs).
+  5. Tests (none written yet): store_sqlite principal_store tests (default
+     `edit` on join, owner `admin`, set/get privilege, last-admin + owner
+     invariants on `set_privilege` and `remove_membership`, privilege
+     round-trip through `get_principal`); api.rs integration tests (admin can
+     add/remove/set-privilege while `edit` member gets 403, self-change 403,
+     last-admin 403, `view` member cannot create collections); per-privilege
+     DAV matrix (view PUT/DELETE/MKCOL/PROPPATCH → 403 + reads OK, edit full
+     CRUD, `user$group` impersonation inherits `view` → 403 on writes);
+     frontend invite gating (non-admin invite mint → 403).
+  6. Gates: `SQLX_OFFLINE=true cargo check --workspace --all-targets`,
+     `cargo test --workspace`, `cargo fmt --check`, clippy on changed files —
+     then record the gate results here and in PLAN_SHARING §10 (answer the
+     10.2 open questions as decided above: group-level granularity v1,
+     addressbooks stay invite-free, member list visible to members).
+
+### 17.10 Calendar-level guest invites (no platform account)
+**Request (2026-09-15):** invite someone to an individual calendar without
+requiring them to create a platform account (no new username/password for the
+portal). Recipient enters a pre-generated credential (server URL + guest
+username + app token) into their CalDAV client. Sender chooses
+view/edit/admin per invite. Delivery: link (copy credential) + email.
+
+Distinct from §17.8 (registration invites → full account) and §17.7/§17.8.4
+(read-only subscription share links). A guest invite grants write-capable DAV
+access to exactly one collection via a lightweight principal that cannot log
+into the portal.
+
+#### 17.10.1 Design decisions
+- **No new `PrincipalType`:** guests use the existing `Individual` type.
+  The `collection_shares` table distinguishes them. CalDAV
+  `CalendarUserType` stays `INDIVIDUAL` — no XML serialization changes.
+- **No portal password:** guest `Principal` has `password = None` → portal
+  login fails (`validate_password` returns `None`). DAV access via app
+  token only (`validate_app_token` in auth middleware).
+- **No memberships:** guest principals have empty `memberships` → no
+  owner's other collections leak through `CalendarHomeSet` or
+  `GroupMembership` DAV properties.
+- **Per-collection scoping via `collection_shares` table:** each row maps
+  exactly one guest principal to exactly one (owner, collection) pair with
+  a privilege (`view`/`edit`/`admin`). V1: one share per guest principal.
+- **Store-level resolution:** `CalendarStore` is made share-aware.
+  `get_calendar(guest_id, cal_id)` resolves via shares → returns the
+  owner's calendar with `cal.principal = guest_id` (the acting user's own
+  id) so all existing `is_principal` / `can_write` DAV guards pass
+  naturally — zero per-route guard surgery needed.
+- **Privilege stamping at auth time:** when the middleware authenticates a
+  guest, it stamps `privileges.insert(guest_id, share_privilege)`. This
+  makes `privilege_for(guest_id)` return the share's privilege instead of
+  the default `Privilege::Admin`. `can_write(guest_id)` then correctly
+  gates writes: `view` → read-only, `edit`/`admin` → full write set.
+- **Credential delivery:** minting shows the credential once (server URL +
+  guest username + `{token_prefix}_{token}`) with Copy — same UX as app
+  token creation. Optional email via `rustical_scheduling::smtp::send_mail`.
+- **V1 scope:** calendars only. `kind` column in `collection_shares` is
+  ready for addressbooks (same pattern).
+
+#### 17.10.2 Data model
+New migration `20260915120000_collection_shares`:
+```sql
+-- Omnical §17.10: per-collection guest invites (no platform account).
+-- Each row grants one guest principal DAV access to exactly one
+-- collection with a specific privilege. The guest authenticates via an
+-- app token (standard DAV Basic auth); the share is the ACL.
+CREATE TABLE collection_shares (
+    id TEXT PRIMARY KEY,
+    owner_principal TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('calendar', 'addressbook')),
+    privilege TEXT NOT NULL CHECK (privilege IN ('view', 'edit', 'admin')),
+    guest_principal TEXT NOT NULL UNIQUE,
+    target_email TEXT,
+    created_by TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    revoked_at DATETIME,
+    FOREIGN KEY (owner_principal) REFERENCES principals(id) ON DELETE CASCADE,
+    FOREIGN KEY (guest_principal) REFERENCES principals(id) ON DELETE CASCADE
+);
+```
+
+**`CollectionShare` struct** (new file `crates/store/src/collection_share_store.rs`):
+```rust
+pub struct CollectionShare {
+    pub id: String,
+    pub owner_principal: String,
+    pub collection_id: String,
+    pub kind: String,            // "calendar" | "addressbook"
+    pub privilege: Privilege,    // view / edit / admin
+    pub guest_principal: String,
+    pub target_email: Option<String>,
+    pub created_by: String,
+    pub created_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+```
+
+**`CollectionShareStore` trait** (analogous to `SubscriptionStore`/`InviteStore`):
+- `add_share(owner, collection_id, kind, privilege, guest_principal, target_email, created_by) -> share_id`
+- `get_share_by_guest(guest_id) -> Option<CollectionShare>` (revoked excluded)
+- `get_shares_for_collection(owner, collection_id) -> Vec<CollectionShare>` (active)
+- `revoke_share(share_id) -> Result` (sets `revoked_at`)
+- `list_guest_shares(owner) -> Vec<CollectionShare>` (all active for owner)
+
+SQLite impl + default trait methods (no-op/error) for test stores.
+
+#### 17.10.3 Store-level share resolution
+The `CalendarStore` gains share-awareness transparent to the DAV layer.
+The store returns `Calendar` with `cal.principal = guest_id` (the acting
+user's own id) so all existing `is_principal` / `can_write` checks pass.
+
+**`get_calendar(principal, cal_id)`:**
+1. Direct lookup (principal owns this calendar) — existing path.
+2. If `NotFound` + shares present: `get_share_by_guest(principal)` → if
+   share matches `(owner, cal_id, not revoked)` → fetch calendar from
+   owner's namespace → set `cal.principal = principal` → return.
+3. Otherwise propagate `NotFound`.
+
+**`get_calendars(principal)`:**
+1. Direct lookup (calendars owned by principal).
+2. If empty + shares exist: resolve shared collections → return with
+   `cal.principal = principal`.
+
+**Object methods** (`get_object`, `put_object`, `delete_object`):
+Same pattern — resolve `(principal, cal_id)` via shares before delegating
+to owner storage. The `principal` argument is always the guest's own id;
+the store translates internally.
+
+#### 17.10.4 Auth middleware stamping
+After `validate_app_token` returns the guest principal, the middleware
+stamps:
+```rust
+if let Some(share) = share_store.get_share_by_guest(&user.id).await {
+    user.privileges.insert(user.id.clone(), share.privilege);
+}
+```
+This makes `privilege_for(guest_id)` return the share privilege.
+`can_write(guest_id)` → `share_privilege.can_write()` → correct gate.
+
+The middleware needs `CollectionShareStore` access — add as an `Extension`
+or pass into the middleware constructor.
+
+> **Implementation note (2026-09-15):** stamped in
+> `SqlitePrincipalStore::get_principal`/`get_principals` instead of the
+> middleware. `validate_app_token` returns `get_principal(id)`, so the DAV
+> auth path gets the identical stamped principal with zero plumbing through
+> `AuthenticationLayer`/`caldav_router`/`carddav_router` — and every other
+> principal-load path (discovery, portal) is stamped consistently too.
+> `privilege_for(guest_id)` reads `privileges[id of self]`, exactly the slot
+> the plan stamps. Verified by tests: `guest_privilege_is_stamped`,
+> `non_guest_is_not_stamped`.
+
+**Why this works end-to-end (no DAV changes needed):**
+- `CalendarResource::get_user_privileges`: `is_principal(cal.principal)`
+  where `cal.principal = guest_id` → true (self). `can_write(guest_id)` →
+  stamped privilege → correct `read_only` or `all`.
+- `CalendarObjectResource::get_user_privileges`: same pattern.
+- Central dav `route_delete`/`route_proppatch`: call
+  `resource.get_user_privileges(user)` → same logic.
+- Explicit guards (`put_event`, `import`, `mkcalendar`,
+  `calendar_object/methods.rs`, carddav `put_object`/`mkcol`/`import`):
+  `is_principal(&path_principal)` where `path_principal = guest_id` → true
+  (self). `can_write(&path_principal)` → stamped privilege → correct.
+- `get_event` second check: `is_principal(&calendar.principal)` where
+  `calendar.principal = guest_id` (after store resolution) → true.
+- `PrincipalResource::get_user_privileges`: guest accessing own principal →
+  `is_principal(self)` → true → `owner_only(true)` → full access.
+
+#### 17.10.5 Principal home set / discovery
+`PrincipalResourceService::get_members(guest_id)` calls
+`cal_store.get_calendars(guest_id)`. Share-awareness returns shared
+collections with `cal.principal = guest_id`. Client sees exactly the shared
+calendars. `CalendarHomeSet` = `[self]` only (no memberships). No leak.
+
+#### 17.10.6 Portal UI
+Share section (`crates/frontend/src/routes/share.rs`):
+- `ShareEntry` gains `guest_shares: Vec<GuestShareEntry>` field.
+- Each calendar tile renders "Guest access" subsection:
+  - Active shares: guest username, privilege badge, Copy credential,
+    Revoke.
+  - "Invite guest" form: privilege `<select>` (view/edit/admin), optional
+    email, submit.
+- `ShareSection` gains `guest_share_credential: Option<String>` (one-time
+  display after minting).
+
+New route `POST /{user}/share/guest-invite`:
+1. Ownership check (`user.is_admin(&principal)`).
+2. Create guest principal (`"guest-{ulid}"`, `password: None`,
+   `Individual`, no memberships).
+3. Mint app token (`add_app_token` → `{token_prefix}_{token}`).
+4. Create `collection_shares` row.
+5. Optionally send email via `send_mail`.
+6. Re-render with `guest_share_credential` set.
+
+New route `POST /{user}/share/guest-invite/{id}/revoke`: sets `revoked_at`.
+
+New public route `GET /guest/{code}` (optional link delivery): credential
+page, no auth.
+
+#### 17.10.7 Delivery
+**Link (primary):** credential shown on Share page (one-time) → owner
+copies and sends via any channel. Optional `GET /guest/{code}` public page.
+
+**Email (optional, requires SMTP):** if `[scheduling]` has SMTP accounts
+and email is provided, `send_mail` sends plaintext with server URL +
+username + token. If SMTP not configured, email is stored in `target_email`
+for audit but not sent.
+
+> **Implementation note (2026-09-15, item 5):** `build_guest_invite(account,
+> to, server_url, username, credential, calendar_id, owner)` lives in
+> `crates/scheduling/src/mime.rs`.  Plain-text RFC 5322 message (no MIME
+> parts); subject base64-encoded; all line endings `\r\n`.  The portal route
+> (`route_share_guest_invite`) spawns `smtp::send_mail` via `tokio::spawn`
+> (fire-and-forget, warn-on-error).  Deviation from plan: only one new unit
+> test (`guest_invite_is_plaintext_with_credential`) — no network-based
+> send test because the codebase avoids SMTP integration tests.
+> `SmtpAccount` plumbed as `Extension<Vec<SmtpAccount>>` through
+> `frontend_router` → `make_app` → `cmd_serve` (reads
+> `config.scheduling.smtp`); test harness passes `vec![]`.
+
+#### 17.10.8 CLI additions
+- `rustical guest-share add <owner> <collection_id> --kind calendar --privilege view|edit|admin [--email <addr>]` → print credential
+- `rustical guest-share list <owner>` → list active shares
+- `rustical guest-share revoke <share_id>` → revoke
+- `rustical guest-share credential <share_id>` → print credential
+
+> **Implementation note (2026-09-15, item 6):** subcommand group
+> `guest-share { add | list | revoke | credential }` in
+> `src/commands/guest_shares.rs`.  `add` mints `guest-{uuid}`, inserts
+> principal (`password: None`, `Individual`), calls `add_app_token` then
+> `share_store.add_share`; prints username + credential.
+> `list` iterates `list_guest_shares(owner)`.  `revoke` calls
+> `revoke_share(share_id)` directly.  `credential` scans all principals'
+> shares to locate the row, prints guest username + privilege and a note
+> that the token secret is stored hashed and cannot be recovered (mint
+> fresh instead).  Registered in `Command::GuestShare` in `src/main.rs`.
+> Gate: 1 new integration test (`tests/guest_share_cli.rs` — add +
+> list + revoke round-trip).
+
+#### 17.10.9 Implementation split
+1. **Migration + store trait** — `collection_shares` table,
+   `CollectionShareStore` trait, SQLite impl. Gate: `cargo check -p
+   rustical_store_sqlite`, 1 new store test (add + get + revoke +
+   revoked-excluded).
+2. **CalendarStore share-awareness** — wrap `get_calendar` / `get_calendars`
+   / object methods with share resolution. Gate: 3 new store tests (guest
+   resolves shared calendar, guest sees only shared calendars, non-share
+   principal unaffected).
+3. **Auth middleware stamping** — add `CollectionShareStore` to middleware,
+   stamp guest privileges after `validate_app_token`. Gate: `cargo check -p
+   rustical_store`, 2 new auth tests (guest privilege stamped, non-guest
+   unstamped).
+4. **Portal share section** — `ShareEntry.guest_shares`, mint/revoke routes,
+   credential display, template. Gate: `cargo check -p rustical_frontend`,
+   4 new `frontend_share.rs` integration tests (mint view/edit/admin,
+   revoke, ownership check, credential shown once).
+5. **Email delivery** — `send_mail` integration. Gate: 1 new test (email
+   sent when SMTP configured).
+6. **CLI** — `guest-share` subcommand group. Gate: 1 new CLI test (add +
+   list + revoke round-trip).
+7. **Gates:** `SQLX_OFFLINE=true cargo check --workspace --all-targets`,
+   `cargo test --workspace`, `cargo fmt --check`, clippy on changed files
+   — record results here.
+
+> **Item 7 gate results (2026-09-15, all green):**
+> - `cargo check --workspace --all-targets` — pass (2 pre-existing
+>   unused-`auth_provider` warnings in `route_share_revoke` /
+>   `route_share_invite_revoke`, unchanged).
+> - `cargo test --workspace` — pass.  Suite totals:
+>   store_sqlite 34, scheduling 56 (1 ignored pre-existing),
+>   frontend_share 22 (18 pre-existing + 4 new), guest_share_cli 1
+>   (new), all other crates green, 0 failures.
+> - `cargo fmt --check` — pass.
+> - Clippy: no new lint categories introduced by changed files;
+>   all lint hits in `crates/scheduling/src/mime.rs` are on lines
+>   identical to pre-existing code style (`push_str(&format!(...))`
+>   pattern).  No clippy findings in new files (`guest_shares.rs`,
+>   `guest_share_cli.rs`).
+
+> **LIVE: DONE 2026-09-15** — deployed (fresh aarch64 build via
+> `scripts/build-rust.sh` + `deploy.sh`; migration `20260915120000`
+> auto-applied at startup: `collection_shares` table + indexes present).
+> Test flow against `0115d8cf.duckdns.org:8443` (dav-tls, session login as
+> `live-test-20260914@example.com`): created throwaway calendar `guesttest`
+> via MKCOL (session cookie auth) and minted guests from the Share page
+> without touching production collections.
+> - **view** guest (no email): banner «Guest access created!» → Server URL
+>   `https://0115d8cf.duckdns.org:8443/caldav`, Username
+>   `guest-20818ba0-…`, App token `1784_…` (69-char; one-time banner).
+> - **DAV as guest (Basic auth with the guest username + token):** PROPFIND
+>   depth:1 on `/caldav/principal/{guest}/` → 207 listing the shared
+>   `guesttest` calendar (`cal.principal` rewritten to the guest); view-guest
+>   PUT VEVENT → **403 Forbidden** (read-only gate via stamped privilege).
+> - **edit** guest bound to `burningserenity@gmail.com`: banner «Guest
+>   access sent to …!»; PUT VEVENT → **201**, GET → **200**, DELETE → **200**
+>   (write path fully works).
+> - **Email:** no SMTP `warn`/error logged → `send_mail` accepted the
+>   message (success is debug-level; receipt pending on the Gmail side —
+>   verify on the mailbox).
+> - **Revoke** (POST `…/guest-invite/{id}/revoke`, form carries
+>   `principal=<owner>`): 303; DB audit rows keep `revoked_at` set for all 4
+>   guests; **DAV access dies** — re-test PROPFIND after revoke → 207 with
+>   only the principal node, shared calendar gone (revoked-filter re-verified
+>   live).
+> - **Cleanup:** test calendars `guesttest` + `revoketest` deleted
+>   (`X-No-Trashbin: 1`), share page back to baseline (0 active guests, 0
+>   test tiles), no leftover objects.
+>
+> **Live-test findings for the record:**
+> - The one-time credential lives ONLY in the POST response body (inline
+>   200, not a redirect) — the follow-up GET to the Share page no longer
+>   shows it (expected one-time banner behavior).
+> - `POST …/revoke` expects a urlencoded form body with `principal` set
+>   (bare POST → 415; harmless).
+> - Guest principals persist after revoke (by design: share rows are the
+>   audit trail; a revoked guest authenticates to an empty home set).
 
 ---
 
