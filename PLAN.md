@@ -4528,6 +4528,133 @@ for audit but not sent.
 > - Guest principals persist after revoke (by design: share rows are the
 >   audit trail; a revoked guest authenticates to an empty home set).
 
+### 17.11 Scheduling hardening — khal 403 (RRULE UNTIL normalisation + default ORGANIZER) (2026-09-18)
+
+**Request (2026-09-18):** the khal-created recurring event
+`~/.calendars/omnical/Internal Shared/25Z10RT2PWIEJR2ZRHH3MTF7FJYQB8NS428S.ics`
+("Stand Up", bi-weekly, attendee `denis@hawksnestsoftware.com`) 403'd on
+every vdirsyncer PUT (pair `omnical_calendar_hawksnest`, cron `*/15`) — the
+pair stalled on that one item.
+
+**Diagnosis:** khal emits the RRULE end as a *floating* DATE-TIME
+(`RRULE:FREQ=WEEKLY;UNTIL=20261204T090000;INTERVAL=2`) next to a
+`TZID`-qualified DTSTART. RFC 5545 §3.3.10 requires UNTIL to be UTC when
+DTSTART is tz-qualified; caldata 0.16.2 enforces this at parse time
+(`DtStartUntilMismatchTimezone`) → the `valid-calendar-data` precondition
+fails in `CalendarObject::import` → 403 (WARN + full body dump in
+`logread`). Fixing khal's output was rejected — the server should
+accept-and-normalise. Two server-side fixes, both landed on the
+`omnical-scheduling` tree (uncommitted):
+
+- **Fix 1 — normalise floating RRULE UNTIL on import:** NEW
+  `crates/ical/src/normalize.rs`: `normalize_rrule_until(ics) -> Cow<str>`
+  walks unfolded logical lines with component-depth tracking; per
+  VEVENT/VTODO/VJOURNAL it captures the DTSTART shape (`TZID` / UTC-Z /
+  floating / `VALUE=DATE`) and rewrites `UNTIL=<floating 15-digit>` **only**
+  when DTSTART is tz-qualified: `TZID` → resolved via chrono-tz
+  `and_local_timezone().earliest()` (deterministic on DST folds;
+  nonexistent local times left untouched rather than guessed), re-emitted
+  with `Z`; UTC DTSTART → append `Z`. Nested components (VALARM, VTIMEZONE
+  subcomponents) never contribute. Untouched bodies return `Cow::Borrowed`;
+  rewrites rejoin CRLF with the trailing-CRLF guard (same pattern as
+  `scheduling::ics::normalize_caladdresses`). Idempotent. Wired into
+  `CalendarObject::import` (`crates/ical/src/calendar_object.rs:79`) — the
+  DAV PUT path and the calendar-level import route both inherit it;
+  `from_ics` (store load) deliberately untouched.
+- **Fix 2 — default ORGANIZER stamping:** NEW
+  `scheduling::ics::default_organizer(ics, organizer)` inserts
+  `ORGANIZER:mailto:<organizer>` before the first ATTENDEE (depth 1) of the
+  first VEVENT; no-op if that VEVENT already has an ORGANIZER or no
+  ATTENDEE. `caldav put_event` gates it via `stamp_default_organizer`:
+  no METHOD, no ORGANIZER, ≥1 ATTENDEE, and the acting user is an attendee
+  or owns the target calendar — the §17.2 implicit-scheduling organizer
+  rule materialised for the storage path. The scheduler's `handle_put` now
+  receives `stored_ics = object.get_ics()` (final normalised + stamped
+  form) instead of the raw client body, and the ETag is computed from the
+  final object → ETag and stored copy agree → vdirsyncer stable after the
+  first sync. Bulk (calendar-level) import deliberately gets no stamping.
+
+**Tests:** 15 new ical unit tests in `normalize.rs` (incl. the production
+event verbatim + the end-to-end `CalendarObject::import` regression that
+used to fail); 5 new scheduling unit tests for `default_organizer` (incl.
+khal's folded ATTENDEE line); 4 new caldav integration tests in
+`scheduling/tests.rs` (`KHAL_EVENT`): (a) production 403 regression → 201 +
+stored body contains both `UNTIL=20261204T140000Z` and
+`ORGANIZER:mailto:user`, (b) existing ORGANIZER preserved verbatim,
+(c) attendee-less event untouched, (d) stamping works with scheduler
+`None`. Existing `sched-no-org-1` behaviour unchanged.
+
+**Gates (2026-09-18, all green):** `SQLX_OFFLINE=true cargo check
+--workspace --all-targets` (only the 5 pre-existing `rustical_frontend`
+warnings); `cargo fmt --check` clean; clippy zero NEW warnings (warning
+locations diffed against stashed HEAD — line-number shifts of pre-existing
+debt only); tests: rustical_ical 16, rustical_scheduling 61 (+1 ignored),
+rustical_caldav 51, rustical_store_sqlite 34, `rustical --lib` 36 — 0
+failures, no insta snapshot changes.
+
+> **LIVE: DONE 2026-09-18** — built (`scripts/build-rust.sh`: rustical
+> 15.8 MiB stripped / 4.8 MiB after UPX --lzma — gate «rustical fits:
+> 4 MiB of 35 MiB budget»; dav-tls binary unchanged) and deployed
+> (`deploy.sh`: DB backup, binary swap, service restart — `rustical
+> healthy`, pid 14271, scheduling + iMIP ingest + RSVP extensions up).
+> Last failing PUT on the OLD binary at 14:15:02 (403 + WARN body dump);
+> new binary serving 14:18:50. Manual `vdirsyncer sync
+> omnical_calendar_hawksnest` right after → «Copying (uploading) item
+> 25Z10RT2PWIEJR2ZRHH3MTF7FJYQB8NS428S» with zero errors, and the scheduler
+> logged `scheduling: emailed REQUEST to denis@hawksnestsoftware.com
+> (attempt 1)` at 14:19:09 — external attendee → iMIP via SMTP, i.e. Fix 2's
+> ORGANIZER stamp and §17.2 implicit scheduling both firing off the stored
+> organiser copy. Two further syncs: clean, no re-uploads (PUT ETag ==
+> stored form). `curl` GET of the stored object → 200 with
+> `RRULE:FREQ=WEEKLY;UNTIL=20261204T140000Z;INTERVAL=2` (floating 09:00,
+> Dec 4 = EST −0500 → 14:00Z ✓) and
+> `ORGANIZER:mailto:nicholas@hawksnestsoftware.com`. The local vdir keeps
+> khal's original body (vdirsyncer is ETag-driven → zero local churn —
+> the desired steady state); subsequent `*/15` cron runs clean. Code
+> remains uncommitted on `omnical-scheduling` (six files: five modified +
+> `crates/ical/src/normalize.rs` new).
+
+> **Follow-up (2026-09-18, ~16:20Z): second production 403 — same event,
+> different khal shape.** After the morning deploy the user edited the
+> event in ikhal (moved 11:00 → 09:00, `SEQUENCE` 0→1); khal then
+> re-serialised the RRULE end as a *bare DATE* —
+> `RRULE:FREQ=WEEKLY;UNTIL=20261204;INTERVAL=2` — next to the `TZID`'d
+> DATE-TIME DTSTART. caldata parses that DATE as floating midnight, so the
+> SAME `DtStartUntilMismatchTimezone` validation fired again (reproduced
+> via `/tmp/opencode/caldata-repro`: "UNTIL was specified in timezone
+> Local"), and vdirsyncer PUTs 403'd from the first post-edit sync on.
+> Fix (same session): `normalize_rrule_until` now also rewrites
+> DATE-valued `UNTIL=YYYYMMDD` when the DTSTART is tz-qualified,
+> expanding it to that date at the DTSTART's time-of-day in its zone
+> (inclusive last-occurrence day — occurrences on that day are kept,
+> which is khal's semantics) and re-emitting UTC; UTC `Z` DTSTARTs
+> likewise get the DATE expanded at their time-of-day; all-day and
+> floating DTSTARTs stay untouched (DATE UNTIL is RFC-valid there).
+> `DtStart` now carries the value's time-of-day
+> (`Tzid(String, Option<NaiveTime>)` / `Utc(Option<NaiveTime>)`).
+> Tests: +5 ical (edited event verbatim — `concat!` const keeping khal's
+> folded ATTENDEE line, UNTIL on an occurrence day keeps that day, UTC
+> -DTSTART DATE-UNTIL, floating-DTSTART DATE-UNTIL untouched, end-to-end
+> `CalendarObject::import` regression, idempotence extended) and +1 caldav
+> (`KHAL_EVENT_EDITED` PUT by owner → 201 → stored body has
+> `UNTIL=20261204T140000Z` + `ORGANIZER:mailto:user`). Gates: fmt clean,
+> workspace check 0 errors, clippy zero new warnings (hits only on
+> pre-existing pedantic-debt lines), ical 20 / caldav 52 / scheduling 61
+> / store_sqlite 34 / `rustical --lib` 36 — 0 failures. Redeployed
+> 16:27:52Z (pid 15146, `rustical healthy`): manual sync → «Copying
+> (updating) item 25Z10RT2PWIEJR2ZRHH3MTF7FJYQB8NS428S» accepted,
+> scheduler emailed the REQUEST update to denis@hawksnestsoftware.com at
+> 16:28:09Z (`SEQUENCE` bump = scheduling-relevant change), second sync
+> clean; stored-copy GET: `DTSTART;TZID=…:20260918T090000`,
+> `SEQUENCE:1`, `RRULE:FREQ=WEEKLY;UNTIL=20261204T140000Z;INTERVAL=2`,
+> `ORGANIZER:mailto:nicholas@hawksnestsoftware.com`.
+
+> **Open items left to the user (not acted on):** stale sibling vdir
+> `~/.calendars/omnical/hawksnest-internal-shared/` (older duplicate
+> "Stand Up", UID `L9YROQM0L9T6MZSKN3P22JX9AZPHOMNLLWDQ`, odd
+> `TRIGGER:P0D` VALARM, not covered by any current pair) and orphaned
+> `~/.vdirsyncer/status/{google_calendar*,rustical_*}` dirs.
+
 ---
 
 
