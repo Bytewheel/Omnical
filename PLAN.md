@@ -4655,8 +4655,67 @@ failures, no insta snapshot changes.
 > `TRIGGER:P0D` VALARM, not covered by any current pair) and orphaned
 > `~/.vdirsyncer/status/{google_calendar*,rustical_*}` dirs.
 
----
+### 17.12 Per-calendar credentials on the Calendars screen (2026-09-21)
 
+**Request:** on the user's Calendars screen, generate credentials per calendar
+"like those emailed as invites" — always with full read/write/admin access.
+
+**Design (reuses the §17.10 guest-share machinery):** each calendar tile gains
+a **"Generate credentials"** action (`POST /frontend/user/{user}/calendar/
+credentials`, form `{principal, calendar_id, email?}`) that mints a fresh
+`guest-{uuid}` principal + app token (`{id4}_{64}`) and persists a
+`collection_shares` row scoped to exactly that calendar with the privilege
+hard-set to **`admin`** — full read/write/admin. The credential (Server URL +
+username + app token) is shown once in a banner on the Calendars screen and,
+like the Share page guest invite, emailed via `mime::build_guest_invite` when
+an email is given and SMTP is configured (`target_email` stored for audit
+otherwise).
+
+- **Gate (minting):** the tile shows the button only where the acting user
+  holds `admin` on the owning principal (`user.is_admin(&principal)` — own
+  calendars always, groups only for admins); the route enforces the same rule
+  (403 otherwise). `view`/`edit` group members see the calendar but no
+  button.
+- **Location:** the list route moved from `routes/calendars.rs` (deleted) into
+  `routes/calendar.rs`, which now holds the whole Calendars surface; a shared
+  `render_calendars_page` renders the section + optional one-time
+  credential/error banners. Each tile carries a `CalendarTile` struct (meta,
+  calendar, `can_generate`, active `guest_shares`) so the active credentials
+  are listed inline with their own Revoke control.
+- **Revoke (on-screen):** the Calendars page lists every active credential
+  minted for the tile (`Credential guest-… · admin access · created …`) and a
+  **Revoke** button per row → `POST /frontend/user/{user}/calendar/
+  credentials/{id}/revoke` (form `{principal}`) sets `revoked_at`; the row
+  stops resolving access (revoked rows are filtered out of every store
+  lookup), the credential no longer stamps any privilege, and the tile stops
+  showing the credential. Same owner/admin gate as minting (403 otherwise,
+  401 cross-user); redirect back to the Calendars screen.
+- **V1 scope:** calendars only (same as §17.10). The Share page's guest-shares
+  revoke flow covers addressbook credentials; the Calendars screen owns its
+  calendar credentials end-to-end.
+
+**Tests:** new `tests/integration_tests/frontend_calendars.rs` (7): page shows
+the button on exactly the own + admin-group tiles (not the edit-only or
+foreign tiles); mint on the own calendar → banner + `admin` share row +
+`validate_app_token` authenticates with `Privilege::Admin` (full write +
+admin); group-calendar mint with email binds `target_email` + invalid-email
+rejected; non-admin/foreign principals → 403 (nothing stored); unknown
+collection → error banner; revoke on the own + group calendar → 303, store
+lookups empty, `validate_app_token` succeeds but stamps no privilege, tile no
+longer lists the credential (sibling credentials unaffected); revoke 403 for
+edit-only members / foreign principals + 401 cross-user.
+
+**Gates (2026-09-21, all green):** `SQLX_OFFLINE=true cargo check --workspace
+--all-targets` — only the pre-existing `rustical_frontend` warnings (2 unused
+`auth_provider`, 3 never-read `ShareSection` fields); `cargo fmt --check`
+clean; clippy zero NEW warnings in the changed files. Tests: full workspace
+`--no-fail-fast` — every suite green **except the 7 pre-existing
+`frontend_share` failures** (verified identical on the stashed clean-tree
+HEAD); new `frontend_calendars` 7/7. Code uncommitted on `omnical-scheduling`
+(6 files: template, `lib.rs`, `routes/calendar.rs`, `routes/mod.rs`, deleted
+`routes/calendars.rs`, `tests/integration_tests/{mod.rs,frontend_calendars.rs}`).
+
+---
 
 ## Appendix A — RustiCal Reference Notes
 
