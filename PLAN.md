@@ -3909,21 +3909,132 @@ integration tests all green. Gate (real remote .ics fetch + SSRF-negative
             answers the duplicate-account body ("An account with that
             email address already exists."), not the unknown-code body —
             same single-use outcome, different (also non-oracle)
-            wording; (d) the two consumed invite rows stay in `invites`
-            by design; (e) zero unexpected ERROR/panic lines for the
+            wording; (d) the two consumed invite rows stay in `invites` by
+            design; (e) zero unexpected ERROR/panic lines for the
             whole run (the only ERROR-class lines: the deliberate
             foreign-group 403, the used-code 400, and 404 probes).
+
+         **ROW-22 + ROW-26 LIVE (2026-09-22 evening session — STARTED, then
+         stopped mid-diagnosis by user; resume state also in
+         `PLAN_NEXT_AGENT_ROW22_26_RESUME.md`):**
+         - **Unrecorded 2026-09-14 19:17 prep discovered on the live-test
+           account** (this session's first finding — prep for exactly this
+           test that was never recorded): calendar `srcfeed` (3 handmade
+           VEVENTs, UIDs `e1`/`e2`/`e3`, "Feed event one/two/three"), two
+           empty target calendars `imported` + `imported2`, and a third
+           subscription on the account (id `ee496590-829e-47b4-a0d9-7cf2aec3cf18`,
+           kind calendar, collection `srcfeed`). `calendar_sources` was empty
+           — the import itself never ran. All of it to be torn down to the
+           recorded row-20/21 account shape (personal+tasks, 2 registration
+           subs) when the live work completes.
+         - Safety net FIRST: `~/backups/omnical/db-pre-row2226-20260922.sqlite3`
+           (3.9 MB, `integrity_check` ok; live 216 cal / 209 addr, raw 552
+           cal, 67 app tokens, 9 subscriptions, 0 sources — matches §17.14's
+           recorded live baseline incl. the srcfeed sub).
+         - **Partial greens before the blocker:** srcfeed export URL serves
+           live through dav-tls (200, `ssl_verify_result=0`, exactly the 3
+           VEVENTs) — it is the row-22 import source; portal login 303 with
+           the pass-stored password; session drives the Linked Platforms
+           page (200, "No linked platforms yet", `imported`/`imported2`
+           offered as add-targets).
+         - **THE BLOCKER (new live bug, undiagnosed — row 22 halted):** POST
+           `/frontend/user/{u}/linked-platforms/add` re-renders 200 with
+           "Could not fetch '…': DNS resolution failed" for EVERY hostname
+           tried (the srcfeed URL, example.com, example.org, www.duckdns.org).
+           The std `to_socket_addrs` calls in `ssrf_guard`/`fetch_and_parse`
+           (`crates/frontend/src/routes/linked_platforms.rs`) fail inside the
+           long-running deployed process although:
+           - busybox `nslookup` and the router's curl (musl) resolve every
+             host fine via all 5 resolvers (2×Quad9 v4, 192.168.1.1, 2×Quad9
+             v6); `/etc/resolv.conf → /tmp/resolv.conf` is readable through
+             the process's own `/proc/7532/root`;
+           - the SMTP path of the SAME PID (tokio blocking-pool
+             `TcpStream::connect((host, port))`) resolved + sent real email
+             minutes earlier (the 21:17:07 UTC redeploy's §17.14 checklist
+             greens ran ~21:20–21:35; PID 7532 started 21:17:07) — the
+             failures start ~21:45;
+           - **ruled out empirically** (standalone aarch64-musl probes built
+             with the exact `build-rust.sh` rust-lld recipe — plain main
+             thread, tokio worker thread, and `spawn_blocking` variants, plus
+             a UPX'd variant — all resolve every host from the router):
+             OS/resolver path, UPX packing, tokio-worker-thread blocking-call
+             context, FD exhaustion (32/1024 open), procd memory cap (RSS
+             21 MB, `Max address space unlimited`), procd jail (none
+             configured), nsswitch (absent — musl);
+           - **tcpdump during a failing add: ZERO DNS packets leave the
+             router** — getaddrinfo fails before emitting any query.
+           - Remaining suspects / cheapest next experiments: (a) run a FRESH
+             instance of the exact deployed binary (:4001, scratch DB —
+             binary vs long-running-state discriminator; the first attempt
+             died instantly on `nohup: not found` (busybox has none); redo
+             with `setsid` or a held-open ssh session; nothing ever listened
+             on 4001 and no scratch DB was created); (b) trigger one SMTP
+             send NOW (e.g. `invites create --send` to a plus-address) — if
+             SMTP still resolves while the add-route fails, the likely fix is
+             routing the std resolves through `spawn_blocking` like SMTP;
+             either way instrument/log the real `io::Error` (the current
+             `.map_err(|_| "DNS resolution failed")` hides it); (c) check
+             whether rustical's serve path configures a small tokio
+             worker-stack size (probes used the default 2 MB).
+          - Row 26 NOT STARTED — queued behind row 22 on the same account.
+          - **Live-test state right now:** +1 active diag DAV app token
+            `diag-row22` (id `bbdef0d9-4b2a-4279-92da-13c63025dfef`, prefix
+            `bbde` — remove at resume/teardown; 68 vs 67 baseline); portal
+            session cookie in `/tmp/opencode/row2226/jar.txt` (dies with the
+            next rustical restart); probes + scratch config on router tmpfs
+            (`/tmp/dnsprobe`, `/tmp/dnsprobe2`, `/tmp/dnsprobe2u`,
+            `/tmp/rustical-row2226.toml` + stale `.pid`/`.log`) — wiped on
+            reboot, remove for tidiness when done. Prod untouched otherwise:
+            ping 200, dav-tls never restarted.
+          - **ROOT CAUSE FOUND (session 4, 2026-09-22 ~22:00 UTC; resume file
+            rewritten):** the add-route bug is a **std behavior change, not
+            a live-platform issue** — current std's
+            `TryFrom<&str> for LookupHost` (sys_common/net.rs) requires a
+            `host:port` string (`rsplit_once(':')` → else instant
+            `io::Error` InvalidInput "invalid socket address"), so
+            bare-hostname `to_socket_addrs()` — exactly what
+            ssrf_guard/fetch_and_parse did — never reaches getaddrinfo
+            (explains: instant fail, zero DNS packets, every hostname,
+            fresh + long-running instance identical). SMTP/IMAP always
+            worked (tokio `TcpStream::connect((host, port))` = tuple
+            impl). **Fix applied (UNCOMMITTED):** both call sites now
+            `(host, 0u16).to_socket_addrs()` (port 0 — reqwest
+            resolve_to_addrs takes ports from the URL) + real io::Error
+            warn!-logged via inspect_err. Frontend unit tests green;
+            integration tests + fmt/clippy + rebuild + redeploy + both
+            live checklists remain. **Diagnosis-evidence corrections:**
+            (a) busybox on the router has NO `setsid` — every backgrounded
+            `setsid … &` capture (prev session's + session 4's first two)
+            silently never ran; the zero-packet fact itself re-verified
+            true with a held-open single-ssh-script capture;
+            (b) the old probes' "worker" test ran on the MAIN thread
+            (`block_on`) — corrected probe (true spawned worker tasks,
+            64 KiB–8 MiB worker stacks, UPX variant) passes all contexts;
+            (c) the SMTP path was NEVER broken: two forgot-password probes
+            (21:45:14 + 21:46:52) both delivered real email — side
+            effects: +2 password_resets rows (second unused, expires
+            ~22:46:52 UTC) + 2 audit emails in the INBOX;
+            (d) a fresh scratch instance of the deployed binary (:4001,
+            CLI invite mint + POST /register provisioning) failed
+            identically → long-running state ruled out (the scratch
+            instance's own IMAP ingest connected + parsed mail 2 s after
+            boot — process-wide DNS fine); (e) logread's ring buffer is
+            tiny (dropbear floods it) — start `logread -f` to a file
+            before probes needing log evidence. Offline gating missed
+            this because the integration tests deliberately leave the
+            domain-fetch happy path to the live gate (literal-IP guard
+            refusals + seeded sources only).
 
    ### 17.8.8 Verification-matrix additions
    | # | Test | Method | Expected |
    |---|---|---|---|
 | 20 | Registration | CLI invite → public POST `/register` | principal + 3 collections + app tokens + personal share feed exist; single-use spin fails; email-bind + expiry honored; unknown/used/expired codes yield one generic body; double-submit race has one winner | **DONE 2026-09-07** — plus real `cmd_serve` http-integration test (GET/POST `/register`, CSRF, token-in-path feed URLs, 404 on disabled, 303 auto-login, shared unknown/used alert body). **LIVE: DONE 2026-09-14 (redo after the fix)** — fresh CLI invite `yoCehFdvHLer` (email-bound `live-test-20260914@example.com`), public GET/POST `/register` through dav-tls (`--resolve 0115d8cf.duckdns.org:8443:192.168.1.21`): POST → **200** with the provisioned summary + both `/export/{token}.{ics,vcf}` URLs (200, `BEGIN:VCALENDAR…RustiCal Export`, empty vcf); server-side verify: principal row, **5 app tokens**, `personal`+`tasks` calendars and `personal` addressbook **all displayname NULL** (the `f80074c0` fix holding live), 2 subscription rows; invite row consumed (`used_by`+`used_at` set); single-use re-POST → 400 with the exact unknown-code body ("Invalid or expired invitation code."); auto-login GET `/register` on the registered session → 303 `/frontend/user/live-test-20260914@example.com`; zero ERROR lines for the 200 registration (the only 400 ERRORs logged are the intentional negative probes). Rate-limiter buckets cleared by restarting rustical first (in-memory). Portal password stored in pass (`secrets/omnical/live-test-20260914@example.com/portal`). **Finding for the record:** the `route_post_register` ERROR span logs the whole `RegisterForm` including the password in cleartext — pre-existing upstream behavior, noted for a future hardening item. Account kept for the remaining item-6 live tests. |
 | 21 | Portal CRUD (self-registered) | create/read/update/delete calendars + addressbooks + app tokens as a fresh no-group user | full CRUD works; family/module collections invisible (no auto-group) | **LIVE: DONE 2026-09-14** — portal login (`live-test-20260914@example.com`, pass-stored password) → 303; session drives both portal + DAV endpoints (the AuthenticationLayer accepts the session cookie). **Calendars:** MKCOL (exact `create-calendar-form` JS body) → 201; portal section lists it; PROPFIND 207 `displayname=Live Test Cal`; PROPPATCH (edit-form body) → 207; PROPFIND shows `Live Test Cal Renamed` + `#ff0000ff` color stored; DELETE `X-No-Trashbin: 1` → 200; PROPFIND → 404; portal section no longer lists it. **Addressbooks:** same cycle (`Live Test Addr` → renamed → deleted → 404) via `/carddav`. **App tokens:** POST `/frontend/user/{u}/app_token` → 200 token (69-char `<id4>_<64>`); Basic-auth PROPFIND with it → 207; revoke via the portal form path (full-UUID id, as `profile_section.html` renders) → 303; the token → 401. **Server-side (sqlite3):** after the run only the original collections remain (`personal`+`tasks` calendars, `personal` addressbook, all displayname NULL) and exactly the 5 registration app tokens; `memberships` 0 rows. **Isolation:** page JSON `memberships:[]`; only personal/tasks/personal listed — no family/module auto-group. **Finding for the record:** revoking with the 4-char token *prefix* (the client-hint part) is a silent no-op — the portal always passes the full UUID id; my first curl used the prefix and the token stayed valid, worth remembering for CLI-side tooling. |
-| 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored | **DONE 2026-09-09 (offline/wired)** — portal section + owner-only add/refresh/remove routes mounted with the real `SqliteCalendarSourceStore`; SSRF guards, fetch guards, UID-diff refresh, mass-delete abort, Remove-keeps-copy and banner paths covered by 14 frontend-crate unit tests + 11 http-integration tests (see §17.8.3 DONE note). The real-remote-provider lines (fetch, Refresh propagation, size cap) are §17.8.7 items 5–6 (live-deploy phase). |
+| 22 | Linked platforms | import a real external .ics URL; provider edit → Refresh; Remove | count matches; edits propagate on Refresh; copy remains after Remove; SSRF-negative targets refused; size cap honored | **DONE 2026-09-09 (offline/wired)** — portal section + owner-only add/refresh/remove routes mounted with the real `SqliteCalendarSourceStore`; SSRF guards, fetch guards, UID-diff refresh, mass-delete abort, Remove-keeps-copy and banner paths covered by 14 frontend-crate unit tests + 11 http-integration tests (see §17.8.3 DONE note). The real-remote-provider lines (fetch, Refresh propagation, size cap) are §17.8.7 items 5–6 (live-deploy phase). **LIVE: STARTED 2026-09-22 evening, blocked on a fetch bug — ROOT-CAUSED same evening (session 4): bare-hostname `to_socket_addrs()` never reaches getaddrinfo — current std's `TryFrom<&str> for LookupHost` requires `host:port` and fails instantly with InvalidInput "invalid socket address" (explains zero DNS packets/every hostname/fresh+prod identical; the SMTP+IMAP paths use the tuple form and were never broken — the earlier zero-packet SMTP readings were void tcpdumps: busybox has no `setsid`, backgrounded captures silently never ran). Fix applied in linked_platforms.rs (tuple form + real io::Error warn-logged, uncommitted); frontend unit tests green; integration tests + fmt/clippy + rebuild + redeploy + the live checklist remain — resume in `PLAN_NEXT_AGENT_ROW22_26_RESUME.md` + §17.8.7 item-7 record.** |
 | 23 | Share/export | portal-created share URL | byte-identical `.ics` vs owner export; revoke → instant 404; §17.7 rows still green | **DONE 2026-09-09** — http-integration tests assert create → token-in-path URL served + revoke → 404, incl. group-owned collections (PORTAL create/revoke; the CLI-side byte-identical line is §17.7, already green). **LIVE: DONE 2026-09-14** — portal login → 303; Share section lists `personal` calendar + `personal` addressbook (registration feeds, full URLs) and `tasks` with a Create button; POST `/frontend/user/{u}/share/create` (`principal=live-test…&kind=calendar&collection_id=tasks`) → 303; page now shows the new 64-char-token URL; public GET → 200 `text/calendar` (welcome VTODO, `PRODID:RustiCal Export`); owner reference via CLI `subscriptions add --kind calendar <u> tasks` → different token, **byte-identical body (`cmp` clean)** — portal + CLI share the URL-builder and the export route; portal revoke (form path, full sub id) → 303 and the URL 404s immediately while the CLI URL stays 200; CLI row removed afterwards — subscriptions back to exactly the 2 registration rows. |
 | 24 | Registration HTTP gate | `cargo test -p rustical --lib --test http_integration` | 9 unit + 2 integration tests green; `test_register_enabled_provisions` asserts principal + 5 app tokens + personal/tasks + addressbook + 2 share feeds via `/export/{token}.{ics,vcf}`; `test_register_disabled_unmounted` 404 |
 | 25 | Portal group-join invites | Share section per collection: "Send invite" (email-bound) / "Generate invite link" (unbound); redeem through `/register` as a new AND as an existing user | invite row stores `target_group` (+ optional email); new user provisions + joins group; existing user is auto-logged-in and joins; unbound link needs no email; invalid email rejected; foreign group 403 | **DONE 2026-09-13 (offline)** — 4 new `frontend_share.rs` integration tests; existing-user redemption covered by commit 44afb366 (see §17.8.2/17.8.4 AMENDED). **DEPLOYED 2026-09-14** (item 5): portal + `/register` live; real redeems are item 6. **LIVE: DONE 2026-09-14 (existing-user cycle, full round-trip)** — setup: `rustical principals create group.livetest -p group -n "Live Test Group"` (CLI), membership assign live-test → group.livetest (CLI; first-join flag cleared via sqlite3 — see item-6 record notes), `group_owners` row via sqlite3 (no CLI setter), group calendar `shared` **MKCOL 201 as plain member auth** (no `$` impersonation — §5.4 parity, exact `create-calendar-form` XML body). Portal Share section then lists the group row (owner label "Live Test Group", principal `group.livetest`, collection `shared`) with its invite forms; **"Generate invite link"** (`principal=group.livetest`, no email) → 200 "Invite link generated!" banner with the 12-char code; server-side: invites row `target_group=group.livetest`, `target_email=NULL`, `created_by=live-test…`. **Control:** invite mint on the foreign `family` group → **403**. **Redeem as EXISTING user:** fresh session GET `/register` (csrf) → POST (email=live-test…, real portal password, code) → **200** "Welcome back … You have been added to the `group.livetest` group. … signed in automatically"; GET `/register` on that session → **303** `/frontend/user/live-test-20260914@example.com` (auto-login live); server-side: invite consumed (`used_by`+`used_at`), membership row present, `needs_password_change` stays 0 (repeat redeem, not a first join); single-use re-POST of the used code → **400** (duplicate-account body — used codes no longer match the existing-user fast path; still a non-oracle body). **Access after join (plain member Basic auth, no impersonation):** PROPFIND depth:1 on `/caldav/principal/group.livetest/` → 207 listing `shared`; PUT VEVENT → **201**; calendar-query REPORT → **207** with the event href. **Teardown (all green):** calendar DELETE `X-No-Trashbin: 1` → 200 (probe 404); the extra app token revoked via the portal full-UUID path (401 after); `principals remove group.livetest` cascaded owner + membership rows — sqlite3-verified back to the row-20/21 baseline. |
-| 26 | Forced password change | a flagged user (seeded or first-join) logs into the portal | every portal page except `/user/{u}/password` redirects there; rotation clears the flag and lifts the gate (303); wrong current / short / mismatch rejected with the form re-rendered; passwordless users never gated | **DONE 2026-09-13** — seed migration `20260913120000_needs_password_change`; 7 `frontend_password.rs` + 5 store-principal tests; `test_principal_impersonation` amended (see §17.8.11) |
+| 26 | Forced password change | a flagged user (seeded or first-join) logs into the portal | every portal page except `/user/{u}/password` redirects there; rotation clears the flag and lifts the gate (303); wrong current / short / mismatch rejected with the form re-rendered; passwordless users never gated | **DONE 2026-09-13** — seed migration `20260913120000_needs_password_change`; 7 `frontend_password.rs` + 5 store-principal tests; `test_principal_impersonation` amended (see §17.8.11). **LIVE: QUEUED 2026-09-22 behind the row-22 fetch bug (same kept account, same session; flag-flip via sqlite3 + gate/negatives/rotation/restore checklist in `PLAN_NEXT_AGENT_ROW22_26_RESUME.md` §Row 26).** |
 
    ### 17.8.9 Risks & mitigations (new)
    - **Public DoS / invite brute-force** → per-IP + global buckets, 60-bit codes,
@@ -4823,6 +4934,285 @@ app token removed.
 **Also in this batch:** platform invite `rustical invites create --send`
 (`src/commands/invites.rs`, `build_registration_invite` in `mime.rs`) and
 the untracked `scripts/invite-user.sh` SSH wrapper.
+
+### 17.14 Forgot-password flow + app-email sender switch to burningserenity@novo-ordo.com (2026-09-22)
+
+**Requests:** (1) self-service password reset — "Forgot your password?" on
+the login page → emailed one-time reset link → set a new password;
+(2) all app-generated emails (registration invites, guest-share
+credentials, the new reset emails — everything via
+`scheduling.smtp.first()`) must come From `burningserenity@novo-ordo.com`
+instead of `burningserenity@gmail.com`.  iMIP invitations are unchanged
+(they always match the organizer via `smtp_account()`).
+
+**A. Reset flow (design decisions):**
+- **Token**: 64-char alphanumeric; only its SHA-256 hex digest is stored
+  (`token_hash()`), so a DB leak leaves no working links.  Expiry 1 hour
+  (`RESET_TOKEN_EXPIRY_SECS = 3600`); plain string comparison
+  `YYYY-MM-DDTHH:MM:SSZ` like invites.
+- **Single-use atomicity**: `redeem_reset` = `UPDATE … WHERE token_hash = ?
+  AND used_at IS NULL AND expires_at > ?` in a transaction, then marks the
+  principal's other outstanding tokens used; `add_reset` supersedes the
+  principal's previous unused tokens first → at most one usable link per
+  account at any time.
+- **No enumeration**: known email, unknown email, and OIDC-only accounts all
+  get the byte-identical "reset sent" page; unknown/used/expired tokens all
+  get one generic invalid page.  Reset POST does **not** auto-login.
+- **CSRF**: session-bound, rotated on every rendered response; mismatch →
+  "This form has expired" 400.
+- **Rate limiting**: per-IP 5/h + global 30/h sliding window, shared by both
+  POST endpoints, `X-Forwarded-For` first hop; rejected attempts are not
+  recorded.
+- **Availability**: the login-page link and `POST /forgot-password` require
+  `allow_password_login && smtp non-empty && public_url non-empty`
+  (`reset_available()`); the *reset* endpoints only require
+  `allow_password_login` (a minted link stays redeemable even if SMTP is
+  later removed).  Password rules reuse `[frontend]
+  min_password_length` (default 12); a successful reset also clears
+  `needs_password_change`.
+- **Delivery**: fire-and-forget `tokio::spawn(smtp::send_mail(…))` like the
+  guest-share email; failures logged, never user-facing.
+- Endpoints live in the frontend crate (unauthenticated, next to `/login`,
+  outside `user_router`'s gates): `/frontend/forgot-password`,
+  `/frontend/reset-password/{token}`.  No new config keys; SQLx offline
+  metadata untouched (runtime `sqlx::query` on purpose, like the invite
+  store).
+- **New plumbing**: `PasswordResetStore` trait (`rustical_store`) + SQLite
+  impl (`rustical_store_sqlite`) + migration
+  `20260922120000_password_resets` (table with `token_hash UNIQUE`, index
+  on `(principal_id, used_at)`); `get_data_stores` is now an 11-tuple ending
+  in `Arc<dyn PasswordResetStore>`; `make_app`/`frontend_router` gained the
+  store + `Arc<ResetRateLimiter>` extensions; `build_password_reset` in
+  `mime.rs` (mirrors `build_registration_invite`).  Drive-by: fixed
+  pre-existing `tests/http_integration.rs` breakage (two `InviteCreateArgs`
+  literals missing the `send` field from commit `c2b2492c`).
+
+**B. Sender switch (`scripts/render-router-config.sh`):**
+`burningserenity@novo-ordo.com` is now the **FIRST** SMTP row (From address
+for everything sent via `smtp_accounts.first()` — zero code changes);
+`burningserenity@gmail.com` remains as an iMIP organizer principal.  The
+new identity **shares `nfcalaway@novo-ordo.com`'s pass entry** (same
+pattern as `zero@novo-ordo.com`) — no new `pass` entry; fallback if SMTP
+rejects that identity is a dedicated
+`secrets/email/burningserenity@novo-ordo.com/smtp` entry + username change.
+No IMAP row (not an iMIP organizer; inbound replies not polled for it).
+
+**Gates (2026-09-22, all green):** full `cargo test --workspace` sweep —
+frontend 22 passed (incl. rate-limit shared-budget, no-enumeration
+body-equality, CSRF, supersedes/expiry, password rotation), scheduling +
+store + store_sqlite 100, integration + http 148; `cargo fmt` clean (drift
+was confined to this effort's files); clippy clean for all new code.  Flake
+fixed during gating: the test helper `mint_reset` generated tokens from
+only 9 values (`"t"×63` + random digit) and collided on the UNIQUE
+`token_hash` ~11% of runs; it now uses the real `random_token()`.
+**Status:** DONE, live-verified end to end (2026-09-22). Deployed initially
+20:11 UTC (outside any agent session); the session-2 live pass found the
+reset EMAIL BOUNCING (`EHLO omnical.local` rejected by smtp.novo-ordo.com
+— Postfix `reject_unknown_helo_hostname`). The EHLO fix (`set_ehlo_name_from_url`,
+OnceLock from `[subscriptions] public_url`) was rebuilt + redeployed
+21:17:07 UTC (session 3) and the **full email checklist re-run GREEN**:
+reset email arrives From `burningserenity@novo-ordo.com` (DKIM/SPF pass,
+64-char one-time link + 1 h expiry note); no-enumeration byte-identity
+holds (unknown vs known vs session-2's saved response, csrf-normalized);
+supersedes works (second POST invalidates the first link — generic invalid
+page vs form); redeem is atomic single-use (all 3 minted rows carry
+`used_at`, no usable links remain); reset POST → 303 login (no auto-login);
+OLD password 401, NEW logs in and lands normally, `needs_password_change`
+cleared 1→0, original password restored via
+`rustical principals edit zero@novo-ordo.com --password` (CLI takes no
+`-c` flag — as root it reads /etc/rustical/config.toml by default) — net
+state change zero; guest-share credential email + registration-invite
+email both From `burningserenity@novo-ordo.com`; iMIP REQUEST still From
+the organizer (`burningserenity@gmail.com`) — the sender switch left iMIP
+untouched. **Live findings:** (a) `zero@novo-ordo.com` is an IMAP *alias*
+delivering into nfcalaway@novo-ordo.com's INBOX (Delivered-To proves it) —
+the `mbsync Novo-Ordo-zero` channel matches nothing; read via
+`mbsync Novo-Ordo-general` INBOX; (b) a stored-event PUT whose ICS carries
+`METHOD:REQUEST` is ignored by the scheduler (`handle_put` early-return:
+stored objects must not carry METHOD) — iMIP testing needs a plain VEVENT;
+(c) the rate limiter records a POST **before** the CSRF check — a
+form-expired 400 consumes budget; (d) per-IP buckets key on
+client-supplied `X-Forwarded-For` (dav-tls is a raw splice), so live diag
+can isolate tests by varying XFF. See
+`PLAN_NEXT_AGENT_CALENDARS_TAB_SHARING.md` §15 for the session-3 log.
+
+---
+
+### 17.15 Share tab folded into Calendars/Addressbooks tabs; per-client subscribe instructions; CAS "no controls" root-caused as client-side staleness (2026-09-22)
+
+**Requests:** (1) root-cause the repeated CAS "no controls on the Share
+tab" report (logged in as `nicholas@carltonaudio.com`, seen twice on
+2026-09-22 after deploys); (2) remove the Share tab entirely — its controls
+move onto the Calendars tab (calendar half) and Addressbooks tab (share
+links only); (3) per-client subscribe instructions on every calendar tile
+(Google/Apple/Outlook + DAVx5/Thunderbird), answering the user's
+*"the share we have does caldav, is there no subscribe link we can use this
+way, does it always have to be credentials?"*; (4) CSS cleanup.
+
+**The credentials answer (baked into the UI):** credential-less
+(`/export/{token}.ics`) = read-only **live** feed — anyone with the URL
+sees current events when their client re-fetches (Google can lag hours);
+"full access" always needs a credential (guest username + one-time app
+token, or own per-calendar token) because CalDAV writes must authenticate
+the actor. Platform hard limits stated verbatim in the UI: Google Calendar
+and Outlook.com **cannot** add an external CalDAV server at all — read-only
+subscribe only; Android's Google Calendar app likewise (web "From URL" or
+DAVx5); Apple/Thunderbird/generic CalDAV clients do both paths.
+
+**A. Root-cause outcome (decisive, §4):** **H1 — stale browser page / dead
+session**; there is no server-side bug. Evidence: (a) `logread` since the
+20:11:33 UTC 2026-09-22 restart shows **zero** `/frontend` page GETs from
+the user's Firefox — only `/favicon.ico` 404s — so what they described
+predates the restart (in-memory sessions died with it; an open tab kept
+rendering the old page); (b) a local repro on a **copy of the production
+DB** (login as `nicholas@carltonaudio.com`, diag password set on the copy
+only) rendered the CAS Share tile with **every** control server-side:
+export URL + Copy + Revoke, all three guest rows, all three minting forms.
+H2–H5 not needed. Closure = post-deploy hard refresh (Ctrl+Shift+R +
+re-login) — the §9 LIVE checklist verifies it. (Lesson recorded after two
+agents mis-diagnosed it: the repro on a prod-DB copy + request-log evidence
+pass settles it in minutes.)
+
+**B. Design decisions:**
+- **Routes**: the `/share/…` POST paths stay as-is (internal form actions —
+  renaming is churn), but every redirect/render target changes: `303 →
+  /{user}/calendar#cal-{id}` (calendar) or `/{user}/addressbook#ab-{id}`
+  (addressbook); tiles gained `id="cal-…"` / `id="ab-…"` anchors.
+  `route_share_revoke` learns the subscription's kind + collection from
+  the store **before** deleting so the redirect anchors the right tile;
+  ditto `route_share_invite_revoke` via `get_invite`. `GET /{user}/share`
+  is unregistered → 404; nav entry removed from `pages/user.html`.
+- **Code shape**: `share.rs` lost all page assembly (`share_page`,
+  `share_page_with_*`, `build_share_entries`, `shareable_principals`,
+  `ShareSection` — 1189 → ~700 lines); its POST handlers re-render via the
+  Calendars/Addressbooks renderers and the new `CalendarsExtras` struct
+  (error + §17.12 credential banner + §17.10 guest banner + §17.9 invite
+  banner in one place). `route_share_revoke`/`route_share_invite_revoke`/
+  `route_share_guest_revoke` became non-generic (no auth_provider needed —
+  the old `share.rs:480/749` unused warnings died with the rewrite).
+  `CalendarTile` gained `can_invite`, `invites`, `sub_created_at`,
+  `subscribe_url_webcal`; `AddressbookTile` is new (meta, birthday_cal,
+  addressbook, subscribe_url/sub_id/sub_created_at/can_subscribe).
+  Addressbook invites/guest shares stay calendar-only (§17.9.1/§17.10).
+- **Gating preserved exactly**: subscribe link = own principal or
+  `can_write(group)`; invites + guest shares + §17.12 credentials = own or
+  `is_admin(group)`; guest rows `can_manage = can_invite`. One hardening
+  over the old Share page: **invite rows are rendered only on tiles where
+  `can_invite`** (a view-only group member must not see the group's
+  registration URLs — the old page never faced this because it listed only
+  writable principals).
+- **Banners**: §17.13 exactly-once semantics kept, now tile-gated on the
+  Calendars page (guest + invite banners compare principal **and**
+  collection against the tile); errors page-level. The guest-credential
+  banner links to the tile's instructions anchor (`#client-help-{id}`).
+- **Instructions** (`<details class="client-help">` per calendar tile, "Set
+  up on your device…"): A) *Subscribe — read-only, no account needed* —
+  Apple iPhone/iPad ("Calendars → Add Calendar → Subscribe to Calendar"),
+  Apple Mac (File → New Calendar Subscription, Auto-refresh hourly), Google
+  ("Settings ⚙ → Add calendar → From URL" + slow-refresh caveat),
+  Outlook web/new ("Add calendar → Subscribe from web"), Outlook classic
+  (Internet Calendars → New), generic webcal note; shows the https URL plus
+  a **Copy webcal://** button (scheme swap display-only — the stored token
+  keeps working over plain https, never stored in the DB). B) *Full access —
+  read + write (CalDAV)* — Apple, DAVx5 (Android), Thunderbird, all with
+  the server URL prefilled from the new `caldav_url` (base_url + `/caldav`);
+  plus the verbatim hard-limit line "Google Calendar & Outlook.com: not
+  possible — neither supports adding an external CalDAV server; use the
+  read-only subscribe link above instead."
+- **Terminology** (per plan): "Subscribe link (read-only)", "Full access
+  (CalDAV)", "Create subscribe link", "Create share link".
+- **CSS**: one stylesheet still; new classes `.block-label`,
+  `.subscribe-block`, `.access-block`, `.share-url-row`, `.share-url`,
+  `.muted`, `.client-help`, `form.inline-form`, `.error`, `.success` (the
+  two latter previously unstyled). Share blocks flow through the tile grid
+  via `grid-area: metadata` auto rows. All malformed inline styles are gone
+  (`style="{ height: 2em; }"` / `style=""` deleted with the Share template;
+  `style="display:inline"` in linked-platforms + group_detail →
+  `class="inline-form"`); the `--color` CSS-var inline styles stay (legit
+  per-tile theming). `input[type=email]` is now styled globally (the only
+  other template using it is the login-style forgot-password form).
+  `EmbedService` now sends `Cache-Control: no-cache` alongside its ETag
+  (verified live on the diag instance) so CSS/JS changes reach browsers on
+  the next load — no hash-param hack needed.
+- **Tests**: `frontend_share.rs` rewritten around the new surfaces: tab
+  404 + nav absence, create → tile URL + public export round-trip for
+  calendar **and** addressbook, revoke → 404 (+ anchored redirects),
+  invite flows incl. per-tile scoping and persistence, guest banner
+  exactly-once + revoke-removes-row, and a **CAS-shaped regression
+  fixture** (existing subscription + view/edit/admin guest shares + zero
+  invites must render every control — the §4 report can't regress).
+  `frontend_password.rs` gate tests retargeted to `/calendar`;
+  `frontend_calendars.rs` credential-row wording updated. Helper note:
+  `extract_register_url` now anchors on `<code>` because persistent invite
+  rows (plain `<a href>`) can precede the banner in the DOM.
+
+**Gates (2026-09-22, dev):** `cargo test -p rustical_frontend` 22 ✓;
+integration suite **95/95** ✓; `cargo test --workspace` all green;
+`cargo fmt --check` ✓; clippy clean for all touched production code
+(fixed: redundant clones, `pub(crate)`→`pub`, let-else, doc backticks,
+too-many-lines allows). The clippy nit (`/// ─────` separators above the
+guest-shares tests in `tests/integration_tests/frontend_share.rs:959`)
+was fixed 2026-09-22 (plain `//` comments) — re-run green: zero clippy
+warnings in `tests/integration_tests/frontend_*`, integration suite
+95/95 again.
+**LIVE (2026-09-22, session 2): deployed + this effort's checklist GREEN —
+the password-reset carry-over checklist found one real bug (see §17.14).**
+Safety-net DB backup first (`~/backups/omnical/db-pre-1715-deploy-20260922.sqlite3`,
+3.9 MB, integrity ok, 216 cal / 209 addr live). Built via
+`scripts/build-rust.sh` (UPX'd rustical 4.9 MiB — fits C2 budget) and
+deployed via `~/router-dav/deploy.sh` 21:00 UTC: startup log says
+"Scheduling extension enabled (8 SMTP identities, RSVP links enabled)" ✓,
+health ok, dav-tls unchanged (no restart, sha-verified), overlay 27.5 M
+free. Live checks (all through the public URL, curl + logged-in session as
+`nicholas@carltonaudio.com`): `/{user}/share` → **404** ✓; nav has no
+Share entry ✓; Calendars page CAS tile renders **every** control —
+subscribe block (URL/Copy/Revoke), 3 guest rows + Revoke, invite-guest +
+send-invite + generate-link forms, `Full access (CalDAV)` block,
+instructions disclosure (Apple/Google/Outlook/DAVx5/Thunderbird, verbatim
+"not possible" line, webcal Copy, caldav URL prefilled) — 22/22 tile checks
+PASS (the §4 H1 closure: all controls are server-side; user needs one
+Ctrl+Shift+R + re-login — every deploy restart kills in-memory sessions) ✓;
+Addressbooks tiles render the share-link block and the full
+create→revoke cycle was proven live on `personal`: POST share/create →
+303 → `#ab-personal`, tile shows URL+Copy+Revoke, public export URL →
+200, POST share/{id}/revoke (with the form's `principal` field — an empty
+POST body gets 415, a field-less one 422) → 303 → `#ab-personal`, export
+URL → 404 ✓. DB left at baseline (the test subscription was revoked).
+**§17.14 carry-over checklist (same live pass):** login page shows "Forgot
+your password?" ✓; POST `/frontend/forgot-password` (real account
+`zero@novo-ordo.com`, flagged `needs_password_change=1` for the flag test)
+returns the byte-identical no-enumeration page ✓ — but the email itself
+**BOUNCED live**: `logread` shows `could not email password reset link:
+SMTP error 554 … 5.7.1 <omnical.local>: Helo command rejected: Host not
+found`. Root cause: the hand-rolled SMTP client's `EHLO omnical.local`
+(scheduling `smtp.rs:19`) — smtp.novo-ordo.com runs Postfix
+`reject_unknown_helo_hostname`; Gmail (the pre-§17.14 app sender)
+tolerated it, so the sender switch surfaced the bug on its first live
+send. **Fix implemented on dev (2026-09-22, session 2, NOT yet
+built/deployed):** `EHLO_NAME` is now a `OnceLock<String>` set at startup
+from the public URL host (`set_ehlo_name_from_url` + `url_host` with
+IPv6-literal handling, RFC-5321 "localhost" fallback; set in `src/lib.rs`
+serve path — only when a real `[subscriptions] public_url` is configured —
+and in the `invites create --send` CLI branch, the only other send
+process). Gates for the fix green: 4 new smtp unit tests, `cargo fmt
+--check` clean, clippy clean for touched code. **Remaining:** rebuild +
+redeploy, then re-run the email-dependent §17.14 checklist items (reset
+email arrival, supersedes/re-request, rotation + flag-clear, guest-share
+credential email, `invites --send`, iMIP organizer From) — see
+`PLAN_NEXT_AGENT_CALENDARS_TAB_SHARING.md` §13 session-2 log for the exact
+resume list. Rate-limiter budget spent so far: 1 POST (of 5/h per IP).
+**RESOLVED (session 3, 2026-09-22):** the EHLO fix was rebuilt
+(scripts/build-rust.sh, rustical 4.85 MiB UPX'd, dav-tls unchanged) +
+redeployed 21:17:07 UTC (safety-net backup
+`~/backups/omnical/db-pre-ehlo-deploy-20260922.sqlite3`, live counts
+216/209 = §17.15 baseline), and **every email-dependent §17.14 item
+re-ran GREEN** — reset email delivery From `burningserenity@novo-ordo.com`,
+supersedes, rotation + flag-clear + full password restore, unknown-email
+byte-identity, guest-share credential email, `invites create --send`, and
+iMIP REQUEST From the organizer (see §17.14 Status for the four live
+findings, incl. the zero-alias mailbox and the METHOD:REQUEST
+non-trigger). DB left at baseline (only expected tombstones + used
+reset rows for audit). Pending: commits, when the user asks.
 
 ---
 

@@ -1,0 +1,11 @@
+On Windows Calendar App, calendar is automatically named after URL, not calendar name.
+
+Dad accepted invite, CAS calendar is listed on Google Calendar, but he can't see events add events to it from Google Calendar.
+
+We need a subscribe link for Google Calendar, it doesn't accept the credentials.
+
+Need to get RMS to automatically make calendar events.
+
+Shitty frontend is hella confusing.
+
+Need to distribute SSL certificates
