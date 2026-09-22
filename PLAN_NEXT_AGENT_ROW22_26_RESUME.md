@@ -1,9 +1,16 @@
-# Plan — next agent: run row-22 + row-26 LIVE checklists (fix is DEPLOYED; only the live checks + teardown remain)
+# Plan — next agent: run the row-26 LIVE checklist (row 22 is DONE + torn down; only row 26 + final PLAN.md updates remain)
 
-Session 5 (2026-09-22 ~22:08 UTC) finished ALL of step 1: gates green,
-aarch64 musl rebuild, redeploy, safety-net backup, reset-link hygiene.
-The deployed rustical now carries the tuple-form fix. Remaining: run the
-row-22 + row-26 live checklists below (unchanged), then teardown.
+**COMPLETED 2026-09-22 ~22:25 UTC (session 7): the row-26 LIVE checklist is
+ALL GREEN** and the PLAN.md row-26 matrix cell + §17.8.7 pointer are updated
+(see the Step 3 record below). Nothing remains of this file's scope. The only
+remaining item-6 live work anywhere is the phone-based registration (user's
+device — ask the user).
+
+Session 5 (2026-09-22 ~22:08 UTC) finished step 1 (gates, rebuild, redeploy,
+backup, reset-link hygiene). Session 6 (2026-09-22 ~22:10–22:20 UTC) ran
+the FULL row-22 live checklist on the post-fix deploy — ALL GREEN — and
+completed the row-22 teardown back to the row-20/21 account shape (record
+below). Remaining: the row-26 checklist, then the final PLAN.md updates.
 Full narrative record: PLAN.md §17.8.7 item-7 "ROW-22 + ROW-26 LIVE" block.
 
 ## Step 1 DONE — record (session 5, 2026-09-22 22:0x UTC)
@@ -37,11 +44,125 @@ Full narrative record: PLAN.md §17.8.7 item-7 "ROW-22 + ROW-26 LIVE" block.
   reset. Diag app token `diag-row22` survives (DB-backed) — `diag_token.txt`
   still valid.
 
-## Task
+## Step 2 DONE — record (session 6, 2026-09-22 ~22:10–22:20 UTC): ROW-22 LIVE, ALL GREEN + teardown
 
-Verification-matrix rows 22 (linked-platform real-URL import) + 26 (forced
-password-change gate), LIVE on the router, using the kept
-`live-test-20260914@example.com` account — then teardown to baseline.
+Pre-flight state matched the recorded baseline exactly (sources 0; account
+subs 3 / tokens 6 incl. diag-row22; global subs 9 / tokens 68 / sources 0;
+live 216 cal objects / 209 contacts / 36 calendars / 12 addressbooks;
+rustical PID 17364 = the session-5 post-fix deploy, still listening
+127.0.0.1:4000). Fresh portal login (pass-stored password) → 303, session
+saved to `jar.txt`; export URL via dav-tls → 200, `ssl_verify_result=0`,
+3 VEVENTs. DAV collection paths confirmed live:
+`/caldav/principal/{user%40domain}/{cal}/`, object hrefs `{uid}.ics`, DAV
+Basic auth = principal-id + app-token value.
+
+- **(1) Add:** POST add srcfeed export URL → `imported` → **303 in 0.54 s**
+  — the tuple-form fix works live on the real public URL (server-side fetch
+  through public DNS + NAT hairpin to dav-tls). `calendar_sources` +1 row
+  (id `5ee3a3e3-36b8-4699-88ff-0c69bf00c872`, provider_host
+  `0115d8cf.duckdns.org`, last_fetch_at stamped, success 1); imported =
+  exactly e1/e2/e3 live; calendar-query REPORT through dav-tls → 207 with
+  exactly 3 hrefs.
+- **(2) Edit propagation:** PUT edited `e2` (SUMMARY "Feed event two
+  EDITED", same UID) into srcfeed → 201; portal Refresh → 303 (1.5 s);
+  imported `e2` updated, same href `e2.ics`; e1/e3 untouched.
+- **(3) Add/delete propagation:** PUT new `e4` → 201 → Refresh → e4.ics
+  appears in imported (4 hrefs); DELETE `e4` → 200 → Refresh → gone (back
+  to 3). Tombstone nuance: the DAV DELETE tombstoned srcfeed/e4
+  (`deleted_at` set); the refresh's copy-removal hard-deletes imported/e4.
+- **(4) Mass-delete abort:** DELETE e1+e2 from srcfeed → Refresh re-renders
+  **200 with banner "Refresh failed: mass-delete aborted."**; imported
+  e1/e2/e3 all still live (rows intact).
+- **(5) SSRF negatives** (each 200 re-render, banner, NO calendar_sources
+  row; count stayed exactly 1): `http://…` → "Only HTTPS URLs are
+  allowed"; `https://192.168.1.1/x.ics`, `https://127.0.0.1/x.ics`,
+  `https://[::1]/x.ics` → "Refused: private-range address".
+- **(6) Remove keeps copy:** portal Remove → 303; sources 0; imported still
+  e1/e2/e3 live.
+- **(7) Teardown (all green):** DELETE `imported`/`imported2`/`srcfeed`
+  with `X-No-Trashbin: 1` → 200 ×3 (hard delete; PROPFIND → 404). The
+  srcfeed subscription `ee496590…` was NOT cascade-deleted by the calendar
+  DELETE — revoked via CLI (`subscriptions remove`), which printed
+  "Subscription ee496590… removed". Diag token removed via CLI
+  (`principals app-token remove … bbdef0d9-…`) → DAV auth now 401; the
+  srcfeed export URL now 404. Account back to the row-20/21 shape exactly:
+  personal+tasks calendars (live), 2 registration subs, 5 registration
+  tokens. Global: **subs 8, tokens 67, sources 0** (the 9→8 / 68→67 the
+  prep-state paragraph predicted). Live counts now **210 cal objects / 209
+  contacts / 33 calendars / 12 addressbooks** (216−3 prep events and 36−3
+  prep calendars went with the deleted prep calendars — the 216/209/36
+  baselines INCLUDED the 2026-09-14 prep; 213→210 after the post-run
+  tombstone sweep removed the 3 orphaned live `_vdirtest` objects —
+  see below). Router /tmp fully cleaned
+  (all dnsprobe*, rustical-diag, row22t/d, rustical-row2226* incl. the
+  sqlite `-wal`/`-shm` sidecars, pcap/pid leftovers); rustical PID 17364
+  never restarted; no scratch principal in prod.
+
+## Step 3 DONE — record (session 7, 2026-09-22 ~22:23–22:26 UTC): ROW-26 LIVE, ALL GREEN
+
+Safety net FIRST: `~/backups/omnical/db-pre-row26-20260922.sqlite3`
+(3,878,916 B, 0600, `PRAGMA integrity_check` = ok); pre-flight matched the
+recorded baseline exactly (flag 0; 8 subs / 67 tokens / 0 sources;
+33/210/209/12/11 live; changelog 916; resets 5/5 used). rustical PID 17364
++ dav-tls PID 3765 both untouched for the whole run. All HTTP through
+dav-tls on the public URL (`--resolve` hairpin, `ssl_verify_result=0`);
+logread -f captured to a file before the probes (survives ssh exit when
+backgrounded with redirects — the earlier `setsid` problem doesn't apply to
+plain `cmd &`).
+
+- **(1) Flag flip:** sqlite3 `UPDATE principals SET needs_password_change=1`
+  → 1 row, verified = 1.
+- **(2) Gate:** FRESH login POST (pass-stored password) → 303; GET
+  `/frontend/user` → 303 → `/frontend/user/{u}/password`; GET
+  `/frontend/user/{u}/linked-platforms` → 303 → same; the password page
+  itself → 200, form rendered with `minlength="12"` (deployed
+  `min_password_length`).
+- **(3) Negatives** (each 200 re-render, form present, flag stayed 1 after
+  all three): wrong current → "Current password is incorrect."; short new
+  ("short") → "Password must be at least 12 characters."; mismatched
+  confirm → "The new passwords do not match."
+- **(4) Rotation:** correct current + 21-char new → **303 to the user
+  page**; flag cleared (sqlite3 = 0); the SAME session's user page → 200
+  (gate lifted — note GET `/frontend/user` 303s canonically to
+  `/frontend/user/{u}` even when ungated); OLD password login → **401**
+  (WARN "Failed password login attempt" in the logread capture); NEW
+  password login → 303.
+- **(5) Restore:** `cat pw | ssh router /usr/sbin/rustical principals edit
+  live-test-20260914@example.com --password` → "Principal … updated";
+  original password logs in again (303); flag stays 0.
+- **(6) Passwordless-never-gated:** offline-covered, no live check (gate
+  condition `password.is_some()`), per the checklist.
+
+Evidence: logread capture = INFO "password changed (forced after first
+calendar join)" + the login WARN, ZERO ERROR lines (pulled to
+`/tmp/opencode/row2226/row26/row26-logread.log`, chmod 600 — it contains
+cleartext passwords, see finding a). Post-state = baseline exactly (flag 0;
+8 subs / 67 tokens / 0 sources; 33/210/209/12/11 live; changelog 916;
+resets 5/5 used; portal sessions are process-memory only — no sessions
+table, logins leave no DB rows). Router /tmp cleaned (backup copy + logread
+log removed; logread stopped — busybox has no `pkill`, used `kill <pid>`).
+Dev artifacts: `/tmp/opencode/row2226/row26/` (item2/3/4.sh, jar26.txt —
+portal session valid until the next rustical restart, HTML/XML responses,
+logread log). pw files removed locally (original lives in pass).
+
+**Findings for the record (also in the row-26 cell):**
+(a) `route_post_password_change`'s `#[instrument]` span logs the whole
+`ChangePasswordForm` incl. cleartext passwords to syslog — same pre-existing
+upstream pattern as the row-20 register finding (hardening list);
+(b) transient `[rustical-watchdog]` cron zombie (5-min cycle) appeared and
+self-reaped during the run — benign.
+
+## Step 4 DONE — record: final PLAN.md updates applied (session 7)
+
+Row-26 matrix cell → **LIVE: DONE 2026-09-22** with method/results; §17.8.7
+"Row 26 remains" pointer → replaced with the LIVE DONE note (remaining
+item-6 live work: phone-based registration only).
+
+## Task (original, for the record — completed)
+
+Verification-matrix row 26 (forced password-change gate), LIVE on the
+router, using the kept `live-test-20260914@example.com` account (row 22 is
+done + torn down to its row-20/21 shape).
 
 ## THE BUG IS ROOT-CAUSED (was: half-diagnosed)
 
@@ -120,101 +241,91 @@ file (see session-5 record above for details).
 
 ## Remaining steps (in order)
 
-1. ~~Finish gates + build + redeploy~~ DONE (session 5, see record above).
-2. Row 22 checklist (below) — unchanged. REMEMBER: fresh portal login first
-   (old `jar.txt` session died in the restart).
-3. Row 26 checklist (below) — unchanged.
-4. Teardown + PLAN.md updates + cleanup (below).
+1. ~~Finish gates + build + redeploy~~ DONE (session 5).
+2. ~~Row 22 checklist~~ DONE (session 6, see record above — incl. its
+   item-7 teardown + router-/tmp cleanup).
+3. ~~Row 26 checklist~~ DONE (session 7 — see the Step 3 record; FRESH
+   login used after the flag flip as instructed).
+4. ~~Final PLAN.md updates~~ DONE (session 7 — see the Step 4 record).
 
 ## Environment
 
 - Router: `ssh router` (root). rustical PID 17364 (started 2026-09-22
-  22:08:39 UTC, deployed binary = POST-FIX, incl. §17.14/§17.15 + EHLO fix).
-  Prod config `/etc/rustical/config.toml`; DB
+  22:08:39 UTC, deployed binary = POST-FIX, incl. §17.14/§17.15 + EHLO fix
+  + the tuple-form linked-platforms fix; never restarted since). Prod
+  config `/etc/rustical/config.toml`; DB
   `/usr/local/share/rustical/db.sqlite3` (LIVE data). Public URL
   `https://0115d8cf.duckdns.org:8443` (loopback diag:
   `curl --resolve 0115d8cf.duckdns.org:8443:192.168.1.21`; from the router
   itself, prod rustical is reachable plain at `127.0.0.1:4000`).
+- Post-row-22 baseline (for counting): global subs **8**, app tokens
+  **67**, calendar_sources **0**; live counts **210** calendar objects /
+  **209** contacts / **33** calendars / **12** addressbooks / **11**
+  birthday calendars — and **ZERO tombstones anywhere** after the
+  post-row-22 sweep (next paragraph); totals now equal live counts
+  (33 / 210 / 209 / 11), `calendarobjectchangelog` 916.
+
+## Tombstone sweep DONE (post-row-22, 2026-09-22 ~22:35 UTC, user-directed)
+
+Every pre-existing soft-deleted row removed from the prod DB via
+EXPLICIT per-row DELETEs (one statement per row key, generated with
+`quote()`, dry-run ROLLBACK pass verified before the COMMIT pass — no
+blanket conditions). Removed: 3 calendar tombstones
+(`nfcarlton@gmail.com/_vdirtest` + `/test-probe`,
+`zero@novo-ordo.com/gs-test-20260922`), the 3 still-live-but-orphaned
+objects + 3 changelog rows under `_vdirtest` (the app's FK-cascade
+equivalent — sqlite3 CLI has FKs off), 336 tombstoned `calendarobjects`,
+3 tombstoned `addressobjects`, 1 tombstoned `birthday_calendars` row.
+Changelog entries for LIVE collections were KEPT (919→916 = only the
+`_vdirtest` three): `_sync_changes` reads the changelog, not tombstone
+rows — deletions still reach sync-clients. Post-state verified: 0
+tombstones in calendars/calendarobjects/addressobjects/addressbooks/
+birthday_calendars; `integrity_check` ok; rustical PID 17364 never
+restarted; portal + dav-tls 200s after. Safety net:
+`~/backups/omnical/db-pre-tombstone-cleanup-20260922.sqlite3`
+(pre-state 3/336/3/1, integrity ok). For counting purposes the "raw"
+totals in older records (e.g. 36 calendars / 549 calendarobjects) are
+obsolete — use 33 / 210 / 209 / 11.
 - Safety-net backups: `~/backups/omnical/db-pre-row2226-20260922.sqlite3`
   (pre-bug-work) + `~/backups/omnical/db-pre-linkfix-deploy-20260922.sqlite3`
   (pre-deploy, includes the 2 reset rows — the authoritative pre-row-22 state).
 - Portal password: `pass secrets/omnical/live-test-20260914@example.com/portal`.
-- Dev artifacts: `/tmp/opencode/row2226/` — `jar.txt` (portal session cookie
-  from session 4 — DEAD since the session-5 deploy restart; keep only as a
-  filename reference for the new login), `diag_token.txt` (diag
-  DAV app token, prints `{prefix}_{secret}`), `srcfeed.ics`, `lp0.html`,
-  `add1.html` (failing add response), `repro1.html` (repro), `fp*.html/jar`
-  (forgot-password probes), `scratch-test.sh` + `diag-run.sh` (the working
-  single-ssh-session pattern — reuse for any router-side scripted probes),
-  `dnsprobe3/` (corrected probe source; binary + UPX variant on router),
-  old `dnsprobe*/` (flawed "worker" tests — keep only as a cautionary note).
-- Router tmpfs leftovers (REMOVE AT TEARDOWN): `/tmp/dnsprobe`,
-  `/tmp/dnsprobe2`, `/tmp/dnsprobe2u`, `/tmp/dnsprobe3`, `/tmp/dnsprobe3u`,
-  `/tmp/rustical-diag` (UPX'd diagnostic binary, PRE-fix + warn logging) +
-  `/tmp/rustical-diag.log`, `/tmp/row22t/` + `/tmp/row22d/` (scratch/diag
-  run artifacts incl. pcaps), `/tmp/rustical-row2226.toml` (scratch config,
-  :4001 + scratch DB), `/tmp/rustical-row2226-db.sqlite3` (scratch DB, has
-  `row22probe@example.com`), `/tmp/rustical-row2226.{log,pid}` (log now
-  holds scratch-run output; pid stale), stale pcap/pid/log files
-  (`/tmp/dnsadd.pcap`, `/tmp/dns-smtp-probe.pcap`, `/tmp/probe2.*`,
-  `/tmp/tcpdump*.pid`).
-- Prod DB deltas vs the §17.15 baseline (audit + expected): +2
-  password_resets rows for zero@novo-ordo.com (21:45:14 used at 21:46:52;
-  21:46:52 row marked used 22:08:50Z at session-5 start — NO usable links
-  remain). Nothing else changed; no source rows, no calendars touched.
-  Rustical restarted once (session-5 deploy).
+- Dev artifacts: `/tmp/opencode/row2226/` — `jar.txt` (LIVE portal session
+  cookie from session 6, valid until the next rustical restart; row 26
+  wants a FRESH login after the flag flip anyway), `diag_token.txt` (**DEAD
+  — revoked at row-22 teardown**), session-6 run artifacts
+  (`export-pre.ics`, `login*.html`, `lp-pre.html`, `add1post.html`,
+  `refresh*.html`, `ssrf*.html`, `remove1.html`, `report-imported-*.xml`,
+  `report-query.xml`, `e2-edited.ics`, `e4.ics`, `home-set.xml`) and the
+  older session-4/5 diagnosis artifacts (`lp0.html`, `add1.html`,
+  `repro1.html`, `fp*.html/jar`, `scratch-test.sh` + `diag-run.sh` — the
+  working single-ssh-session pattern, `dnsprobe3/` corrected probe source,
+  old `dnsprobe*/` flawed probes — cautionary only).
+- Router tmpfs: ALL row-22 leftovers REMOVED at session-6 teardown
+  (dnsprobe*, rustical-diag + log, row22t/ + row22d/, rustical-row2226
+  config/DB/log/pid incl. sqlite `-wal`/`-shm`, pcap/pid files). Verified
+  clean; unrelated `dnsmasq-exit-*` files belong to other projects.
+- Prod DB deltas vs the §17.15 baseline after session 6: NONE beyond the
+  recorded session-4/5 password_resets state (5 rows, all used, NO usable
+  links); the row-22 test rows were all created and torn down within the
+  session — account back to row-20/21 shape, global 8 subs / 67 tokens /
+  0 sources. Rustical NOT restarted during session 6 (still PID 17364).
 - `logread` note: the ring buffer is tiny and flooded by dropbear lines
   (only ~3 rustical lines survive minutes later) — start `logread -f` to a
   file BEFORE any probe that needs log evidence.
 
-## Discovered state (do not re-discover)
+## Discovered state (resolved at session-6 teardown)
 
-The live-test account carries **unrecorded 2026-09-14 19:17 prep for exactly
-this test**: calendar `srcfeed` (3 VEVENTs `e1`/`e2`/`e3`), empty targets
-`imported` + `imported2`, and a subscription `ee496590-829e-47b4-a0d9-7cf2aec3cf18`
-(token `ZfqvG7VboY9EI2PxF66CxPqguX9NEh2ObkOXKtLSBM9uEE7powJ4SgtkGgabeGKL`,
-kind calendar, collection `srcfeed`). Verified green: that export URL serves
-200 through dav-tls (`ssl_verify_result=0`, the 3 events); portal login 303;
-linked-platforms page 200 with `imported`/`imported2` targets. An active
-diag app token exists: name `diag-row22`, id
-`bbdef0d9-4b2a-4279-92da-13c63025dfef` (DAV Basic auth uses the value in
-`diag_token.txt`). Teardown must return the account to its recorded
-row-20/21 shape (personal + tasks calendars only, 2 registration subs,
-5 registration tokens) — global counts go 9→8 subs, 68→67 tokens.
+The unrecorded 2026-09-14 19:17 row-22 prep (calendar `srcfeed` with
+e1/e2/e3, empty targets `imported` + `imported2`, subscription
+`ee496590-829e-47b4-a0d9-7cf2aec3cf18`, diag app token `diag-row22`
+id `bbdef0d9-4b2a-4279-92da-13c63025dfef`) is **fully torn down** —
+account verified back to the row-20/21 shape (personal + tasks calendars,
+2 registration subs, 5 registration tokens); global counts went 9→8 subs
+and 68→67 tokens exactly as predicted. Nothing left to clean on the
+account side.
 
-## Row 22 checklist (after redeploy)
-
-1. Add `https://0115d8cf.duckdns.org:8443/export/ZfqvG7….ics` → `imported`
-   → 303; `calendar_sources` gains 1 row; `imported` has exactly the 3
-   events (sqlite3 count + calendar-query REPORT through dav-tls).
-2. Provider edit propagates: PUT edited `e2` (new SUMMARY) into `srcfeed`
-   via DAV with the diag token → portal Refresh on the source → `imported`
-   copy updated (same UID/href).
-3. Add/delete propagate: PUT new `e4` into `srcfeed` → Refresh → appears;
-   DELETE `e4` → Refresh → gone (tombstone expected).
-4. Mass-delete abort: replace srcfeed content so a Refresh would delete >50 %
-   (e.g. delete 2 of 3 in `srcfeed`, keep the copy at 3, then... careful: the
-   heuristic compares against the *materialized* calendar; deleting 2 of 3
-   source-side = 2/3 > 50 % of imported's rows → Refresh must abort with
-   the banner and leave rows intact).
-5. SSRF negatives (each must store NO calendar_sources row): `http://` URL,
-   `https://192.168.1.1/x.ics`, `https://127.0.0.1/x.ics`, `https://[::1]/x.ics`.
-   (Size cap: offline-covered; live >25 MB feed not practical — skip.)
-6. Remove keeps copy: portal Remove → mapping gone, `imported` still has
-   its events.
-7. Teardown: remove source (done in 6); DELETE `imported`, `imported2`,
-   `srcfeed` calendars (DAV, header `X-No-Trashbin: 1`, expect 200);
-   revoke subscription `ee496590…` (portal form path with the form's
-   `principal` field — empty body 415 / field-less 422 gotcha — or CLI
-   `subscriptions remove live-test-20260914@example.com <id>`);
-   remove diag token (CLI `principals app-token remove live-test-20260914@example.com bbdef0d9-4b2a-4279-92da-13c63025dfef`).
-   Verify: account = personal+tasks calendars, 2 registration subs, 5
-   registration tokens; global subs 8, tokens 67; live cal/addr counts
-   back to 216/209 modulo expected tombstones (deleted-calendar recovery
-   keeps soft-deleted rows — live counts `deleted_at IS NULL` are the truth).
-   Also remove ALL router /tmp leftovers listed above.
-
-## Row 26 checklist (same session, after row 22)
+## Row 26 checklist (EXECUTED — ALL GREEN, session 7; keep for the record)
 
 1. `ssh router` sqlite3: `UPDATE principals SET needs_password_change=1
    WHERE id='live-test-20260914@example.com';` (flag flip only).
@@ -234,9 +345,10 @@ row-20/21 shape (personal + tasks calendars only, 2 registration subs,
    finding); verify the original logs in again; flag stays 0.
 6. Passwordless-never-gated: offline-covered — no live check needed.
 
-## When both rows are green
+## When row 26 is green
 
-Update PLAN.md: matrix rows 22 + 26 cells (LIVE: DONE + method/results),
-§17.8.7 record (amend the session-4 root-cause note with deploy + results);
-note the 2026-09-14 prep teardown + final counts. Remaining item-6 live
-work after that: phone-based registration (user's device — ask).
+~~Update PLAN.md: the row-26 matrix cell (LIVE: DONE + method/results)~~
+DONE (session 7 — row-26 cell + §17.8.7 pointer updated; the row-22 cell +
+§17.8.7 record were already updated at session 6, incl. the 2026-09-14
+prep teardown + final counts). Remaining item-6 live work after that:
+phone-based registration (user's device — ask).
