@@ -3627,6 +3627,13 @@ group, unknown kind/collection, revoke → 404, wrong-user 401) + all 53
       (unbound link stored with `target_group`, email-bind, invalid email
       rejected, unowned group Forbidden) + the whole §17.8.11 suite + full
       `cargo test --workspace` green; fmt/clippy clean on new files.
+   - **AMENDED 2026-09-22 (Calendars-screen surface — §17.13):** the same
+     reuse-or-mint share-link action now also lives on the **Calendars
+     screen**: `POST /frontend/user/{u}/calendar/subscribe`
+     (`{principal, calendar_id}`) mints-or-reuses the calendar's
+     subscription via the shared `ensure_subscribe_url`, and the tile shows
+     the full export URL (Copy + the same share-link Revoke) or a
+     "Subscribe URL" button when no link exists yet.
 
    ### 17.8.5 Config reference
    ```toml
@@ -4431,6 +4438,14 @@ for audit but not sent.
 > `frontend_router` → `make_app` → `cmd_serve` (reads
 > `config.scheduling.smtp`); test harness passes `vec![]`.
 
+> **Implementation note (2026-09-22, §17.13):** `build_guest_invite` gained a
+> `subscribe_url: Option<&str>` parameter — the email now also carries the
+> credential-less `/export/{token}.ics` link (reuse-or-mint via the shared
+> `ensure_subscribe_url`, §17.8.4), and the one-time Share-page banner shows
+> it too ("Prefer a subscription link …").  CLI `rustical guest-share add`
+> mints-or-reuses the same subscription and prints the URL.  When
+> `[subscriptions]` is disabled the section is simply omitted.
+
 #### 17.10.8 CLI additions
 - `rustical guest-share add <owner> <collection_id> --kind calendar --privilege view|edit|admin [--email <addr>]` → print credential
 - `rustical guest-share list <owner>` → list active shares
@@ -4714,6 +4729,100 @@ clean; clippy zero NEW warnings in the changed files. Tests: full workspace
 HEAD); new `frontend_calendars` 7/7. Code uncommitted on `omnical-scheduling`
 (6 files: template, `lib.rs`, `routes/calendar.rs`, `routes/mod.rs`, deleted
 `routes/calendars.rs`, `tests/integration_tests/{mod.rs,frontend_calendars.rs}`).
+
+> **AMENDED 2026-09-22 (§17.13):** (a) the 7 `frontend_share` failures listed
+> above were root-caused to the §17.10 guest-banner nesting bug (see §17.13 C)
+> and are now green — 93/93 integration tests.  (b) The three "never-read
+> `ShareSection` fields" are now read: the guest banner is gated on
+> `guest_share_principal`/`guest_share_calendar_id`.  (c) The Calendars
+> screen's tiles now also carry the §17.8.4 share-link surface ("Subscribe
+> URL" button / export URL with Copy + Revoke — see §17.13 A); the §17.12
+> credential banner itself is page-level and was not affected by the
+> Share-page nesting incident.
+
+### 17.13 Calendars-screen subscribe URLs + guest-email subscribe link; the banner-nesting incident (2026-09-22)
+
+**Requests:** (1) "We need a way to generate that subscription URL for the
+logged-in user, from their Calendars page."  (2) "I have somehow lost the
+ability to share the CAS calendar from the nicholas@carltonaudio.com
+account."
+
+**A. Calendars-screen Subscribe URL (reuses §17.7/§17.8.4):**
+- `CalendarTile` gains `subscribe_url` / `sub_id` / `can_subscribe`;
+  `render_calendars_page(…)` now takes `sub_store:
+  Option<&Arc<dyn SubscriptionStore>>` + `base_url` and looks up each
+  calendar's existing subscription (kind `Calendar`, matching
+  `collection_id`) exactly like the Share page does.
+- New `route_calendar_subscribe` → `POST /{user}/calendar/subscribe` (form
+  `{principal, calendar_id}`): mint-or-reuse via `ensure_subscribe_url` (now
+  `pub(super)` in `routes/share.rs`, shared by the share + calendar route
+  modules), then 303 back to the Calendars screen.  Ownership gate: own
+  principal or `can_write` group (same rule as the Share page's share
+  links — note: broader than §17.12's `is_admin` credential gate, which
+  remains unchanged).  Subscriptions disabled → 503; errors render as the
+  page's error banner.
+- `calendars_section.html`: "Subscribe URL" button in the actions row (only
+  when `tile.can_subscribe && tile.subscribe_url.is_none()`), plus a
+  metadata block showing the export URL with **Copy** and **Revoke**
+  (reuses `POST /{user}/share/{sub_id}/revoke`).
+- Gates: 2 new `tests/integration_tests/frontend_calendars.rs` tests (mint →
+  tile shows URL; foreign/unknown rejected); local scratch e2e: button →
+  303 → URL on tile → `/export/{token}.ics` 200.
+
+**B. Guest share email + banner carry the subscribe link (§17.10.7
+AMENDED):** `build_guest_invite(..., subscribe_url: Option<&str>)` in
+`crates/scheduling/src/mime.rs`; `route_share_guest_invite` mint-or-reuses
+the shared calendar's subscription and includes it in the email + one-time
+banner (`ShareSection.guest_share_subscribe_url`); CLI `rustical
+guest-share add` prints the same URL.
+
+**C. The banner-nesting incident (root cause of request 2):** the one-time
+guest-credential banner in `share_section.html` sat inside
+`{% for invite in entry.invites %}` — tiles with **no registration invites**
+never iterated the loop, so the banner never rendered after minting; app
+token secrets are stored hashed → the credential was effectively lost.  This
+bit on 2026-09-22:
+- the nicholas@carltonaudio.com CAS report (CAS tile has no invites);
+- share `30343a84-eaf6-4511-a63e-ef30c2b621a7` (2026-09-22 18:10:03 UTC):
+  **lyrest@gmail.com's "Cece" calendar** (`290c0341-…`), guest
+  `guest-d151aece-…`, privilege `admin`, no `target_email` — initially
+  misattributed to the CAS/nicholas account; same bug on lyrest's Share
+  page (that tile has no invites either).  The share is still active but
+  the credential is unrecoverable — harmless while active; revoke +
+  re-mint from the portal is the cleanup path (owner's call).
+**Fix (deployed 2026-09-22):** banner moved out of the invites loop to tile
+level, **gated on `guest_share_principal == entry.principal &&
+guest_share_calendar_id == entry.collection_id`** (the struct fields existed
+but were never wired) — renders **exactly once, on the minted calendar's
+tile**; the tile-level error moved to page level (same placement as the
+Calendars screen).  The `{% else if enabled %}` "Create share link" branch
+now renders when `entry.url` is `None`.  This also fixed the **7
+long-failing `frontend_share` integration tests** (§17.12 AMENDED) and
+unlocked a strengthening: `test_guest_invite_mints_share_and_shows_credential_banner`
+now asserts the banner count is exactly 1.  *Post-mortem detail:* the first
+version of the fix moved the banner + error to tile level **ungated** —
+caught during live post-deploy verification (banner rendered on all 7
+tiles) and re-fixed + redeployed the same evening.
+
+**Gates (2026-09-22, all green):** `cargo test --test run_integration_tests`
+93 passed / 0 failed; `cargo fmt` applied; clippy `rustical_frontend` +
+`rustical` only pre-existing warnings; cross-build aarch64-musl 4 MiB
+(35 MiB budget).  Deployed 19:16 UTC; gate-fix redeploy 19:31 UTC (deployed
+md5 == fresh build).
+
+**LIVE (2026-09-22, app-token diag, all artifacts cleaned up + DB-verified):**
+Calendars screen shows 4 "Subscribe URL" buttons + the CAS tile's existing
+`export/o7HE….ics` link (subscription since 2026-09-10) with Copy/Revoke;
+`POST /calendar/subscribe` for CAS → 303 with **reuse** (no new
+`subscriptions` row); guest-invite POST for CAS → banner exactly once on the
+CAS tile (Server URL / Username / App token / "Prefer a subscription link"
+line); `/export/o7HE….ics` serves 200 `text/calendar` through dav-tls
+(`https://0115d8cf.duckdns.org:8443`).  All diag guest shares revoked, diag
+app token removed.
+
+**Also in this batch:** platform invite `rustical invites create --send`
+(`src/commands/invites.rs`, `build_registration_invite` in `mime.rs`) and
+the untracked `scripts/invite-user.sh` SSH wrapper.
 
 ---
 
