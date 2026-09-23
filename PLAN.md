@@ -5301,6 +5301,49 @@ findings, incl. the zero-alias mailbox and the METHOD:REQUEST
 non-trigger). DB left at baseline (only expected tombstones + used
 reset rows for audit). Pending: commits, when the user asks.
 
+### 17.16 Calendar detail page: JSON debug dump replaced by device setup instructions (2026-09-23)
+
+**Request:** clicking a calendar tile opens the calendar detail page
+(`/frontend/user/{principal}/calendar/{id}`), which until now ended in a
+"Debug information" section rendering the raw `calendar|json` dump — the
+user wants setup instructions for devices there instead (the §17.15
+per-client instructions already existed only as a collapsed `<details>`
+on the Calendars tab tiles).
+
+**Change (code: `~/router-dav/rustical`, uncommitted):**
+- `crates/frontend/public/templates/pages/calendar.html`: the
+  `<pre>{{ calendar|json(2) }}</pre>` block is gone. The page now shows a
+  `<details class="client-help" open>` "Set up on your device…" card with
+  the same two §17.15 sections as the tile version — *Subscribe —
+  read-only, no account needed* (export URL + Copy + Copy webcal:// when a
+  subscribe link exists; otherwise a link back to the Calendars tab tile
+  `#cal-{id}` to mint one) and *Full access — read + write (CalDAV)*
+  (Apple/DAVx5/Thunderbird with `caldav_url` prefilled + the verbatim
+  Google/Outlook.com "not possible" line). Reuses the existing
+  `.client-help` CSS verbatim (h4/ul/li/code styling) — zero new CSS.
+  The old "Subscription URL" heading for `calendar.subscription_url` (a
+  linked-platforms *source* feed, not the subscribe link) is renamed
+  "Linked platform source" to stop it colliding with the subscribe
+  instructions.
+- `crates/frontend/src/routes/calendar.rs`: `CalendarPage` gains
+  `subscribe_url`, `subscribe_url_webcal`, `caldav_url`; `route_calendar`
+  gains the `Option<Arc<dyn SubscriptionStore>>`, `public_url` and `Host`
+  extensions and looks up the calendar's existing subscription the same
+  way `render_calendars_page` does (find `kind == Calendar &&
+  collection_id == cal_id` under the owning principal — no minting here;
+  `webcal_variant` reuse, token never rewritten).
+
+**Gates (dev, 2026-09-23):** integration suite **96/96** ✓ (new
+`test_calendar_detail_page_shows_setup_instructions`: with-link page shows
+export + webcal + `/caldav` URLs and no "Debug information"; group
+calendar without a link shows the Calendars-tab fallback at the
+`{owner}/calendar/{id}` tile URL — note tiles link group calendars under
+the **owning principal** in the path, which the first test draft got
+wrong; foreign page → 401); `cargo test -p rustical_frontend --lib` 22 ✓;
+`cargo fmt --check` ✓; clippy clean for the touched files.
+**Not yet built/deployed to the router** — next deploy picks it up with
+the routine `scripts/build-rust.sh` + `deploy.sh`.
+
 ---
 
 ## Appendix A — RustiCal Reference Notes
