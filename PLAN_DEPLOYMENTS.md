@@ -1117,8 +1117,8 @@ Run in order; each row is a gate.
 |---|---|---|---|
 | **Workstream 0** ||||
 | 20 | No secrets in the repo | `gitleaks detect`; `git ls-files \| grep -E 'out/tls/\|\.pem$\|\.mobileconfig$'` | no findings; the old LE serial is revoked |
-| 21 | Clean clone builds | `git clone <url> /tmp/ct && cd /tmp/ct && ./scripts/build-rust.sh x86_64-unknown-linux-gnu` | succeeds; `out/x86_64-unknown-linux-gnu/rustical` ≤ 35 MiB — **BLOCKED, not failing**: the clone succeeds and builds **only if the server repository exists**, and it does not yet (§18.9). A public clone today yields an **empty `rustical/`**. Verified green the moment the submodule source is available: a real public clone, submodule substituted, built both binaries cold (5.58 MB / 627 KB) and passed the self-host gate 69/69 |
-| 22 | CI green | push; all 5 workflows | **RED 2026-09-28, for one reason** (§18.9): all three written workflows fail at `actions/checkout` because the submodule URL names a repository that does not exist. Nothing about the code has failed; the job has never reached a test. A guard (`submodule-url-exists`) now reports that in one sentence instead of a buried `repository not found`. **Green the moment `Bytewheel/Omnical-Server` exists and is pushed** — nothing else is outstanding |
+| 21 | Clean clone builds | `git clone <url> /tmp/ct && cd /tmp/ct && ./scripts/build-rust.sh x86_64-unknown-linux-gnu` | **GREEN 2026-09-28 on a runner** (§18.10): `actions/checkout` with `submodules: recursive` from the public repository, then the cold build, in the `x86_64-gnu` job of `build.yml`. `out/x86_64-unknown-linux-gnu/rustical` = 5.58 MB, and 5.00 MB after UPX on aarch64, of the 35 MiB budget |
+| 22 | CI green | push; all 5 workflows | **GREEN 2026-09-28, 9/9 jobs** (§18.10): `hygiene` (secret scan, tracked-file policy, submodule-remote-is-reachable), `test` (workspace + the 98-baseline and its name digest, fmt, clippy), `build` (aarch64-musl, x86_64-gnu, self-host rows 40-41). Took four pushes: the first exposed a missing repository, the next four each exposed a gate that had been written but never executed |
 | **Workstream A** ||||
 | 23 | Refactor is behaviour-neutral | `cargo test --test run_integration_tests` after the `make_app` extraction | **98/98 unchanged** — no test edits, and the test *names* unchanged (the names are digested and pinned in `test.yml`, so a delete-and-replace cannot hide behind a matching count; the baseline was **96, wrongly, until 2026-09-28** — §18.8) |
 | 24 | Cross-tenant auth isolation | tenant A's principal + app token against tenant B's host | 401 |
@@ -1337,13 +1337,17 @@ Burn scars from the existing plan, plus the new ones this model introduces.
 
 ## 18. Implementation split — first next action
 
-> **STATUS (2026-09-28): THE REPOS ARE PUBLIC AND THE PUSH IS RED (§18.9).**
-> Two of the three repositories exist and are pushed — the plan and the
-> build/deploy repo. The third, **the server itself**, does not, so every
-> workflow dies at the submodule checkout. One action fixes it: create
-> `Bytewheel/Omnical-Server` and push `omnical-scheduling` to it. **Nothing in
-> the code is broken** — a public clone with the submodule source available
-> builds cold and passes the self-host gate 69/69.
+> **STATUS (2026-09-28): ALL THREE REPOSITORIES ARE PUBLIC AND CI IS
+> GREEN — 9/9 jobs (§18.10).** `hygiene`, `test` and `build` all pass on a
+> runner, from a clean clone of the public repository, for the first time in
+> this project's history. It took four pushes, and it is worth knowing why: five
+> of these gates had been written but **never executed**, and every one of them
+> was wrong in a way only a runner could have shown. §18.10 lists them.
+>
+> The one finding the secret scan reported was adjudicated, not suppressed: it
+> was a shell **variable name**, there is no secret anywhere in the public
+> history, and the code was fixed anyway because `curl -u` puts the credential in
+> the process table.
 >
 > Below that: WAVE 0 DONE (§18.4), WORKSTREAM C ITEMS 4 + 5 + 6 DONE (§18.5,
 > §18.6, §18.7), THE BASELINE IS CORRECTED (§18.8). The
@@ -2261,6 +2265,105 @@ step.
 
 ---
 
+## 18.10 The gates ran for the first time, and five of them were wrong (2026-09-28)
+
+**All nine jobs are green.** Not "pass locally" — green on a runner, on a public
+repository, from a clean clone:
+
+| Workflow | Jobs | Result |
+|---|---|---|
+| `hygiene` | secret scan · tracked-file policy · submodule remote is reachable | **3/3** |
+| `test` | workspace suite (+ the 98-baseline and its name digest) · fmt · clippy | **3/3** |
+| `build` | aarch64-musl · x86_64-gnu · self-host channels (rows 40-41) | **3/3** |
+
+This took four pushes, and the reason is worth stating plainly: **every one of
+these gates had been written but never executed.** They were verified by reading,
+and by running the commands by hand on a machine that is not a runner. Five were
+wrong in ways only a runner could have shown.
+
+| # | What broke | Why only a runner showed it |
+|---|---|---|
+| 1 | Submodule checkout — no server repository existed | §18.9. Nine minutes of CI, and the "unproven until a push" caveat in three places is now discharged |
+| 2 | `gitleaks-action@v2` demands a paid licence for orgs | `[Bytewheel] is an organization. License key is required` — the scanner is still free, only the wrapper is gated. **This one mattered**: per §5.1 the secret scan is the control that would have caught the live TLS key and the 15 real app tokens, so a licence wall silently disarming it would leave a publishable-looking, unscanned repository |
+| 3 | zig's download URL had been wrong since 0.12 | The 404 produced `xz: (stdin): File format not recognized`, because the tarball was piped from curl straight into tar. Zig renamed `zig-<os>-<arch>` to `zig-<arch>-<os>`, and the *extracted directory* moved with it — so fixing only the URL would have moved the failure rather than fixing it |
+| 4 | `zig version` could never have worked | The step wrote `$GITHUB_PATH` and then called `zig version` in the same step; `$GITHUB_PATH` only affects *later* ones. Latent behind the 404 |
+| 5 | The aarch64 job had no Rust toolchain or target | It was the only job that never installed one, and died on `can't find crate for core`. Behind the 404 |
+| 6 | The name digest was **locale-dependent** | `sort` collates `_` and case differently under `en_US.UTF-8` than `C`. The pin was computed on a developer machine and was unpassable on the runner: right count (98), wrong digest. Now taken under `LC_ALL=C`, verified under four locales |
+
+Fixes 3 and 4 are the same class of bug — *a step that could not have worked,
+hidden behind an earlier failure*. Both had been written by reading. The aarch64
+toolchain omission (5) is worse: it was the **only** job without one, and it was
+the job that guards the router's 35 MiB overlay budget.
+
+The zig download also gained a **pinned SHA-256**. Fetching a whole toolchain over
+TLS and executing whatever arrives, with no integrity check, is a supply-chain
+hole in a repository that has to be publishable — and it was the one place in CI
+that downloaded an executable.
+
+### The secret finding, and why the history was not rewritten
+
+The full-history scan reported one finding: rule `curl-auth-user` on
+`curl … -u "$auth"` in `scripts/selfhost-gate.sh`, in five commits.
+
+`"$auth"` is the **name of a shell variable**; its value is a token the same
+script mints seconds earlier. Every blob in every commit was then swept by hand:
+
+```
+BEGIN [A-Z ]*PRIVATE KEY    0 hits      AKIA…                    0 hits
+ghp_ / gho_ / github_pat_    0 hits      xox…  /  JWT             0 hits
+```
+
+The only hits for anything sensitive-looking are the retired LE serial (in
+`docs/operations/credential-rotation.md`, which needs it to verify the swap) and
+`imap.novo-ordo` (in the allowlisted public CA cert). Both belong there. **There
+was no secret to clean up**, so the history was not rewritten: that would have
+permanently rewritten three commits, diverged every existing clone, and bought
+nothing, at the cost of a simple honest history for the §10 source offer to point
+at.
+
+The code was fixed anyway, and the fix is real rather than cosmetic: `curl -u
+user:pass` puts the credential in the **process table**, readable by any user on
+the host for the life of the request. All ten call sites now go through one
+`auth_curl` helper that sends an `Authorization` header. The 401 assertions in
+the gate are what prove the header is genuinely evaluated.
+
+The allowlist is in `.gitleaks.toml`, scoped to the five commits **and** to that
+one path, and it was measured rather than assumed:
+
+| Planted | Reported? |
+|---|---|
+| real `github-pat`, new commit, other file | **yes** |
+| real `github-pat`, new commit, the allowlisted file | **yes** |
+| real `github-pat`, inside an allowlisted commit, other file | **yes** |
+| real `github-pat`, inside an allowlisted commit, the allowlisted file | **yes** |
+
+A commit-only allowlist was tried first and **silenced the first two** — a
+commit-SHA allowlist exempts a whole commit, not a line. The `condition = "AND"`
+plus `paths` is what makes the exemption mean "this construct, in this file, in
+these commits". The config is passed with `--config` rather than left to
+auto-discovery, because a config that fails to load turns the scan into a
+*silently different* scan.
+
+Worth recording about the testing: the first negative test was **invalid**. It
+planted a `ghp_` string that gitleaks does not detect, and the control run with
+no config at all also reported zero — so "the allowlist silenced it" was an
+artefact of a test that could never fail. A check that cannot fail is worse than
+no check, because it looks like evidence.
+
+### What is now proven, for the first time
+
+- **§12 row 21** — a clean clone builds, on a runner, from the public repository
+- **§12 row 22** — CI green (3 of 5 workflows; `docker`/`release` are still Wave 4/5)
+- **§12 row 23's baseline** — 98/98 with a name digest matching, on a runner
+- **Rows 40-41** — the self-host gate, on a runner
+- **§5.1's secret scan** — ran, over the full history, and the one finding was
+  adjudicated rather than suppressed
+
+Everything in the "still unproven" table of §18.9 is now either discharged or
+explained. The remaining open items are unchanged and none of them are gates:
+the two live credentials, Q1, `rustical upgrade`, the §8.5 docs, and items 7-20.
+
+---
 *End of plan. Execute §5 before anything else — it blocks all three models, and
 D2 means the repo is about to be public. §6 is the only expensive work and the
 only one that can be deferred without stopping the other two models. The three
