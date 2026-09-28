@@ -1411,7 +1411,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6. **Extended 2026-09-28 by item 6**: `--unattended` + `OMNICAL_SETUP_*`, 20 tests — see §18.7 |
 | 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped and `scripts/selfhost-gate.sh` (69 checks) runs the install, the wizard, the server, a real CalDAV round trip and a registration end to end on this host. **Both rows green.** Executing a container runtime is a **stretch goal** (user decision, 2026-09-28), not a gate — the self-host channel must stand on its own and `install.sh` reaches the same end state without one. See §18.7 |
 | 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **98/98, zero test edits** | **DONE 2026-09-28** — body moved verbatim (222 lines, empty `diff`), zero test files touched, digest canary unchanged, 509 workspace tests, clippy 34→32, aarch64 +0.04%, and 9/9 CI jobs green. The `tenant` parameter was then delivered separately, without touching the refactor claim — see §18.11 and §18.12 |
-| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **2 of 4 parts done 2026-09-28** — the `tenant` type + `make_app_for` parameter (§18.12), the control plane + `TenantStore` + migration (§18.13), and `StoreBundle` + the LRU (§18.14). **`HostDispatch` itself and the `[tenancy]` config are not started**, so nothing resolves a `Host` header and rows 24-25 are not yet runnable |
+| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **3 of 4 parts done 2026-09-28** — the `tenant` type + `make_app_for` parameter (§18.12), the control plane + `TenantStore` + migration (§18.13), `StoreBundle` + the LRU (§18.14), and **`HostDispatch` + `[tenancy]` config, which does now resolve a `Host` header** (§18.15). Row 29 is proven end to end through a real server. **Still absent: the per-tenant `config_json` merge (item 10) and `rustical tenant` (item 11)**; row 24's auth half is item 9 |
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | not started (W3) |
 | 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | not started (W3) |
 | 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | not started (W3) |
@@ -2694,6 +2694,106 @@ diff removes only the old signature and the old return expression.
 
 Both are recorded here rather than quietly taken, which is the §18.11
 convention.
+
+---
+
+## 18.15 Item 8, part 3 — `HostDispatch` (§3.3), and five bugs its tests found
+
+**Shipped:** `src/host_dispatch.rs` (new, 550 lines), `src/tenancy.rs` (new),
+`[tenancy]` in `src/config.rs`, two new store methods, 22 dispatch tests + 7
+end-to-end tests. Server `5a73f377`, packaging `bad49dc`, **9/9 CI green**.
+Workspace 553 → 582, clippy 32 → 32, aarch64-musl **+33,908 bytes**.
+
+Requests are now dispatched by `Host`. **Five product bugs were found by this
+commit's own tests, and the first two are the ones worth remembering.**
+
+### 1. A suspended tenant's hostname served the *default tenant's data*
+
+With a host claim and a `default_tenant` both configured, a request for a
+suspended tenant's host failed the active-only lookup, fell through the
+remaining match rules, and was served by `default_tenant`. One customer seeing
+another customer's calendar, under a suspended tenant's URL — worse than a 404,
+and precisely what §3.3's "removed from the map" exists to prevent.
+
+The fix is a distinction the store had to be asked for rather than inferred:
+**nobody owns this host** (keep matching) versus **a suspended tenant owns it**
+(stop, 404). That needed two new methods — `is_host_claimed` and
+`get_any_tenant_by_slug` — and they are needed at *every* match step, not just
+the first, because the same fall-through hazard exists for the `base_domain`
+slug, the bare-slug rule, and `default_tenant` itself. A suspended
+`default_tenant` now logs at `warn!` and 404s rather than leaving a server that
+answers nobody and looks merely idle.
+
+### 2. A brand-new tenant 500s, forever
+
+Nothing in this tree guarantees that the actor which inserted a `tenants` row
+also ran migrations — `rustical tenant` is item 11 and does not exist yet — so
+with `migrate: false` the first request failed `no such table:
+davpush_vapid_key`, and every request after it identically. A tenant that
+exists, is dispatched to, and can never serve. Now `migrate: true`, which is
+one indexed `_sqlx_migrations` lookup per *build*, and a build happens once per
+tenant per cache residency rather than per request.
+
+### 3. A load balancer would have blackholed the deployment
+
+With tenancy on, an LB health-checking `GET /ping` on the instance's own
+address gets **404**: that address is not a tenant's host, and hosted has no
+`default_tenant`. The instance looks unhealthy, the LB removes it, every tenant
+goes down. **The health check caused the outage it existed to detect.**
+
+`/healthz` now answers *ahead of* dispatch, and deliberately does not consult
+the control plane — a control-plane outage must not mark every instance
+unhealthy and provoke the thundering herd that a dependency-aware check causes.
+It exists **only** when tenancy is on: with tenancy off, `/ping` already answers
+for every host, and §3.6 says not to widen the default single-tenant surface
+with a second unauthenticated route.
+
+### 4 and 5, smaller but the same shape
+
+`normalise_host("[::1]:8443")` returned `[::1` — an IPv6 literal split on its
+first colon, producing a host that matches nothing, silently. And SQLite creates
+a *file* but not the directory above it, so every new tenant's store path 500'd
+until `ensure_tenant_store_dir` existed.
+
+### The three no-tenant outcomes are byte-identical
+
+Unknown host, suspended tenant, unclaimed host: same status, same body, and the
+body names no tenant, no base domain and no status. Three distinguishable bodies
+would be an enumeration oracle — which hostnames are claimed, which tenants
+exist, which are suspended. §3.4 keeps the control plane free of other tenants'
+data for the same reason.
+
+A control-plane failure is a **500, not a 404**. Collapsing a database outage
+into "your tenant does not exist" is both a lie and impossible to diagnose.
+
+### Two structural notes
+
+- `HostDispatch` does **not** implement `tower::Service` and cannot: a
+  `'static` future returned from `call(&mut self, ..)` must own the dispatcher,
+  and `impl Service for Arc<HostDispatch>` is forbidden by the orphan rule.
+  `TenancyAwareApp` is local and does the job — which is also what `cmd_serve`
+  needs, so the two serve paths share one concrete type and the
+  `enabled = false` case is a `match` arm rather than a second `axum::serve`.
+- The end-to-end target exists because a test that constructs `HostDispatch`
+  itself tests a *component*, and rows 24-25 and 29 are claims about a server.
+  Its first draft built `[tenancy] control_db_url` from one path and seeded
+  another, so the server opened a control plane of its own making, found no
+  tenants, and answered 404 everywhere — **a symptom identical to the dispatch
+  bug the file exists to catch.** `Install` now owns the directory and writes
+  the config out of it, so there is one source of paths.
+
+### Still not here
+
+The per-tenant `config_json` merge (item 10) and `rustical tenant` (item 11).
+`trusted_proxies` and `[tenancy.sessions]` are **deliberately absent** (§18.14):
+neither has code in this tree, so both would parse and do nothing, and
+`deny_unknown_fields` turns that into a loud error that
+`an_unknown_tenancy_key_is_rejected_rather_than_ignored` pins.
+
+**Row 29 is proven end to end** through a real server: a tenant's router is
+built and cached, the control plane is suspended, and the next request is 404
+while the other tenant is unaffected. **Row 24 is not** — its auth half needs
+two tenants holding the same principal and is item 9.
 
 ---
 
