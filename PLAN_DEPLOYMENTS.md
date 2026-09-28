@@ -1117,8 +1117,8 @@ Run in order; each row is a gate.
 |---|---|---|---|
 | **Workstream 0** ||||
 | 20 | No secrets in the repo | `gitleaks detect`; `git ls-files \| grep -E 'out/tls/\|\.pem$\|\.mobileconfig$'` | no findings; the old LE serial is revoked |
-| 21 | Clean clone builds | `git clone <url> /tmp/ct && cd /tmp/ct && ./scripts/build-rust.sh x86_64-unknown-linux-gnu` | succeeds; `out/x86_64-unknown-linux-gnu/rustical` ≤ 35 MiB |
-| 22 | CI green | push; all 5 workflows | all green |
+| 21 | Clean clone builds | `git clone <url> /tmp/ct && cd /tmp/ct && ./scripts/build-rust.sh x86_64-unknown-linux-gnu` | succeeds; `out/x86_64-unknown-linux-gnu/rustical` ≤ 35 MiB — **BLOCKED, not failing**: the clone succeeds and builds **only if the server repository exists**, and it does not yet (§18.9). A public clone today yields an **empty `rustical/`**. Verified green the moment the submodule source is available: a real public clone, submodule substituted, built both binaries cold (5.58 MB / 627 KB) and passed the self-host gate 69/69 |
+| 22 | CI green | push; all 5 workflows | **RED 2026-09-28, for one reason** (§18.9): all three written workflows fail at `actions/checkout` because the submodule URL names a repository that does not exist. Nothing about the code has failed; the job has never reached a test. A guard (`submodule-url-exists`) now reports that in one sentence instead of a buried `repository not found`. **Green the moment `Bytewheel/Omnical-Server` exists and is pushed** — nothing else is outstanding |
 | **Workstream A** ||||
 | 23 | Refactor is behaviour-neutral | `cargo test --test run_integration_tests` after the `make_app` extraction | **98/98 unchanged** — no test edits, and the test *names* unchanged (the names are digested and pinned in `test.yml`, so a delete-and-replace cannot hide behind a matching count; the baseline was **96, wrongly, until 2026-09-28** — §18.8) |
 | 24 | Cross-tenant auth isolation | tenant A's principal + app token against tenant B's host | 401 |
@@ -1337,8 +1337,16 @@ Burn scars from the existing plan, plus the new ones this model introduces.
 
 ## 18. Implementation split — first next action
 
-> **STATUS (2026-09-28): WAVE 0 DONE (§18.4), WORKSTREAM C ITEMS 4 + 5 + 6
-> DONE (§18.5, §18.6, §18.7). THE BASELINE IS CORRECTED (§18.8).** The
+> **STATUS (2026-09-28): THE REPOS ARE PUBLIC AND THE PUSH IS RED (§18.9).**
+> Two of the three repositories exist and are pushed — the plan and the
+> build/deploy repo. The third, **the server itself**, does not, so every
+> workflow dies at the submodule checkout. One action fixes it: create
+> `Bytewheel/Omnical-Server` and push `omnical-scheduling` to it. **Nothing in
+> the code is broken** — a public clone with the submodule source available
+> builds cold and passes the self-host gate 69/69.
+>
+> Below that: WAVE 0 DONE (§18.4), WORKSTREAM C ITEMS 4 + 5 + 6 DONE (§18.5,
+> §18.6, §18.7), THE BASELINE IS CORRECTED (§18.8). The
 > repository is sanitized and clone-verified; `rustical backup` / `restore`,
 > the `rustical setup` wizard and both self-hosting channels exist.
 > **Rows 40 and 41 are both green**, end to end, on this host
@@ -1389,7 +1397,7 @@ credential-disclosure incident, not a mess to tidy later.
 |---|---|---|---|---|
 | 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401 | **DEFERRED** by user decision; runbook written |
 | 2 | §5.2.3-4 `.gitignore` + `.gitmodules` | — | **clone smoke test green** | **DONE** — both green |
-| 3 | §5.4 CI | 2 | all green on push | **DONE (3 of 5)** — `hygiene`/`build`/`test` written; `docker`/`release` deferred to Wave 4/5 |
+| 3 | §5.4 CI | 2 | all green on push | **WRITTEN (3 of 5)**, and the first push proved they are wired — all three ran, all three red, all three on the same missing-repository cause (§18.9). `hygiene`/`build`/`test`; `docker`/`release` deferred to Wave 4/5. Plus `submodule-url-exists`, added 2026-09-28 so the next occurrence of that failure is legible |
 | 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) | **DONE 2026-09-28** — both commands shipped, 15-test restore drill green and wired into `test.yml`; see §18.5. `rustical upgrade` (row 42) is **not** part of this item and is **not started** |
 | 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6. **Extended 2026-09-28 by item 6**: `--unattended` + `OMNICAL_SETUP_*`, 20 tests — see §18.7 |
 | 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped and `scripts/selfhost-gate.sh` (69 checks) runs the install, the wizard, the server, a real CalDAV round trip and a registration end to end on this host. **Both rows green.** Executing a container runtime is a **stretch goal** (user decision, 2026-09-28), not a gate — the self-host channel must stand on its own and `install.sh` reaches the same end state without one. See §18.7 |
@@ -1488,16 +1496,23 @@ rotate later** for both live credentials; Wave 0 only for this session.
 
 **Still open (deliberately)**
 
-- **`rustical/` has no remote.** `.gitmodules` uses a relative URL, so a clone
-  only works once a remote exists. The smoke test above used
-  `-c submodule.rustical.url=<local path> -c protocol.file.allow=always`
-  (`protocol.file.allow` because git blocks `file://` submodules by default —
-  CVE-2022-39253). Real HTTPS remotes do not need that override.
+- ~~**`rustical/` has no remote.**~~ **→ RESOLVED 2026-09-28, and it cost a
+  failed CI run.** See §18.9: the submodule now has an `origin`
+  (`Bytewheel/Omnical-Server`) and `upstream` (`lennart-k/rustical`), and the
+  first push proved the relative URL resolves — to a repository that did not
+  exist. The local-path workaround above (`-c submodule.rustical.url=… -c
+  protocol.file.allow=always`) is still how the clean-clone gate is run without
+  a second remote; a real HTTPS submodule needs no `protocol.file.allow`
+  (git blocks only `file://` — CVE-2022-39253).
 - **The TLS key and 50 app tokens are still live on the router.** Wave 0
   contained them; it did not rotate them. Runbook:
   `router-dav/docs/operations/credential-rotation.md`.
 - **The 96-test baseline was not re-run in CI** (no GitHub remote yet). The
   build smoke test passed, but `test.yml`'s assertion is unproven until a push.
+  **→ 2026-09-28: the remote exists and the push happened. All three workflows
+  ran and all three failed — at the submodule checkout, before a single test.
+  Nothing about the test assertion was proven, because the assertion is not what
+  failed. See §18.9.**
   (Locally it is **98**, not 96 — the assertion is a floor, so this is a stale
   comment in `test.yml`, not a regression. It was already 98 before §18.5.)
   **→ RESOLVED 2026-09-28, and it was not "just a stale comment".** The floor
@@ -2053,6 +2068,138 @@ would have said so.
 
 ---
 
+## 18.9 The first public push, and the third repository that was missing (2026-09-28)
+
+The remotes exist. All the repositories are public, and pushing them immediately
+broke every workflow — which is the useful outcome, because the breakage is in a
+place the plan had marked "unproven until a push" and could not otherwise have
+found.
+
+### What happened
+
+| Repo | GitHub | Contents |
+|---|---|---|
+| `Bytewheel/Omnical` | public | this planning repo |
+| `Bytewheel/Omnical-Code` | public | the build/deploy repo — CI, packaging, both self-host channels |
+| **the server** | **nowhere** | the `omnical-scheduling` fork, 19 commits past upstream `v0.16.1` |
+
+All three workflows (`hygiene`, `build`, `test`) failed in **11-19 seconds**:
+
+```
+fatal: repository 'https://github.com/Bytewheel/rustical.git/' not found
+fatal: clone of 'https://github.com/Bytewheel/rustical.git' into submodule path
+       '/home/runner/work/Omnical-Code/Omnical-Code/rustical' failed
+```
+
+`.gitmodules` resolved its relative URL *correctly* — to an **owner and a name
+that do not exist**. Wave 0 wrote that file on the explicit instruction "local
+only, no remote created yet", and §18.4 recorded the consequence honestly:
+*"`rustical/` has no remote … a clone only works once a remote exists."* The
+missing third repository was the whole of the gap, and the gate meant to catch it
+(§12 row 21, clean clone builds) had been run with a local-path override, because
+that was the only way to run it.
+
+**This is H4 again, and §5.2.4 is explicit that H4 is "a gitlink with no working
+remote, so a clone produces an empty `rustical/`".** The fix added a file; it did
+not add a repository. A file cannot fix a missing repository.
+
+### What a clean clone of the public repo did
+
+```
+git clone https://github.com/Bytewheel/Omnical-Code.git    # -> rustical/ EMPTY
+```
+
+Verified, not assumed. With the submodule source substituted locally
+(`-c submodule.rustical.url=<path> -c protocol.file.allow=always`) that same
+clone checked out `42afad4e` and then:
+
+- built both binaries cold — `rustical` 5.58 MB after UPX, `dav-tls` 627 KB;
+- ran `scripts/selfhost-gate.sh` — **69/69**, rows 40 and 41 green, from a fresh
+  checkout rather than from the working tree.
+
+So §12 row 21 is green **conditional on the repository existing**, and that is
+now the only thing between the repo and a green build.
+
+### Three fixes, in the order they were needed
+
+1. **The fork's `origin` pointed at upstream.** `~/router-dav/rustical` had
+   `origin` → `https://github.com/lennart-k/rustical.git`. A `git push` in the
+   server repo would have attempted to push to somebody else's project. Renamed
+   to `upstream`; `origin` now points at `Bytewheel/Omnical-Server`. Invisible
+   until the day somebody pushes, and unrecoverable reputationally if it lands
+   upstream.
+2. **The submodule was never registered locally.** `git submodule status` showed
+   `-42afad4e` — uninitialised — because Wave 0's fresh `git init` committed the
+   gitlink without registering the submodule: no `.git/modules`, no
+   `submodule.rustical.*` config. Every `git submodule` command was unreliable in
+   the one working copy of the repo. `git submodule init` fixed it and the
+   working tree was untouched.
+3. **A guard, so this fails in one sentence instead of one buried line.** A new
+   `submodule-url-exists` job in `hygiene.yml` resolves the relative URL the way
+   git does and probes it. It has to live in a job with `submodules: false` — in
+   every other workflow the checkout fails first and the job never runs, which is
+   the entire reason the original failure was so hard to read.
+
+   The guard **fails only on a definitive "not found" and warns on a transport
+   error.** A check that goes red for reasons outside the repository teaches
+   people to ignore it, which is how a real failure gets ignored too.
+
+   Its first draft had a bug worth recording, because the bug was of the same
+   shape as the problem it was written to catch: it resolved `../rustical.git` by
+   stripping everything before `../`, yielding `https://github.com/rustical.git` —
+   a different repository, with the owner dropped. Against a healthy setup that
+   reports a false failure; against a broken one, a false pass. It now replaces
+   only the last path segment of *this repo's own remote*, which is what git
+   does, and which also means a fork of the fork resolves to the fork owner's
+   server repo rather than back to ours.
+
+   Five cases were run against real `.gitmodules` files: broken name → fail;
+   absent name → fail; existing sibling → pass; existing repo in another org →
+   pass; `git@`-form remote → warn and skip rather than fail on the runner's
+   missing SSH key.
+
+### Still open — one action, and it is not mine to take
+
+`Bytewheel/Omnical-Server` has to be created. The `gh` token in this environment
+authenticates as the user account `0x010A13D7` and has `repo` scope, but:
+
+- **cannot create repositories in the `Bytewheel` organisation** —
+  `403: You need admin access to the organization before adding a repository to
+  it`;
+- **cannot delete a repository** — `403: Must have admin rights` /
+  `This API operation needs the "delete_repo" scope`.
+
+An earlier attempt therefore created `0x010A13D7/Omnical-Server` (public, empty)
+instead of the org repository, and it cannot be removed from here. **It should be
+deleted by hand**; it is empty, so nothing is lost by deleting it.
+
+Then, from the server checkout:
+
+```sh
+cd ~/router-dav/rustical
+git push -u origin omnical-scheduling      # origin = Bytewheel/Omnical-Server
+```
+
+`.gitmodules` already points at `../Omnical-Server.git`. **If the repository is
+to be named something else, that one line changes and nothing else does** — the
+URL is relative by design, so the name is the only coupling.
+
+### What is now proven, and what is still not
+
+| Claim | Status |
+|---|---|
+| A clean clone builds both binaries | **green**, from a public clone with the submodule source substituted. Pending only on the repository existing |
+| Rows 40-41 (both self-host channels) | **green** from that clean clone, 69/69 |
+| `hygiene` / `build` / `test` on a real push | **red, for one reason**, and the reason is a missing repository rather than anything in the code |
+| The 98-test baseline and its pinned name digest | **still unproven on CI** — the job has never reached the test step. Passes locally and in a clean clone |
+| `gitleaks` / `trufflehog` over the new files | **still unproven.** The `secrets` job uses `submodules: false`, so it may well pass today — but it has never completed, and the credential scan is the one thing in this plan that must not be assumed |
+
+Nothing here is a change to the product. It is the cost of the first push, and it
+is recorded in full because the next person to see three red workflows on a fresh
+repository should be able to tell a missing repository from a broken build in one
+step.
+
+---
 
 *End of plan. Execute §5 before anything else — it blocks all three models, and
 D2 means the repo is about to be public. §6 is the only expensive work and the
