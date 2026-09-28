@@ -531,12 +531,17 @@ This workstream unblocks §7 only. §8 and §9 are N=1 cases and ship without it
   `2026MMDDHHMMSS_tenants.sql` (schema in §3.4), including the
   `tenants` + `tenant_hosts` tables above.
 - New `crates/store/src/tenant.rs`: `TenantId` newtype (validated slug),
-  `Tenant` struct, `TenantStatus` enum.
+  `Tenant` struct, `TenantStatus` enum. — **DONE 2026-09-28**, §18.12
 - New `[tenancy]` config in `src/config.rs:325-351`, `enabled = false`.
 - Refactor `src/app.rs` so the existing body becomes
   `make_app_for(config, stores, tenant) -> Router`, and `make_app` stays as a
   1-tenant wrapper. **Pure refactor — the 98-test baseline must stay green
-  with zero test changes.**
+  with zero test changes.** — **DONE 2026-09-28**, §18.11
+- *(new, §18.12)* the `tenant` **parameter and the `Extension` wiring** are in
+  too, as a separate commit that preserves §18.11's "body moved verbatim" claim
+  and the 98-test canary. It carries **no store path and no `TenantStore`
+  trait**: §3.2 makes a tenant a resolved `Router`, not a column, so isolation
+  is structural and must not be faked by threading an id into store methods.
 *Gate: `make_app` refactor is behaviour-neutral — 98/98 integration tests pass
 unchanged; `cargo fmt`; clippy clean on `rustical`.*
 
@@ -1405,8 +1410,8 @@ credential-disclosure incident, not a mess to tidy later.
 | 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) | **DONE 2026-09-28** — both commands shipped, 15-test restore drill green and wired into `test.yml`; see §18.5. `rustical upgrade` (row 42) is **not** part of this item and is **not started** |
 | 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6. **Extended 2026-09-28 by item 6**: `--unattended` + `OMNICAL_SETUP_*`, 20 tests — see §18.7 |
 | 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped and `scripts/selfhost-gate.sh` (69 checks) runs the install, the wizard, the server, a real CalDAV round trip and a registration end to end on this host. **Both rows green.** Executing a container runtime is a **stretch goal** (user decision, 2026-09-28), not a gate — the self-host channel must stand on its own and `install.sh` reaches the same end state without one. See §18.7 |
-| 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **98/98, zero test edits** | not started (W3) |
-| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | not started (W3) |
+| 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **98/98, zero test edits** | **DONE 2026-09-28** — body moved verbatim (222 lines, empty `diff`), zero test files touched, digest canary unchanged, 509 workspace tests, clippy 34→32, aarch64 +0.04%, and 9/9 CI jobs green. The `tenant` parameter was then delivered separately, without touching the refactor claim — see §18.11 and §18.12 |
+| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **partly done 2026-09-28** — §6.1's `tenant` type + parameter are in (§18.12); `HostDispatch`, `TenantStore` and the migration are **not started (W3)** |
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | not started (W3) |
 | 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | not started (W3) |
 | 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | not started (W3) |
@@ -2364,11 +2369,230 @@ explained. The remaining open items are unchanged and none of them are gates:
 the two live credentials, Q1, `rustical upgrade`, the §8.5 docs, and items 7-20.
 
 ---
-*End of plan. Execute §5 before anything else — it blocks all three models, and
-D2 means the repo is about to be public. §6 is the only expensive work and the
-only one that can be deferred without stopping the other two models. The three
-safety-critical items are §5.2 (secrets), §6.4 (the three un-authenticated
-routers) and §7.3.4 (`X-Forwarded-For`); none of them are optional, and each
-has a test row in §12. Escalate to the user rather than deciding: the history
-rewrite (§5.2.5), the Q1-Q8 answers (§17), and anything in §6 that would
-require touching the store traits.*
+
+## 18.11 Work item 7 — `make_app` → `make_app_for` (2026-09-28)
+
+**Shipped:** `src/app.rs`, +145 lines, one file. `AppConfig` and `AppStores`
+added; `make_app` reduced to a shim; the router body moved verbatim.
+
+### What it was actually for
+
+Not tidiness. `make_app` was doing two different jobs in one function: it
+**interpreted configuration into decisions** — mount the export router? is DAV
+push on? which `SameSite`? what body limit? — and it **mounted the routers**.
+
+Per-tenant config overrides (§6.3) need those separable. One `make_app_for` has
+to serve N tenants that *disagree about the decisions*; a single
+`Config -> Router` function cannot express that, because every tenant overwrites
+the last one's answer. So the two axes are now two structs:
+
+```
+AppConfig    the decisions — which optional routers, which flags
+AppStores    the stores a router is mounted over
+```
+
+`make_app` keeps its exact 19-argument signature and packs its arguments into the
+two bundles. It is documented as a shim that goes when both callers are on the
+bundle.
+
+### The gate, and the part that makes it provable
+
+| Gate | Result |
+|---|---|
+| §6.1 — pure refactor, 98/98, **zero test edits** | **green.** `git diff --name-only` lists `src/app.rs` and nothing else |
+| The body moved **verbatim** | **green.** 222 lines, `diff` of before/after is **empty**. This is the strongest claim a refactor can make, and anyone with `git show` can check it |
+| Integration baseline + name digest | **98/98, digest `e7760b76…` unchanged** — the §18.8 canary, and unchanged names is exactly what "zero test edits" means |
+| Workspace suite | **509 passing, 0 failing** |
+| fmt | clean |
+| clippy | **34 → 32.** Removed 2 pre-existing `needless_pass_by_value`; added **none** |
+| aarch64-musl router build | **5,237,876 → 5,240,012 bytes (+0.04%)**, 14.3% of the 35 MiB budget |
+| Self-host gate (rows 40-41) | **69/69** |
+| CI | **9/9 jobs green**, digest confirmed on the runner |
+
+### Three decisions worth arguing about
+
+1. **`AppConfig` is deliberately not `crate::config::Config`.** The integration
+   suite builds a *partial* configuration by hand — no `[data_store]`, no
+   `[tracing]`, no `[maintenance]` — so bundling to `Config` would force every
+   test to construct a whole one. That is a test edit by another name, and the
+   gate is written specifically to catch that. The bundle holds the decisions,
+   not the file they were parsed from.
+2. **The `tenant` parameter of §6.1 is not there** *(superseded the same day —
+   see §18.12)*. §6.1's sketch says `make_app_for(config, stores, tenant)`. The
+   `tenant` type does not exist until the store layer lands, and inventing one
+   here would put non-refactor code in a commit whose entire claim is that it is
+   a refactor. So this item delivers the `config`/`stores` half; §6.2 adds
+   `tenant` when there is a type to add. The deviation is recorded here rather
+   than quietly taken.
+   **§18.12 later contradicted the "until the store layer lands" half of this
+   reasoning and kept the first half.** The reasoning was wrong in a way worth
+   recording: the store layer is not the only thing that can be wrong about a
+   type. A `Tenant` that means only "row in a `tenants` table" cannot be designed
+   without one, but a `Tenant` that means §3.2's thing can — and if the two
+   designs were allowed to merge later, the merged type would be wrong, because
+   the *plausible* interpretation of `Tenant` is the one §3.2 is arguing
+   against. Designing it before the store layer is what forces the distinction to
+   be made explicitly instead of by default.
+3. **`AppStores` keeps `AP` sized, not `Arc<dyn AuthenticationProvider>`.** The
+   first attempt erased it and it does not compile: `caldav_router<AP: …>`,
+   `carddav_router<AP: …>` and `frontend_router<AP: …>` are all generic over a
+   *concrete* provider. The stores that are already trait objects upstream
+   (`source_store`, `invite_store`, `share_store`, `password_reset_store`) stay
+   erased, because that is how the callers already hold them. The comment on the
+   field says so, because it looks like an oversight otherwise.
+
+### One pre-existing warning deliberately left alone
+
+`make_app_for`'s body carries a `redundant clone` on `combined_cal_store` — its
+last use, so the clone is genuinely unnecessary. It was there before this commit
+(line 175) and is still there (line 320), because **removing it would edit the
+body this commit promises not to have touched**. It is the right fix and the
+wrong commit. The doc comment on the function says so, so the next person does
+not read it as an oversight.
+
+### The submodule bump, which is its own commit
+
+The server commit had to be pushed *and* the packaging repo's gitlink bumped
+before CI would run any of it — `submodules: recursive` checks out the recorded
+gitlink, so a pushed branch alone is invisible to every workflow. The bump is
+`chore:` and separate on purpose: **a CI run that quietly tests last week's code
+is worse than one that fails**, and putting a code change and a pointer change in
+one commit makes that distinction invisible in the log.
+
+## 18.12 The tenant parameter — the type designed *against* the wrong reading (2026-09-28)
+
+**Shipped:** `crates/store/src/tenant.rs` (new, 296 lines), `src/app.rs` (+58),
+`tests/tenant_app.rs` (new, 237 lines), `crates/store/src/lib.rs` (+2).
+Server `99fe1a84`, packaging `57eefdb`, **9/9 CI jobs green**.
+
+§18.11 recorded a deviation: it delivered `config`/`stores` and not `tenant`,
+on the grounds that the type "does not exist until the store layer lands".
+**That reasoning was half right and it was asked the wrong question.**
+
+### The question that was not asked
+
+The reasoning treated "is there a store layer yet?" as the blocker, as though a
+`Tenant` type were only meaningful once a `tenants` table did. It is not. The
+blocker is the one §3.2 spends a page on: **there are two completely different
+things called "tenant", and this codebase has just committed to the less obvious
+one.**
+
+| | §3.2's tenant (adopted) | the table row (rejected) |
+|---|---|---|
+| what it is | a resolved `Router`, built over one store bundle | a `tenant_id` column |
+| isolation comes from | the construction path — N routers, N bundles | a `WHERE` clause in every method |
+| fails by | a bundle shared between two routes | forgetting one of ~200 call sites |
+| verifiable | run one tenant's tests against another's bundle | read the diff and count `WHERE`s |
+
+The rejected one is the *plausible* one. It is what "add multi-tenancy" means to
+almost everyone, and it is the one that would be designed by default if the type
+were first written in a store crate next to the migrations. So the honest reason
+to design `Tenant` now is not that the store layer arrived early — it is that
+**waiting until it arrives guarantees the wrong type gets written**, because by
+then every existing `Tenant` reference in the codebase will point at a database
+row and the naming will have settled on its own.
+
+### How the type refuses the wrong design
+
+`Tenant { id, slug, display_name, status, config_json }` — and **no store path,
+no `db_url`, no `TenantStore` trait**, in a commit that touches `src/app.rs` and
+nothing in `crates/store_sqlite/`. The absence is the design. A `Tenant` that
+could open a database is a `Tenant` that some future caller will resolve instead
+of dispatching, which is the §6.2 bug, made available by the §3.2 type.
+
+`TenantId` is a **validated newtype**, not a `String`, because the slug reaches
+three places that must agree: a hostname (`{slug}.{base_domain}`), a directory
+under `data_root`, and a `UNIQUE` column. A `String` holding `../` is a
+*different* bug in each, and the type is the only place all three can be caught
+at once. It rejects **uppercase** specifically because §3.3 matches the Host
+header lowercased: with a `String`, `Acme` and `acme` would be two rows passing
+one `UNIQUE` constraint and one dispatch map entry — an auth-relevant split, not
+a cosmetic one.
+
+### The bug that only exists under a second tenant
+
+`with_tenant` is a separate function, and that is not tidiness. axum's
+`Router::layer` wraps **only the routes registered before it**, so installing the
+extension earlier in `make_app_for` — before the DAV routers are merged — would
+silently miss all of them, and a handler expecting a tenant would 500.
+
+**This is exactly the class of bug that N=1 cannot find.** With one tenant there
+is no `Extension` to miss, no second router, and the integration suite is 98/98
+either way. The first draft of the test made the mistake anyway: it built the
+router and *then* added `/_probe`, so the probe was outside the layer and the
+test asserted `"acme"`, failed, and the obvious fix — reordering until it passed
+— would have moved the production call site to a worse position rather than
+fixing the test.
+
+So the fix was in the test, not the code:
+
+```
+Router::new().route("/probe", …)   // registered FIRST
+    |> with_tenant(tenant)          // layer wraps what exists
+```
+
+and then the gate that matters: **`with_tenant` was neutered to a no-op and
+`test_the_extension_covers_routes_registered_before_it` was confirmed to
+FAIL** (`"no-tenant"` vs `"acme"`). A test that has never been seen to fail is
+not evidence of anything. The two N=1 tests are in the same file for the same
+reason — they are the two properties that must *not* change.
+
+### `enabled = false` is a gate, not a sentence
+
+§3.6 requires the single-tenant install to behave exactly as before. Two tests
+assert it rather than claiming it: `make_app` passes `None`, so
+`Option<Extension<Tenant>>` resolves to `None` in every handler, and the
+`TraceLayer` closure records `tenant = Empty` — the span shape is byte-identical
+to before, not merely equivalent. `test_the_parameter_does_not_isolate_anything_yet`
+pins the other half: a labelled and an unlabelled router over the same context
+return **identical responses**, which is the recorded proof that the parameter is
+a label and not a guard.
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| §18.8 canary — 98 tests, zero edits, name digest | **green.** `e7760b76…` unchanged; `git status` shows `tests/integration_tests` untouched. New tests are a **separate target**, so the canary never needed weakening |
+| §18.11's "body moved verbatim" | **still true.** `git diff src/app.rs` removes **2 lines** — the import, and `move` on a closure. The body is untouched |
+| Workspace suite | **509 → 521 passing, 0 failing** |
+| fmt / clippy | clean; **zero** warnings from new code, crate total **32 → 32** |
+| aarch64-musl | 5,240,012 → **5,240,500 bytes (+488)**, 14.3% of 35 MiB |
+| Self-host gate | **69/69** |
+| CI | **9/9 green** (hygiene `36487119107`, build `36487118874`, test `36487118839`) |
+
+### What is still not here, and what it would be wrong to assume
+
+No `HostDispatch`, no `TenantStore`, no `tenants` table, no `[tenancy]`
+config block, no `StoreBundleCache`, no `rustical tenant` CLI. **Nothing in this
+commit isolates anything.** There is exactly one tenant's data reachable from
+any router in this build.
+
+This is recorded in the type's own doc comment and in
+`test_the_parameter_does_not_isolate_anything_yet`, because the failure mode for
+the next reader is not "this was too slow" — it is reading a `Tenant` threaded
+through `app.rs` and concluding that a check is happening. It is not.
+**§6.4 rows 26-28 are what enforce scoping, and item 9 remains
+safety-critical and not started.**
+
+---
+
+*End of plan. **Where this actually stands: §5 is done except the deferred
+credential rotation (item 1, user decision — the runbook is written and the
+key/tokens are still live), and §6 items 2-7 are shipped. The next thing to do
+is item 8's `HostDispatch` + `TenantStore` + migration, then item 9.*
+
+*§5 came first because it blocked all three models and D2 meant the repo was
+about to be public. That reasoning held. §6 is the only expensive work and the
+only one that can be deferred without stopping the other two models.*
+
+*Two of the three safety-critical items remain open and one is now urgent:
+**§6.4 (the three un-authenticated routers) is item 9 and is not started** —
+rows 26-28 in §12 are the only thing standing between a valid token from tenant
+A and tenant B's data, and §18.12 added the type those rows will assert against
+without adding any of the enforcement. §5.2 (secrets) is done but for the
+deferred rotation, and §7.3.4 (`X-Forwarded-For`) is untouched. None of the
+three is optional, and each has a test row in §12.*
+
+*Escalate to the user rather than deciding: the history rewrite (§5.2.5), the
+Q1-Q8 answers (§17), the credential rotation window (item 1), and anything in
+§6 that would require touching the store traits.*
