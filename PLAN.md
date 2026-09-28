@@ -5341,6 +5341,14 @@ calendar without a link shows the Calendars-tab fallback at the
 the **owning principal** in the path, which the first test draft got
 wrong; foreign page → 401); `cargo test -p rustical_frontend --lib` 22 ✓;
 `cargo fmt --check` ✓; clippy clean for the touched files.
+> **Corrected 2026-09-28: the integration baseline is 98, not 96.** This entry
+> is left as measured because it is a dated record, but 96 was a mid-day
+> snapshot on the day the suite last grew — the last two commits touching
+> `tests/integration_tests/` are `3d2f4249` and `dba08b2f`, **both 2026-09-23**.
+> The stale number propagated into `PLAN_DEPLOYMENTS.md` as a CI *floor* set two
+> tests below reality, which meant it could not catch the deletion it exists to
+> catch. The floor is now exactly 98 and the test names are pinned. See
+> `PLAN_DEPLOYMENTS.md` §18.8.
 **Not yet built/deployed to the router** — next deploy picks it up with the
 routine `scripts/build-rust.sh` + `deploy.sh`.
 

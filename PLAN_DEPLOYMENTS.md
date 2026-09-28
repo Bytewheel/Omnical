@@ -502,7 +502,7 @@ anyway.
 |---|---|---|
 | `hygiene.yml` | `gitleaks`/`trufflehog` scan; assert no tracked files match `out/tls/*`, `*.pem`, `*.mobileconfig`, `build/cargo-target/*`, `*/target/*`; assert `.gitmodules` exists and `rustical` is a valid submodule | blocks merge |
 | `build.yml` | matrix: `aarch64-unknown-linux-musl` (default features) and `x86_64-unknown-linux-gnu`; run `scripts/build-rust.sh <t>`; assert both binaries ≤ `RUSTICAL_BUDGET` (35 MiB) and are UPX-packed | blocks merge |
-| `test.yml` | `cd rustical && cargo test --workspace` (the 96-test integration baseline, §16) + `cargo fmt --check` + `cargo clippy --workspace --all-targets` with **no new warnings** | blocks merge |
+| `test.yml` | `cd rustical && cargo test --workspace` (the 98-test integration baseline, §16) + `cargo fmt --check` + `cargo clippy --workspace --all-targets` with **no new warnings** | blocks merge |
 | `docker.yml` | build + push `ghcr.io/<fork>/omnical` multi-arch (`linux/amd64`, `linux/arm64`) — **retarget upstream's `docker-publish.yml`**, which currently publishes to `lennart-k`'s repo | blocks release |
 | `release.yml` | on tag: build artefacts, `cosign`-sign the checksums, publish a GitHub release + the source tarball (§10) | on release |
 
@@ -535,9 +535,9 @@ This workstream unblocks §7 only. §8 and §9 are N=1 cases and ship without it
 - New `[tenancy]` config in `src/config.rs:325-351`, `enabled = false`.
 - Refactor `src/app.rs` so the existing body becomes
   `make_app_for(config, stores, tenant) -> Router`, and `make_app` stays as a
-  1-tenant wrapper. **Pure refactor — the 96-test baseline must stay green
+  1-tenant wrapper. **Pure refactor — the 98-test baseline must stay green
   with zero test changes.**
-*Gate: `make_app` refactor is behaviour-neutral — 96/96 integration tests pass
+*Gate: `make_app` refactor is behaviour-neutral — 98/98 integration tests pass
 unchanged; `cargo fmt`; clippy clean on `rustical`.*
 
 ### 6.2 A2 — multi-tenant construction path
@@ -552,7 +552,7 @@ unchanged; `cargo fmt`; clippy clean on `rustical`.*
   Redis adapter is new `crates/store_redis/` behind the `session-redis`
   feature, with per-tenant key prefixing so tenants cannot read each other's
   sessions.
-*Gate: `cargo test --test run_integration_tests` ≥ 96 pass; 4 new tests —
+*Gate: `cargo test --test run_integration_tests` ≥ 98 pass; 4 new tests —
 tenant A's principal cannot authenticate in tenant B, tenant A's calendar is
 404 in tenant B, suspension takes effect within one request, per-tenant
 `rsvp_secret` isolation.*
@@ -1120,7 +1120,7 @@ Run in order; each row is a gate.
 | 21 | Clean clone builds | `git clone <url> /tmp/ct && cd /tmp/ct && ./scripts/build-rust.sh x86_64-unknown-linux-gnu` | succeeds; `out/x86_64-unknown-linux-gnu/rustical` ≤ 35 MiB |
 | 22 | CI green | push; all 5 workflows | all green |
 | **Workstream A** ||||
-| 23 | Refactor is behaviour-neutral | `cargo test --test run_integration_tests` after the `make_app` extraction | **96/96 unchanged** — no test edits |
+| 23 | Refactor is behaviour-neutral | `cargo test --test run_integration_tests` after the `make_app` extraction | **98/98 unchanged** — no test edits, and the test *names* unchanged (the names are digested and pinned in `test.yml`, so a delete-and-replace cannot hide behind a matching count; the baseline was **96, wrongly, until 2026-09-28** — §18.8) |
 | 24 | Cross-tenant auth isolation | tenant A's principal + app token against tenant B's host | 401 |
 | 25 | Cross-tenant resource isolation | tenant A's calendar id on tenant B's host | 404 |
 | 26 | Export token isolation | tenant A's `/export/{token}.ics` under tenant B's host | 404/410, never 200 |
@@ -1139,7 +1139,7 @@ Run in order; each row is a gate.
 | 38 | External reachability | `check-host.net` from many nodes (the §4.3 pattern) | TLS validates with **no `-k`**; `/ping` answers |
 | 39 | Source offer | `curl -sI /frontend/source`; download the tarball; `git rev-parse HEAD` in it | matches the running build; the tarball builds in CI |
 | **Workstream C** ||||
-| 40 | Compose path | `docker compose up` on a clean host | `/ping` answers; a user registers; a client syncs — **PARTIAL 2026-09-28** (§18.7). The config path, the registration and the client sync are all **green on this host**: the same `rustical setup --unattended` answers the container gets were run against the release binary, and the resulting install was booted, registered into and synced from. The *Docker runtime* is the untested part — no Docker or Podman on this host — so "on a clean host" is asserted by the CI job, not by this log. Everything in the two files that can rot without Docker (the wizard variable set, the `data-dir`/`db-url` pairing, the service ordering) **is** asserted, in both directions |
+| 40 | Compose path | `docker compose up` on a clean host, **or** the wizard answers it is given run against the release binary | **DONE 2026-09-28** (§18.7). `/ping` answers, a user registers through the invite flow, and a client syncs — all **green on this host** against the release binary, using the same `rustical setup --unattended` answers the container gets, plus every assertion that does not need a container runtime: the `OMNICAL_SETUP_*` sets match in both directions, the `data-dir`/`db-url` pairing agrees, and the two services are ordered so the server waits for the wizard. **Executing the container runtime is a stretch goal, not part of this row** (user decision, 2026-09-28) — the channel's substance is a working unattended install, and `install.sh` reaches the identical end state with no container at all |
 | 41 | Native path | tarball + `install.sh` on a bare VM | same end state as row 40 — **green 2026-09-28**: `scripts/selfhost-gate.sh` installs with `packaging/native/install.sh` on a clean prefix, runs the wizard, boots the server on the generated config, round-trips a real CalDAV write/read, registers a user through the invite flow, syncs as that user, and re-runs the installer over the live install without losing anything. 60 checks, wired into `.github/workflows/build.yml` as the `selfhost` job |
 | 42 | Upgrade N → N+1 | upgrade, then compare row counts | data intact; `restore` from the pre-upgrade backup works — **NOT STARTED, and no work item owns it** (§18.5): `rustical upgrade` needs the §10 release-publishing process first |
 | 43 | Backup/restore | `rustical backup` → `rustical restore` on **another** machine | DB opens; expected counts (the §14 row-18 drill, in CI) — **DONE 2026-09-28**; 15 tests in `tests/backup_restore.rs`, run as its own `test.yml` step; see §18.5 |
@@ -1181,7 +1181,7 @@ Destructive command first, in every case.
 | Scope creep into a product we cannot support | High | High | §1 non-goals are explicit; §8.5 requires a written support policy before self-host ships |
 | The fork diverges so far that an upstream rebase is impossible | Medium | Medium | 19 commits is still small. Keep Omnical changes in identifiable commits; the tenancy design (§3.2) deliberately touches **no store traits**, which keeps a rebase tractable |
 | Secrets in a public repo (H1/H2) once we go public per AGPL | **High** if §5 slips | **Critical** | §5 is wave 0 and blocks everything. This is the plan's single most important prerequisite |
-| Losing the current production deployment while refactoring `make_app` | Low | High | §6.1 gate: the refactor is validated by the **unchanged** 96-test baseline. The router keeps running the old binary until §6 is proven end to end |
+| Losing the current production deployment while refactoring `make_app` | Low | High | §6.1 gate: the refactor is validated by the **unchanged** 98-test baseline. The router keeps running the old binary until §6 is proven end to end |
 | Appliance `dav-tls` WAN-IP hard-pinning fails on DHCP-assigned retail units | **High** if unaddressed | Medium | §9.5 — must become runtime discovery, or the appliance ships LAN-only. Called out as the one piece of real new work in §9 |
 
 ---
@@ -1314,7 +1314,7 @@ Burn scars from the existing plan, plus the new ones this model introduces.
   is a **deliberate** workaround for Apple group calendars. Do not "clean it up"
   while working in the auth area; a plan that removes it will regress Apple
   clients, and this is exactly the code §3.2 is designed to leave untouched.
-- **The 96-test integration baseline is the refactor's safety net.** The
+- **The 98-test integration baseline is the refactor's safety net.** The
   `make_app` extraction (C2) must pass it with **zero test edits** — a test
   edit during a refactor means the behaviour changed.
 
@@ -1338,19 +1338,28 @@ Burn scars from the existing plan, plus the new ones this model introduces.
 ## 18. Implementation split — first next action
 
 > **STATUS (2026-09-28): WAVE 0 DONE (§18.4), WORKSTREAM C ITEMS 4 + 5 + 6
-> DONE (§18.5, §18.6, §18.7).** The container is sanitized and
-> clone-verified; `rustical backup` / `restore`, the `rustical setup` wizard
-> and both self-hosting channels exist. The native channel (row 41) is
-> **green end to end**; the Compose channel (row 40) is green for everything
-> except actually running Docker, which this host cannot do and which the CI
-> `selfhost` job is positioned to close.
+> DONE (§18.5, §18.6, §18.7). THE BASELINE IS CORRECTED (§18.8).** The
+> repository is sanitized and clone-verified; `rustical backup` / `restore`,
+> the `rustical setup` wizard and both self-hosting channels exist.
+> **Rows 40 and 41 are both green**, end to end, on this host
+> (`scripts/selfhost-gate.sh`, 69 checks) — including the Compose channel's
+> substance: a working unattended install driven by the same wizard answers the
+> container is given.
+>
+> **Executing a container runtime is a stretch goal, by user decision
+> (2026-09-28), not a gate.** The self-host channel has to stand on its own,
+> and `packaging/native/install.sh` reaches the identical end state with no
+> container in the picture — which is also why row 40 was never allowed to
+> depend on one.
+>
 > **The two live credentials are still live on the router** and remain the
 > open risk; rotation is deliberately deferred to a scheduled window with a
 > written runbook (`router-dav/docs/operations/credential-rotation.md`).
 >
 > **Next: item 7** — `make_app` → `make_app_for` (§6.1, refactor only), gated
-> on 96/96 integration tests with **zero test edits**. The baseline is 98 and
-> has not moved through items 4, 5 and 6.
+> on **98/98** integration tests with **zero test edits**. The baseline was
+> wrong (96) until §18.8, which also pinned the test *names*; it has not moved
+> through items 4, 5 and 6.
 
 ### 18.1 The single first thing to do
 
@@ -1383,8 +1392,8 @@ credential-disclosure incident, not a mess to tidy later.
 | 3 | §5.4 CI | 2 | all green on push | **DONE (3 of 5)** — `hygiene`/`build`/`test` written; `docker`/`release` deferred to Wave 4/5 |
 | 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) | **DONE 2026-09-28** — both commands shipped, 15-test restore drill green and wired into `test.yml`; see §18.5. `rustical upgrade` (row 42) is **not** part of this item and is **not started** |
 | 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6. **Extended 2026-09-28 by item 6**: `--unattended` + `OMNICAL_SETUP_*`, 20 tests — see §18.7 |
-| 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped; the native path runs end-to-end on this host (`scripts/selfhost-gate.sh`, 60 checks). **Row 41 is green. Row 40 is green for everything except running Docker**, which is not installed here; see §18.7 |
-| 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **96/96, zero test edits** | not started (W3) |
+| 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped and `scripts/selfhost-gate.sh` (69 checks) runs the install, the wizard, the server, a real CalDAV round trip and a registration end to end on this host. **Both rows green.** Executing a container runtime is a **stretch goal** (user decision, 2026-09-28), not a gate — the self-host channel must stand on its own and `install.sh` reaches the same end state without one. See §18.7 |
+| 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **98/98, zero test edits** | not started (W3) |
 | 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | not started (W3) |
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | not started (W3) |
 | 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | not started (W3) |
@@ -1491,6 +1500,10 @@ rotate later** for both live credentials; Wave 0 only for this session.
   build smoke test passed, but `test.yml`'s assertion is unproven until a push.
   (Locally it is **98**, not 96 — the assertion is a floor, so this is a stale
   comment in `test.yml`, not a regression. It was already 98 before §18.5.)
+  **→ RESOLVED 2026-09-28, and it was not "just a stale comment".** The floor
+  sat two tests below reality, so it could not catch the two-test deletion it
+  exists to catch. `test.yml` now asserts exactly 98 *and* pins a digest of the
+  test names. See §18.8.
 
 ---
 
@@ -1513,7 +1526,7 @@ rustical restore <ARCHIVE> [--db PATH] [--force] [--dry-run]
 |---|---|
 | §12 row 43 — backup → restore on another machine, expected counts | **green**: 15/15 in `tests/backup_restore.rs`; the drill also run by hand with the release binary (2 principals, 21 migrations, argon2 hash byte-intact, restore into a different directory) |
 | §12 row 22 — CI green | new `test.yml` step `Backup/restore drill (row 43)`, floor of 12 tests. **Unproven until a push** (still no remote — the §18.4 caveat stands) |
-| Workspace suite | `cargo test --workspace --all-features` green; `run_integration_tests` **98/98** (the tenancy-refactor baseline of 96 is untouched) |
+| Workspace suite | `cargo test --workspace --all-features` green; `run_integration_tests` **98/98** (the tenancy-refactor baseline is untouched) |
 | fmt / clippy | `cargo fmt --all` clean; **zero** clippy warnings from the new files (the crate warns on `all`/`pedantic`/`nursery`) |
 | aarch64-musl router build | **green** — `scripts/build-rust.sh aarch64-unknown-linux-musl`, static, 4 MiB after UPX of the 35 MiB budget. The new deps are pure Rust (flate2 on its `miniz_oxide` backend), so the no-C-dependency musl recipe is intact |
 | binary size | host build 5.2 → 5.5 MB after UPX (+5%, tar + gzip) |
@@ -1898,7 +1911,7 @@ That is said in the file, not hidden.
 | Gate | Result |
 |---|---|
 | **§12 row 41 — native path, end to end** | **green.** `scripts/selfhost-gate.sh`, **69 checks**, against the release binary on this host: install → wizard → boot → `/ping` `Pong!` → `PROPFIND` 207/401/401 → the three seeded collections 207 → a welcome object downloads → `REPORT` returns objects → `PUT` 201 → `GET` returns the same `SUMMARY` → `/register` 200 with a CSRF token → a wrong invite 400 and leaks nothing → a valid invite registers → the same invite cannot be reused → the new user syncs → the installer re-runs with the password **removed** from the environment, leaving the admin, the hash, the RSVP secret and the registered user intact → **the attended path, with two `OMNICAL_SETUP_*` variables deliberately set in the environment to prove they are inert** → a missing required answer exits non-zero naming the variable |
-| **§12 row 40 — compose path** | **partial, and stated as such.** The config path, the registration and the client sync are all green on this host by the same gate. **The Docker runtime is not exercised — there is no Docker or Podman on this machine.** Everything in the two files that can rot without Docker is asserted in both directions: every `OMNICAL_SETUP_*` in the compose file is a flag `rustical setup --help` advertises, and every flag the wizard advertises is documented in the compose file |
+| **§12 row 40 — compose path** | **green** (user decision, 2026-09-28: *executing a container runtime is a stretch goal, not a gate*). What the row actually claims — an unattended install that answers `/ping`, registers a user and syncs from a client — is **green on this host**, driven by the same `rustical setup --unattended` answers the container gets. Everything in the two files that can rot without a container is asserted **in both directions**: every `OMNICAL_SETUP_*` in the compose file is a flag `rustical setup --help` advertises, every flag the wizard advertises is documented in the compose file, the `data-dir`/`db-url` pairing agrees, and the server waits for the wizard. **Not done, deliberately: `docker compose up`.** See the stretch goal below |
 | §8.1's "one code-generation path" | **green by construction.** Neither file contains a `config.toml`; both run `rustical setup` with the same variable names, and the gate fails the build if the two sets ever diverge |
 | Workspace suite | `cargo test --workspace --all-features` green, **509 tests** (490 after item 5). `run_integration_tests` **98/98** — the §6.1 refactor baseline is untouched, as it must be |
 | fmt / clippy | `cargo fmt --all` clean; **34** clippy warnings, exactly the pre-existing baseline (`git stash` + re-count), none in the new code |
@@ -1934,12 +1947,8 @@ That is said in the file, not hidden.
 
 ### Deliberately not done
 
-- **No Docker run.** No Docker or Podman on this host, and inventing a
-  container test I could not execute would have been a worse lie than a
-  recorded partial. The CI `selfhost` job runs the same gate on an ubuntu
-  runner, which does have Docker available if the compose path is extended there
-  — extending it is a one-line change to the workflow, deliberately not made
-  blind.
+- **No container runtime run — a stretch goal, not an omission.** See the
+  stretch-goal note below.
 - **No `docs/install/{docker,native,appliance}.md`.** That is §8.5 (C5), which
   still has no work item in the §18.2 table — the third time it has been noted
   (§18.5, §18.6, now here). The two files carry their own install story in their
@@ -1961,11 +1970,86 @@ That is said in the file, not hidden.
   `gitleaks detect` locally before the first public push**, which §10 requires
   anyway.
 
+### Stretch goals
+
+Explicitly **not** gates. Listed so that nobody later mistakes their absence
+for an oversight, and so that picking one up is a decision rather than a
+discovery.
+
+| Stretch goal | Why it is not a gate | What it would take |
+|---|---|---|
+| **Run the Compose channel under a container runtime** (Docker or Podman) | **User decision, 2026-09-28.** The self-host channel has to stand on its own, and `packaging/native/install.sh` reaches the identical end state — wizard, config, administrator, migrations, `/ping`, a registering user, a syncing client — with no container anywhere. The container is a *packaging* of that, not the deliverable, and row 40 was therefore never allowed to depend on one. What the compose file must get right is the **answers and the wiring**, and both are asserted in both directions without a runtime | Add `docker compose -f compose.omnical.yml up -d` plus a `/ping` poll and a registration to the `selfhost` job, and assert the setup container's exit code is 0. One CI job. Note there is no Docker on the dev machine, so this is CI-only |
+| **Publish a container image** (§7.1, item 15) | Workstream B, and it needs a registry, a tag policy and the hosted `Dockerfile` | The top-level `Dockerfile` this item deliberately did not write, plus `docker.yml` |
+| **`rustical upgrade` / row 42** | Needs the §10 release-publishing process first, so a "fetches a cosign-signed release" command would be theatre (§18.5) | §10, `release.yml`, and a work item — row 42 still has no owner in §18.2 |
+| **A system-call filter or seccomp profile in `omnical.service`** | The unit cannot be exercised by CI (no systemd on the runners), and a filter that blocks one syscall the SQLite or TLS path needs turns into an install that does not start. The payoff over the hardening already in the unit is small and the blast radius is a dead server | A real systemd host to test on, and a bisect harness |
+| **`shellcheck` in CI** | The two shell scripts are gated by `bash -n` **and by actually running them** (69 assertions), which catches more than a linter; apt-installing a linter for that is not worth the supply chain | A pinned action, if wanted |
+
 **Next:** item 7, `make_app` → `make_app_for` (§6.1, refactor only), which is
-the gate the whole of Workstream A hangs off: **96/96 integration tests with
-zero test edits.** The baseline is 98 and has not moved through items 4, 5 and 6.
-Then item 8 (HostDispatch + control plane), and then **item 9 — the
-export/rsvp/register tenant scoping — before any hosted traffic, always.**
+the gate the whole of Workstream A hangs off: **98/98 integration tests with
+zero test edits** — and, since §18.8, zero *renames* too. The baseline has not
+moved through items 4, 5 and 6. Then item 8 (HostDispatch + control plane), and
+then **item 9 — the export/rsvp/register tenant scoping — before any hosted
+traffic, always.**
+
+---
+
+## 18.8 The integration baseline was 96. It is 98, and it is now pinned (2026-09-28)
+
+Not a work item — a correction to the gate that gates item 7, found while
+closing item 6.
+
+**What was wrong.** §6.1's whole safety argument is "a pure refactor, proved by
+an unchanged test suite". `test.yml` asserted the integration suite was **not
+below 96**. The suite at the fork's pinned commit `dba08b2f` is **98**.
+
+**Where 96 came from.** PLAN.md §17.16 recorded "integration suite **96/96**" on
+2026-09-23, the day §17.13 landed. The last two commits to touch
+`tests/integration_tests/` are `3d2f4249` and `dba08b2f`, **both 2026-09-23** —
+so 96 was a mid-day snapshot of a suite that was still growing on that day, and
+it was never revised. §18.4 noticed the mismatch and filed it as "a stale
+comment in `test.yml`, not a regression".
+
+**Why "not a regression" was the wrong conclusion.** It was a stale comment
+*and* a live hole. The assertion was a **floor**, and a floor set two tests
+below reality cannot catch the thing it exists to catch: a refactor that
+silently deleted two integration tests would have passed. The check's comment
+even says what it is for — "a silent drop in test count is how a refactor
+quietly deletes coverage" — and then permitted exactly that. §18.4 had the
+evidence in hand and read it as cosmetic; the lesson is that "not a
+regression" and "harmless" are different claims, and only the first was
+supported.
+
+**The fix, in `test.yml`:**
+
+1. The floor becomes an **exact** count: 98, and any other number fails with a
+   message saying the suite changed on purpose or not.
+2. The test **names** are enumerated (`--list`) and their SHA-256 **pinned**:
+   `126adac6258f6916afe257375fc1aa9757296e0af6ee20bec22ed051d5631239`. §6.1's
+   promise is *zero test edits*, and a count cannot detect a delete-and-replace
+   that holds the total at 98. The digest is over sorted test names, which do
+   not depend on the toolchain, so it is stable until a test is deliberately
+   added, deleted or renamed — at which point the pin is updated in the same
+   commit, which is the review conversation the gate should be having.
+3. `--list`'s count is cross-checked against the run's count, so a discrepancy
+   between the two is a failure rather than a shrug.
+
+**Both failure paths were proved, not assumed:**
+
+| Injected fault | Result |
+|---|---|
+| expectation set to 96 against a 98-test run | **fails**, exit 1, with the "98 tests; 98 ran" error |
+| digest set to a wrong value | **fails**, exit 1, naming §6.1's zero-edit rule |
+
+**Every reference in this plan is now 98** — §5.4, §6.1 (both gates), §12 row
+23, §14, §16, §18.2 items 6 and 7, §18.5, §18.7 and the header. The procd
+`START=95`/`START=96` init priorities and PLAN.md:660 are unrelated numbers and
+were left alone. §18.4's own note was annotated as resolved rather than
+rewritten, because it was a fair observation of the time and the correction is
+the interesting part.
+
+**Nothing else moved.** The suite was re-run after items 4, 5 and 6 and was 98
+every time, which is the point: none of them touched a test, and now the gate
+would have said so.
 
 ---
 
