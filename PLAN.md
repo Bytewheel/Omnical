@@ -5341,8 +5341,63 @@ calendar without a link shows the Calendars-tab fallback at the
 the **owning principal** in the path, which the first test draft got
 wrong; foreign page → 401); `cargo test -p rustical_frontend --lib` 22 ✓;
 `cargo fmt --check` ✓; clippy clean for the touched files.
-**Not yet built/deployed to the router** — next deploy picks it up with
-the routine `scripts/build-rust.sh` + `deploy.sh`.
+**Not yet built/deployed to the router** — next deploy picks it up with the
+routine `scripts/build-rust.sh` + `deploy.sh`.
+
+### 17.17 Three deployment models: hosted SaaS, self-hosted distribution, hardware appliance (2026-09-28)
+
+**Request:** plan the three ways Omnical ships — **(1)** a hosted,
+centralized, multi-tenant deployment, **(2)** a self-hosted deployment to
+distribute to third parties, **(3)** a hardware appliance with the app
+preinstalled.
+
+**Full plan: [`PLAN_DEPLOYMENTS.md`](PLAN_DEPLOYMENTS.md)** (this repo).
+Deliberately a separate file — PLAN.md is already 386 KB.
+
+Decisions locked by the user (2026-09-28), which shape everything:
+**(1) true multi-tenant SaaS**, not one-instance-per-customer; **(2) keep
+AGPL-3.0-or-later and embrace it** — publish the corresponding source to
+network users as a product surface, no commercial licence;
+**(3) the appliance reuses the router class** (libreCMC/OpenWrt RK3328
+aarch64) as today.
+
+The plan's core finding: **the three models are one binary with one added
+dispatch layer.** A *tenant* is a resolved `axum::Router` over its own SQLite
+file, dispatched by `Host` — **not** a `tenant_id` column. Because
+`make_app()` (`src/app.rs`, single construction site at `src/lib.rs:192`)
+already takes a whole store bundle, the store traits, the 12 store traits,
+`AuthenticationLayer` (`crates/store/src/auth/middleware.rs:26`, which
+captures its provider at construction) and every DAV/frontend router are
+**unchanged**. Self-hosted and the appliance are the N=1 case of the same code
+path, so the tenancy work does not block them. Isolation is structural rather
+than a `WHERE tenant_id = ?` someone can forget.
+
+**Blocks all three models, before any feature work** — §5 of the plan:
+`out/tls/key.pem` (a **live Let's Encrypt private key**) and
+`out/omnical-iphone.mobileconfig` (**15 live app tokens**) are **tracked in
+git**; `rustical/` is a gitlink with **no `.gitmodules`** so a fresh clone
+cannot build; 33,998 build artefacts are tracked (`.git` is 3.3 GB); no CI.
+Rotating the key/tokens and fixing the clone is item 1-3 of the implementation
+split. This is urgent *because* of the AGPL decision: the repo is about to
+become public, which turns a live private key in the history into a
+credential-disclosure incident.
+
+Three safety-critical items, each with a test row in the plan's §12 matrix:
+**§5.2** (secrets in the repo), **§6.4** (the `export`/`rsvp`/`register`
+routers are mounted *outside* the auth layer, so they need explicit tenant
+assertions — three cross-tenant tests, written before any hosted traffic), and
+**§7.3.4** (`X-Forwarded-For` is trusted unconditionally at
+`src/register.rs:243` and `crates/frontend/src/routes/password_reset.rs:499`,
+so a public hosted launch is a registration/password-reset rate-limit bypass
+until a `trusted_proxies` check is added).
+
+Eight open questions for the user in the plan's §17 — most load-bearing: the
+self-host support commitment (Q1), the hosted pricing/quotas model (Q2), and
+whether the existing live router deployment is migrated to a tenant or left as a
+legacy single-tenant instance (Q8 — default: left alone, migration planned
+separately, never during the tenancy refactor).
+
+**Status: PLAN ONLY — nothing implemented, nothing committed.**
 
 ---
 
