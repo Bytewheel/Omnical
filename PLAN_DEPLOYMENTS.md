@@ -2160,29 +2160,89 @@ now the only thing between the repo and a green build.
 
 ### Still open — one action, and it is not mine to take
 
-`Bytewheel/Omnical-Server` has to be created. The `gh` token in this environment
-authenticates as the user account `0x010A13D7` and has `repo` scope, but:
+**Decision taken (user, 2026-09-28): create `Bytewheel/Omnical-Server`.** The
+alternative — inlining the server into `Omnical-Code` and dropping the submodule
+— was considered and rejected: it contradicts §5.2.4, and it would import the
+fork's three upstream workflows, one of which (`docker-publish.yml`) would try to
+publish an image on every push.
 
-- **cannot create repositories in the `Bytewheel` organisation** —
-  `403: You need admin access to the organization before adding a repository to
-  it`;
-- **cannot delete a repository** — `403: Must have admin rights` /
-  `This API operation needs the "delete_repo" scope`.
+The repository has to be created by the user. Creating a repository needs the
+GitHub **API**, and every credential available here is either the wrong account
+or expired (see the identity table above):
 
-An earlier attempt therefore created `0x010A13D7/Omnical-Server` (public, empty)
-instead of the org repository, and it cannot be removed from here. **It should be
-deleted by hand**; it is empty, so nothing is lost by deleting it.
+- `gh` → `0x010A13D7`, `403: You need admin access to the organization`;
+- `secrets-handler` netrc → `burningserenity`, but the PAT is dead
+  (`Bad credentials`).
 
-Then, from the server checkout:
+**Push access is confirmed working** as `burningserenity` (`push --dry-run` →
+`Everything up-to-date` on `Omnical-Code`), so once the repository exists the
+rest is one command:
 
 ```sh
+export SSH_AUTH_SOCK=~/.ssh/agent/s.9A30FBhmm9.agent.OvGBr5Yn8k
 cd ~/router-dav/rustical
-git push -u origin omnical-scheduling      # origin = Bytewheel/Omnical-Server
+GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
+  git push git@github.com-bytewheel:Bytewheel/Omnical-Server.git omnical-scheduling
 ```
 
 `.gitmodules` already points at `../Omnical-Server.git`. **If the repository is
 to be named something else, that one line changes and nothing else does** — the
 URL is relative by design, so the name is the only coupling.
+
+### One piece of litter to remove by hand
+
+An early attempt, before the org restriction was known, created
+**`0x010A13D7/Omnical-Server`** — public, empty (0 bytes, 0 forks, 0 watchers),
+under the wrong account. It cannot be deleted from here: the `gh` token lacks
+`delete_repo`, and the `burningserenity` credentials have no admin on a
+repository owned by the other account. **Delete it in the GitHub UI.** Nothing
+is lost — it never received a push.
+
+### The identity plumbing, which is a trap worth writing down
+
+Three separate mechanisms in this environment, and **every one of them is wrong
+or broken**. This cost more time to diagnose than the missing repository did,
+and the next session will hit it again unless it is written down.
+
+| Mechanism | Configured as | Works? |
+|---|---|---|
+| `gh` CLI | account **`0x010A13D7`** | Authenticates, but it is **not** `burningserenity` and has no access to the `Bytewheel` org: `403` on repo creation, and `Permission to Bytewheel/Omnical-Code.git denied` on push |
+| `~/.netrc` → `secrets-handler` | login **`burningserenity`**, a 40-char `ghp_` PAT | Correct account, **token is dead** — the API answers `Bad credentials`. Also: this git build does not consult netrc for `credential fill` at all; it goes straight to `GIT_ASKPASS` |
+| SSH | `~/.ssh/id_burningserenity` in an agent | **Works**, once two things are right — see below |
+
+The SSH path is the only live one, and it has two non-obvious requirements:
+
+1. **`SSH_AUTH_SOCK` must be exported, and the `~/.ssh/agent/socket` symlink is
+   stale** — it points at `/run/user/1000/secrets-handler/ssh-agent.sock`, which
+   does not exist. The two live sockets are
+   `~/.ssh/agent/s.9A30FBhmm9.agent.*`; both hold the `burningserenity` ECDSA key.
+   With `SSH_AUTH_SOCK` unset, every `ssh` and every `git` operation over SSH
+   fails with `Permission denied (publickey)` — which looks exactly like a
+   permissions problem and is not one.
+2. **Use the `github.com-bytewheel` alias, not `git@github.com`.** `~/.ssh/config`
+   opens with `Host *` / `IdentitiesOnly yes`, so for the bare `github.com` host
+   ssh uses only the on-disk identity files and **ignores the agent** entirely.
+   That is why `ssh -T git@github.com` fails while the alias succeeds. An alias
+   in a remote URL is machine-specific, so the remotes in all three repos stay
+   canonical (`git@github.com:Bytewheel/…`) and the alias is used per-invocation.
+
+So the working incantation in this environment is:
+
+```sh
+export SSH_AUTH_SOCK=~/.ssh/agent/s.9A30FBhmm9.agent.OvGBr5Yn8k
+GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
+  git push git@github.com-bytewheel:Bytewheel/Omnical-Server.git omnical-scheduling
+```
+
+Write access to `Bytewheel/Omnical-Code` as `burningserenity` is confirmed
+(`push --dry-run` → `Everything up-to-date`). **Repository creation is the one
+thing that cannot be done this way** — it needs the API, and the API needs a
+valid token for the right account.
+
+**Worth fixing at some point, in this order:** a fresh PAT for `burningserenity`
+in `secrets-handler` (fixes the API and netrc at once); `gh auth login` as
+`burningserenity` (fixes `gh`); then, optionally, drop `IdentitiesOnly yes` from
+`Host *` so the agent works for `github.com` directly.
 
 ### What is now proven, and what is still not
 
