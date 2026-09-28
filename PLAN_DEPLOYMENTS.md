@@ -769,12 +769,18 @@ with the appliance (§9.3). Today an operator must hand-write
 `config.toml` knowing exact key names (`gen-config` helps) and then run
 `principals create` by hand. That is a support call, every time.
 
-`rustical setup` is an **interactive terminal wizard** (clap prompts; the
-project already depends on `clap` and `rpassword`, `Cargo.toml:210,212`):
+> **AS BUILT (2026-09-28).** Shipped as `rustical setup`, 8 questions, the
+> shape below. Deviations, all recorded in §18.6: the data directory yields
+> `<dir>/db.sqlite3`, **not** `tenants/<id>/db.sqlite3` (tenants are W3, and a
+> wizard must not invent a path layout it does not own); the TLS question
+> writes **no config key** and only selects which next steps are printed
+> (`Config` has no TLS section — a proxy or `dav-tls` owns that job); and the
+> administrator is asked **last**, after the wizard can see which accounts
+> already exist, so a re-run cannot talk someone into creating a second one.
 
 ```
 $ rustical setup
-  1. Data directory          [/var/lib/omnical]           → creates tenants/<id>/db.sqlite3
+  1. Data directory          [/var/lib/omnical]           → creates db.sqlite3
   2. Listen address          [0.0.0.0:4000]
   3. Public URL              [https://cal.example.com]    → subscriptions.public_url
   4. TLS                     (c)addy  (a)ppliance dav-tls  (n)one — behind a proxy
@@ -788,7 +794,8 @@ $ rustical setup
 
 It must be **idempotent** and **re-runnable** (a second run edits, does not
 clobber). *Gate: `tests/setup_wizard.rs` — 6 tests, driven by piped stdin;
-a re-run preserves an existing DB and admin.*
+a re-run preserves an existing DB and admin.* — **12 tests written, all
+green; the gate's "6" is a floor and was not treated as a target.**
 
 ### 8.3 C3 — de-hardcoding the config renderer
 
@@ -803,10 +810,31 @@ else. One rule: **the two must not diverge** — both write the same
 *Gate: a config produced by `rustical setup` loads under the production binary
 with no `deny_unknown_fields` error, and vice versa.*
 
+> **AS BUILT (2026-09-28): the rule is now structural, not a review item.**
+> `gen-config` and `setup` both start from `Config::default_config()` — the
+> literal that used to live inside `cmd_gen_config` was lifted into
+> `src/config.rs` and is now the only place a default `Config` is built. Two
+> config paths cannot diverge if they construct the same value. Gate asserted
+> in both directions (`tests/setup_wizard.rs::test_written_config_round_trips`)
+> and by booting the wizard's config with the release binary (§18.6).
+
 ### 8.4 C4 — backup, restore, upgrade (in-binary)
 
 C13: our backup story is a dev-machine cron over SSH. A self-hoster has
 neither. Three new commands:
+
+> **AS BUILT (2026-09-28) — the sketch below is the design; the shipped CLI
+> is `rustical backup [--out-dir DIR] [--db PATH] [--gzip] [--include-config]`
+> and `rustical restore <ARCHIVE> [--db PATH] [--force] [--dry-run]
+> [--config-out PATH] [--ignore-row-count-changes]`.** Differences, all
+> deliberate and all recorded in §18.5: `--tenant SLUG` became `--db PATH`
+> (tenants do not exist until W3, and a flag that guesses a path layout it
+> does not own is worse than none); `--include-wal` was dropped (a
+> `TRUNCATE` checkpoint leaves the WAL empty, so there is nothing to
+> include); and `sqlite3 .backup` became **`VACUUM INTO`**, because sqlx does
+> not expose SQLite's online-backup API and requiring the `sqlite3` binary on
+> every self-hoster's host defeats the point. `rustical upgrade` is **not
+> started** — see §18.5.
 
 ```
 rustical backup  [--out DIR] [--tenant SLUG] [--include-wal] [--gzip]
@@ -825,6 +853,14 @@ rustical upgrade [--to VERSION] [--check] [--rollback]
 the checkpoint-then-backup dance is the reason our backups work. *Gate: a
 restore into a scratch instance opens the DB and shows the expected row counts
 — the §14 row-18 restore drill, promoted to a per-release CI job.*
+
+> **AS BUILT:** first and third step verbatim. The second is `VACUUM INTO`
+> rather than the `sqlite3 .backup` **CLI call** (same guarantee, in-process,
+> no external binary) — see the AS BUILT note above and §18.5. The checkpoint
+> is kept but treated as best-effort: it can return `busy=1` under load, which
+> is harmless because `VACUUM INTO` reads through the WAL. The gate is
+> implemented: 15 tests, one of which is the drill, wired into `test.yml` as
+> its own step.
 
 ### 8.5 C5 — docs and support surface
 
@@ -1083,10 +1119,10 @@ Run in order; each row is a gate.
 | **Workstream C** ||||
 | 40 | Compose path | `docker compose up` on a clean host | `/ping` answers; a user registers; a client syncs |
 | 41 | Native path | tarball + `install.sh` on a bare VM | same end state as row 40 |
-| 42 | Upgrade N → N+1 | upgrade, then compare row counts | data intact; `restore` from the pre-upgrade backup works |
-| 43 | Backup/restore | `rustical backup` → `rustical restore` on **another** machine | DB opens; expected counts (the §14 row-18 drill, in CI) |
-| 44 | Wizard idempotence | `rustical setup` twice | second run edits, preserves DB + admin |
-| 45 | Config round-trip | a wizard config loads under the production binary, and vice versa | no `deny_unknown_fields` error either way |
+| 42 | Upgrade N → N+1 | upgrade, then compare row counts | data intact; `restore` from the pre-upgrade backup works — **NOT STARTED, and no work item owns it** (§18.5): `rustical upgrade` needs the §10 release-publishing process first |
+| 43 | Backup/restore | `rustical backup` → `rustical restore` on **another** machine | DB opens; expected counts (the §14 row-18 drill, in CI) — **DONE 2026-09-28**; 15 tests in `tests/backup_restore.rs`, run as its own `test.yml` step; see §18.5 |
+| 44 | Wizard idempotence | `rustical setup` twice | second run edits, preserves DB + admin — **DONE 2026-09-28**; 12 tests in `tests/setup_wizard.rs`, run as its own `test.yml` step; the password hash is asserted byte-identical across the re-run. See §18.6 |
+| 45 | Config round-trip | a wizard config loads under the production binary, and vice versa | no `deny_unknown_fields` error either way — **DONE 2026-09-28**: both paths build `Config::default_config()`, so this is structural; asserted in both directions in `tests/setup_wizard.rs`, and the wizard's config was booted with the release binary (`/ping` 200, `/.well-known/caldav` 308, admin login 303) |
 | **Workstream D** ||||
 | 46 | Factory unit boots | flash the image | setup page on the **LAN only**; not reachable from the WAN |
 | 47 | First-boot wizard | create the admin, restart | reachable on 8443; working DAV |
@@ -1268,47 +1304,60 @@ Burn scars from the existing plan, plus the new ones this model introduces.
 
 ## 18. Implementation split — first next action
 
+> **STATUS (2026-09-28): WAVE 0 DONE (§18.4), WORKSTREAM C ITEMS 4 + 5 DONE
+> (§18.5, §18.6).** The container is sanitized and clone-verified;
+> `rustical backup` / `restore` and the `rustical setup` wizard exist, with
+> the row-43 restore drill and the row-44 idempotence gate running in CI.
+> **The two live credentials are still live on the router** and remain the
+> open risk; rotation is deliberately deferred to a scheduled window with a
+> written runbook (`router-dav/docs/operations/credential-rotation.md`).
+
 ### 18.1 The single first thing to do
 
 **Workstream 0, items 1-4** (§5.2), and specifically **H4**, because it is the
 one that makes anything else testable:
 
-1. Ask the user about the history rewrite (§5.2.5) — **do not run
-   `git filter-repo` unilaterally**.
-2. Rotate the Let's Encrypt key (H1) and revoke the 15 app tokens (H2).
-3. Add `.gitignore` and `.gitmodules`.
-4. **Run the clone smoke test** (§5.2.4 gate): a fresh `git clone` builds
-   `x86_64-unknown-linux-gnu`. Everything downstream assumes this works.
+1. ~~Ask the user about the history rewrite~~ — **asked and answered
+   2026-09-28: fresh repo, archive the old `.git`** (no remote exists, so
+   nothing else breaks). See §18.4.
+2. ~~Rotate the Let's Encrypt key~~ — **deferred by user decision** to a
+   scheduled maintenance window; the runbook is written. The key is no longer
+   in any publishable history, which is the containment; the credential itself
+   is still live.
+3. ~~Revoke the 15 app tokens~~ — **deferred**, same reason. 50 tokens across 11
+   real/family principals; revocation breaks real clients until re-provisioned.
+4. ~~Add `.gitignore` and `.gitmodules`~~ — **DONE**.
+5. **Run the clone smoke test** (§5.2.4 gate) — **DONE, green**.
 
 Rationale for doing this first, before any feature work: §5 is the only workstream
-that **blocks all three models**, and D2 (§10) means the repo is about to become
-**public** — at which point a live TLS private key in the history is a
+that **blocks all three models**, and D2 (§10) means the repo is about to
+become **public** — at which point a live TLS private key in the history is a
 credential-disclosure incident, not a mess to tidy later.
 
-### 18.2 Suggested work-item split for the rest
+### 18.2 Work-item status
 
-| # | Work item | Depends on | Gate |
-|---|---|---|---|
-| 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401 |
-| 2 | §5.2.3-4 `.gitignore` + `.gitmodules` | — | **clone smoke test green** |
-| 3 | §5.4 CI (5 workflows) | 2 | all green on push |
-| 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) |
-| 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run |
-| 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 |
-| 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **96/96, zero test edits** |
-| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 |
-| 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** |
-| 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 |
-| 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests |
-| 12 | §9.2 appliance firmware image | 4, 6 | row 46, 48 |
-| 13 | §9.3 first-boot setup mode | 5, 12 | rows 46-47 |
-| 14 | §9.4 appliance control panel + diagnostics | 12 | rows 49-50 |
-| 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` |
-| 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 |
-| 17 | §6.6 admin surface + audit | 11 | rows 32-33 |
-| 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant |
-| 19 | §10 source offer page + CI check | 15 | row 39 |
-| 20 | §7.5 quotas, §7.2 load measurement | 17 | row 37; the §7.2 number is recorded |
+| # | Work item | Depends on | Gate | Status |
+|---|---|---|---|---|
+| 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401 | **DEFERRED** by user decision; runbook written |
+| 2 | §5.2.3-4 `.gitignore` + `.gitmodules` | — | **clone smoke test green** | **DONE** — both green |
+| 3 | §5.4 CI | 2 | all green on push | **DONE (3 of 5)** — `hygiene`/`build`/`test` written; `docker`/`release` deferred to Wave 4/5 |
+| 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) | **DONE 2026-09-28** — both commands shipped, 15-test restore drill green and wired into `test.yml`; see §18.5. `rustical upgrade` (row 42) is **not** part of this item and is **not started** |
+| 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6 |
+| 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | not started (W1) |
+| 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **96/96, zero test edits** | not started (W3) |
+| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | not started (W3) |
+| 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | not started (W3) |
+| 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | not started (W3) |
+| 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | not started (W3) |
+| 12 | §9.2 appliance firmware image | 4, 6 | rows 46, 48 | not started (W2) |
+| 13 | §9.3 first-boot setup mode | 5, 12 | rows 46-47 | not started (W2) |
+| 14 | §9.4 appliance control panel + diagnostics | 12 | rows 49-50 | not started (W2) |
+| 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` | not started (W4) |
+| 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | not started (W4) |
+| 17 | §6.6 admin surface + audit | 11 | rows 32-33 | not started (W4) |
+| 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant | not started (W5) |
+| 19 | §10 source offer page + CI check | 15 | row 39 | not started (W5) |
+| 20 | §7.5 quotas, §7.2 load measurement | 17 | row 37; the §7.2 number is recorded | not started (W6) |
 
 **Items 1-3 before 4-20. Item 9 before any hosted traffic, always.**
 
@@ -1320,7 +1369,328 @@ in the style already used in this planning repo's history (the whole story in
 the subject line, outcome-bearing subjects ending `DONE <date>`), and in the
 code repo `<area>: <imperative summary>`.
 
+### 18.4 Wave 0 execution log (2026-09-28)
+
+**User decisions taken before starting:** fresh repo + archive the old `.git`
+(no remote, nothing to break); local only, no remote created; **de-risk now,
+rotate later** for both live credentials; Wave 0 only for this session.
+
+**Repo: `/home/burningserenity/router-dav`, branch `main`.**
+
+| Metric | Before | After |
+|---|---|---|
+| `.git` size | 3.3 GB | **296 KB** |
+| Tracked files | 34,027 | **28** |
+| Commits | 25 | **2** |
+| `git fsck` | — | **0 issues** |
+| Private keys in any committed blob | 1 (the live LE key) | **0** |
+| Live app tokens in history | 15 (in the `.mobileconfig`) | **0** |
+
+**What was done**
+
+- **Archived** the old history to
+  `~/omnical-archive/router-dav-dotgit-2026-09-28` (3.3 GB, verified
+  `git fsck` clean, 25 commits, `HEAD` matches `f5a40783`), plus a readable
+  `git log --stat` at `~/omnical-archive/router-dav-gitlog-2026-09-28.txt`. Not
+  deleted — retired. Both retired credentials are still recoverable from it, so
+  **it must never be pushed anywhere public**.
+- **`.gitignore`** — 89 lines, with one deliberate exception:
+  `router/etc/rustical/certs/imap-novo-ordo.pem` is a **public Sectigo
+  intermediate CA cert** that `deploy.sh` pushes to the router and the app needs
+  to poll `imap.novo-ordo.com` (that server omits the intermediate, so every
+  poll fails `UnknownIssuer` — `render-router-config.sh:44-50`). Dropping it
+  would break inbound iMIP reply ingestion. `hygiene.yml` asserts it parses as a
+  certificate and contains no `PRIVATE KEY` block, so the allowlist cannot rot.
+- **`.gitmodules`** — with a **relative** URL (`../rustical.git`), so it resolves
+  against whatever remote the parent repo gets. This deliberately avoids
+  hardcoding a fork owner that does not exist yet (per the "local only for now"
+  decision). The one-line change needed when a remote is added:
+  `git remote add origin <url>` then `git submodule sync`.
+- **Fresh history** — `git init -b main`, one `Initial import` commit
+  (`e64973b`), then `ci:` + docs (`6df26e6`). All 16 deployment files
+  (`deploy.sh`, `scripts/`, `router/` overlay, `dav-tls`) are **byte-identical**
+  to the old tree; nothing about build, deploy or runtime behaviour changed.
+- **CI** — `hygiene.yml`, `build.yml`, `test.yml`. All three parse as valid
+  YAML and every embedded `run:` block passes `bash -n`. `docker.yml` and
+  `release.yml` are **deliberately not written yet** — they depend on a
+  Dockerfile (§7.1, W4) and a source-offer process (§10, W5) that do not
+  exist, so writing them now would be broken CI.
+- **Clone smoke test (§12 row 21) — GREEN.** A fresh `git clone` +
+  `submodule update --init` now yields a populated `rustical/` at
+  `dba08b2f` with all 12 crates, and `./scripts/build-rust.sh
+  x86_64-unknown-linux-gnu` builds both binaries from cold
+  (`rustical` 21.7 MB → **5.2 MB** after UPX, 24.8%). `rustical --version` →
+  `0.16.1`; `gen-config` emits a valid 46-line template; `dav-tls --help`
+  works. Pre-fix this was **impossible** — a clone produced an empty
+  `rustical/`.
+
+**Three things worth recording as burn scars**
+
+1. `git check-ignore` **skips already-tracked paths** unless you pass
+   `--no-index`. Verifying a new `.gitignore` against a dirty index silently
+   reports every secret as "not ignored". Always use `--no-index` here.
+2. `mv .git .git.old-<date>` + `git init` leaves the 3.3 GB backup **inside the
+   working tree**, where the next `git add -A` tries to stage all 34k of its
+   objects. Move the old `.git` **outside** the repo. `.gitignore` now also
+   guards `/.git.old*/` in case it happens again.
+3. A killed `git add` can leave a **2.4 GB `.git/objects/pack/tmp_pack_*`** —
+   a partial pack with no `.idx`. It is safe to `rm`; `git gc --prune=now`
+   afterwards dropped `.git` from 2.5 GB to 200 KB.
+
+**Still open (deliberately)**
+
+- **`rustical/` has no remote.** `.gitmodules` uses a relative URL, so a clone
+  only works once a remote exists. The smoke test above used
+  `-c submodule.rustical.url=<local path> -c protocol.file.allow=always`
+  (`protocol.file.allow` because git blocks `file://` submodules by default —
+  CVE-2022-39253). Real HTTPS remotes do not need that override.
+- **The TLS key and 50 app tokens are still live on the router.** Wave 0
+  contained them; it did not rotate them. Runbook:
+  `router-dav/docs/operations/credential-rotation.md`.
+- **The 96-test baseline was not re-run in CI** (no GitHub remote yet). The
+  build smoke test passed, but `test.yml`'s assertion is unproven until a push.
+  (Locally it is **98**, not 96 — the assertion is a floor, so this is a stale
+  comment in `test.yml`, not a regression. It was already 98 before §18.5.)
+
 ---
+
+## 18.5 Work item 4 execution log — `rustical backup` / `rustical restore` (2026-09-28)
+
+**Shipped:** `src/commands/backup.rs` (new, 1,108 lines including 11 unit
+tests), `tests/backup_restore.rs` (new, 872 lines, 15 tests), 4 lines each in
+`src/commands/mod.rs`, `src/lib.rs`, `src/main.rs`, 10 in `Cargo.toml`, and one
+new step in `.github/workflows/test.yml`.
+
+```
+rustical backup  [--out-dir DIR] [--db PATH] [--gzip] [--include-config]
+rustical restore <ARCHIVE> [--db PATH] [--force] [--dry-run]
+                             [--config-out PATH] [--ignore-row-count-changes]
+```
+
+**Gates**
+
+| Gate | Result |
+|---|---|
+| §12 row 43 — backup → restore on another machine, expected counts | **green**: 15/15 in `tests/backup_restore.rs`; the drill also run by hand with the release binary (2 principals, 21 migrations, argon2 hash byte-intact, restore into a different directory) |
+| §12 row 22 — CI green | new `test.yml` step `Backup/restore drill (row 43)`, floor of 12 tests. **Unproven until a push** (still no remote — the §18.4 caveat stands) |
+| Workspace suite | `cargo test --workspace --all-features` green; `run_integration_tests` **98/98** (the tenancy-refactor baseline of 96 is untouched) |
+| fmt / clippy | `cargo fmt --all` clean; **zero** clippy warnings from the new files (the crate warns on `all`/`pedantic`/`nursery`) |
+| aarch64-musl router build | **green** — `scripts/build-rust.sh aarch64-unknown-linux-musl`, static, 4 MiB after UPX of the 35 MiB budget. The new deps are pure Rust (flate2 on its `miniz_oxide` backend), so the no-C-dependency musl recipe is intact |
+| binary size | host build 5.2 → 5.5 MB after UPX (+5%, tar + gzip) |
+
+**Method — §8.4.1, and the one place it did not transfer literally**
+
+`nightly-backup.sh` does `PRAGMA wal_checkpoint(TRUNCATE)` → `sqlite3 .backup`
+→ `tar czf`. The first and last are used unchanged. The middle one cannot be:
+**sqlx does not expose SQLite's online-backup API**, so shelling out to the
+`sqlite3` binary would mean requiring it on every self-hoster's host. It is
+replaced by **`VACUUM INTO <path>`** — one statement, one consistent snapshot of
+a *live* database, and the output is compacted, so the archive holds a
+self-contained file rather than a copy of a live one. Verified against a hot
+WAL: the snapshot contains the uncheckpointed rows and passes
+`integrity_check`.
+
+`wal_checkpoint(TRUNCATE)` is kept *and* treated as best-effort: under load it
+returns `busy=1` and folds nothing, which is not fatal because `VACUUM INTO`
+reads through the WAL. The busy case prints a note instead of failing quietly.
+
+**Three deviations from the §8.4 CLI sketch, all deliberate**
+
+1. **`--tenant SLUG` is not implemented; `--db PATH` is.** A tenant does not
+   exist yet — that is W3 (§6.1/§6.5), and a `--tenant` flag today could only
+   guess at a path layout it does not own. `--db` is what the drill and
+   per-file operations actually need, and it is the flag `--tenant` will be
+   expressed in terms of once tenants resolve to paths.
+2. **`--include-wal` is not implemented.** It cannot be: after a `TRUNCATE`
+   checkpoint the WAL is empty by construction. The equivalent of the flag is
+   the *absence* of a checkpoint, which nothing needs. The one thing that *does*
+   matter is the other direction, and it is handled — see the burn scar below.
+3. **`--gzip` is opt-in, as sketched** (the nightly script always gzips), and
+   `restore` detects gzip by **magic bytes, not the file extension**, so an
+   archive that arrived over `scp` without its suffix still restores.
+
+**The archive format is new, and that is the point**
+
+```
+manifest.json   format 1, UTC timestamp, binary version, integrity_check,
+                per-entry size + SHA-256, and a row count per table
+db.sqlite3      the snapshot
+config.toml     only with --include-config (it holds cleartext secrets)
+```
+
+`restore` refuses a manifest whose `format` it does not know rather than
+guessing, and **verifies every digest before it touches the target** — a
+rejected archive leaves no staging file *and no safety copy*, which the test
+asserts. Row counts are compared after the restore and a mismatch is an error
+(`--ignore-row-count-changes` for the legitimate cross-migration case). New
+tables from migrations are reported as notes, not mismatches.
+
+**Four burn scars, all found by the tests rather than by reading the code**
+
+1. **A scratch directory keyed only by the pid is not a lock.** The first cut
+   used `/tmp/rustical-restore-<pid>`; the parallel test threads shared it and
+   the first restore to finish deleted the others' extracted archives. The name
+   now carries pid + a counter + the clock. (Burn scar in the same family as
+   §18.4's `git check-ignore` one: the failure mode is a *test* failure that
+   looks like a product bug.)
+2. **A stale `-wal` is how a correct restore becomes a corrupt database.** The
+   sidecars are removed *before* the rename, never after — left in place,
+   SQLite replays the old WAL into the new file on the next open. The test
+   plants a real, non-empty WAL copied out of a live second database (a clean
+   close checkpoints and deletes it, so the fixture has to be taken while the
+   pool is open) and a 32 KiB `-shm`.
+3. **The tar reader is the second line of defence, not the first.** Entry names
+   are read as **raw header bytes** (`path_bytes()`), never as a parsed path:
+   nothing in this format needs a path component, so an absolute or `..` name is
+   rejected before a `PathBuf` exists. The test builds both fixtures at the byte
+   level because `tar::Header::set_path` refuses to write them — an absolute
+   name is caught by our guard, a `..` name by tar-rs before the guard runs.
+   Both are refused; the test asserts each is.
+4. **A tar reader stops at the first zero block.** The tar-slip fixture appended
+   its hostile header *after* the archive's end-of-archive marker, so the
+   extractor never saw it and the restore **succeeded** — a test that passed for
+   the wrong reason. The fixture now rewrites the archive with the entry in
+   place. A green security test is worth nothing unless you check that the
+   hostile input was actually read.
+
+**Deliberately not done**
+
+- **`rustical upgrade` (§8.4, row 42) is not started.** Item 4 is scoped
+  "backup / restore" in the §18.2 table, but §8.4 as a *section* is not
+  complete without it, and row 42 currently has no work item of its own — a gap
+  in the table, recorded here rather than papered over. It also cannot be
+  honestly built before §10 exists: "fetches a cosign-signed release" needs a
+  publishing process, and the plan already defers `release.yml` to W5.
+- **`scripts/nightly-backup.sh` is unchanged** and still the right thing for
+  *our* router: it is the pull-based backup for a device whose operator is
+  elsewhere. Switching production to the new command is a deploy decision for
+  the live instance, not a side effect of writing the command.
+- **No live-router verification.** The drill ran on this host (x86_64, scratch
+  databases, real release binary). Running `rustical backup` against the
+  production `/usr/local/share/rustical/db.sqlite3` is a change to the live
+  deployment and is left for the user to call.
+- **No `docs/operations/backup.md`** — that is §8.5 (C5), which has no work
+  item in the §18.2 table at all. Also missing from that table: the §8.5 docs
+  and support policy, which §8.5 itself calls the thing that stops
+  self-distribution becoming an infinite support obligation.
+
+**Next:** item 5, `rustical setup` (§8.2), which depends on this one. The
+restore path it needs — "the wizard re-runs and preserves the existing database
+and admin" (row 44) — is the same "never clobber what is there" discipline that
+`restore --force` now enforces. **DONE — §18.6.**
+
+---
+
+## 18.6 Work item 5 execution log — `rustical setup` (2026-09-28)
+
+**Shipped:** `src/commands/setup.rs` (new, 1,124 lines including 10 unit
+tests), `tests/setup_wizard.rs` (new, 528 lines, 12 tests), 2 lines each in
+`src/commands/mod.rs`, `src/lib.rs`, `src/main.rs`, one new step in
+`.github/workflows/test.yml`, and — in `src/config.rs` — `Config::default_config()`
+plus `Config::sqlite_db_path()`.
+
+```
+$ rustical setup
+  1. Data directory          [/var/lib/omnical]        → <dir>/db.sqlite3
+  2. Address to listen on    [0.0.0.0:4000]
+  3. Public URL              [https://cal.example.com] → subscriptions.public_url
+  4. How is TLS terminated?  (c) proxy  (d) dav-tls  (n) none
+  5. Send invitations over SMTP?   → identity / host / port / username / password
+  6. Poll an IMAP mailbox for replies?  → the same five
+  7. Registration            (i) invite-only  (o) open  (c) closed
+  8. Administrator email address    → password, only if the account is new
+  → config.toml (0600, atomic), data dir (0700), migrations, the admin,
+    then next steps.
+```
+
+**Gates**
+
+| Gate | Result |
+|---|---|
+| §12 row 44 — wizard idempotence | **green**: 12/12 (the gate asks 6). The re-run keeps the database, the administrator **and the argon2 hash byte-for-byte**, and never asks for a password |
+| §12 row 45 — config round-trip, both directions | **green**: asserted in `test_written_config_round_trips`, *and* structurally — `gen-config` and `setup` now build the same `Config::default_config()` |
+| Live, with the release binary | `rustical setup` → `rustical serve` on the produced config: `/ping` 200, `/.well-known/caldav` 308, `/frontend/login` 200, and the wizard-made admin logs in (**303 → `/frontend/user`**, versus **401** for a wrong password — the check that distinguishes a real login from a hopeful one) |
+| Workspace suite | `cargo test --workspace --all-features` green, **490 tests** (468 after item 4) |
+| fmt / clippy | `cargo fmt --all` clean; **zero** clippy warnings from the new code, including the `deny_unknown_fields` round trip |
+| aarch64-musl router build | **green** — 4 MiB after UPX of the 35 MiB budget. The wizard adds no dependency at all |
+| Artifacts | config `0600`, data dir `0700`, atomic write (temp + rename), no temp file left behind — all asserted |
+
+**Three design decisions worth arguing about**
+
+1. **The administrator is asked last, not first.** The sketch asks for it at
+   step 8, and it *looks* like a first-run question — but the safe answer
+   depends on what the database already holds, and that is only knowable after
+   the data directory is settled and the migrations have run. Asking it first
+   invites the worst possible outcome: a re-run where the operator presses
+   enter, the default is `admin@localhost`, and a **second** administrator
+   appears next to the real one. The default is now the first account that
+   exists, so pressing enter on a re-run is a no-op. (Caught by hand, not by a
+   test — the first draft had the footgun and the tests were written after.)
+2. **The TLS question writes no config key.** `Config` has no TLS section,
+   because TLS genuinely is somebody else's job in both channels: a reverse
+   proxy in front, or the `dav-tls` binary. The answer selects which next steps
+   get printed, and the code says so where the enum is defined. A wizard that
+   accepted an answer and silently discarded it would be worse than one that
+   never asked.
+3. **§8.3 is now structural.** The `Config` literal that used to live inside
+   `cmd_gen_config` is `Config::default_config()`, used by both. Two config
+   paths that build the same value cannot drift.
+
+**Secrets, specifically**
+
+- Nothing secret reaches stdout. Asserted for the admin password, the
+  generated RSVP secret and the SMTP password (`test_no_secret_reaches_stdout`).
+- The RSVP secret is generated (32 random bytes, hex) and **written, never
+  printed** — and a re-run **keeps** it, because rotating it silently
+  invalidates every invitation link already sent. `rsvp_secret_generated` is in
+  the report so a script can tell.
+- A stored mail password is never shown and never re-typed: the re-run asks
+  "keep the stored one?" and the value goes from the old config to the new one
+  untouched. The test proves it by running the re-run from a scripted stdin
+  that has **no password line at all** — if the wizard asked, the input would
+  run dry and it would fail.
+- Secrets are read through `rpassword` (echo off) when stdin is a terminal, and
+  as a plain line when it is a pipe. That is what makes a piped-stdin test
+  worth anything, and it is the same pattern `principals create` already uses.
+
+**Deviations from the §8.2 sketch**
+
+- **`<dir>/db.sqlite3`, not `tenants/<id>/db.sqlite3`.** Tenants are W3 (§6.1).
+  A wizard that invented a tenant path layout before the code that owns it
+  exists would be guessing, and a wrong guess here is a data directory in the
+  wrong place.
+- **The `12`-character minimum is a floor, not a copy.** A config that lowered
+  `registration.min_password_length` does not get to lower the administrator's
+  password with it.
+- **No `docs/install/*.md` yet** — that is §8.5 (C5), still without a work item
+  in the §18.2 table. The wizard's own next-steps output is the interim answer,
+  and it is asserted (it must name the real bind, the real public URL and the
+  re-run promise).
+
+**Burn scars from this item**
+
+1. **A scripted stdin is a contract, and every extra question breaks it.** Three
+   tests failed for the same reason: a mail account makes a re-run ask *two*
+   questions where a bare install asks none, so the answer script was one line
+   short and the wizard correctly died with "input ended". The fix is not to pad
+   the script but to make the failure meaningful — which it already was. A
+   wizard that takes defaults when input runs dry would have passed those tests
+   and quietly created an admin with no password.
+2. **"Empty stdin" and "one empty line" are different inputs.** A test helper
+   that appends a newline to build a script turns "no input at all" into "one
+   blank answer", and the end-of-input guard under test never fires. The
+   helper now returns a genuinely empty `Cursor` for an empty script.
+3. **`Config::default_config()` was needed to make the round trip honest.**
+   Reaching for it also removed the duplicated literal in `cmd_gen_config` —
+   the kind of change that looks like scope creep and is actually the gate.
+
+**Next:** item 6, `compose.omnical.yml` + `packaging/native/` (§8.1), which
+depends on this one. The wizard it needs is done; what it does *not* yet have
+is a documented install story for the two channels, which is §8.5 and is still
+missing a work item.
+
+---
+
 
 *End of plan. Execute §5 before anything else — it blocks all three models, and
 D2 means the repo is about to be public. §6 is the only expensive work and the
