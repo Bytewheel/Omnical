@@ -762,6 +762,22 @@ not the tarball.**
 register; the tarball path reaches the same state on a bare VM. **Both paths
 from one config-generation code path** (§8.3), not two hand-written configs.*
 
+> **AS BUILT (2026-09-28).** `compose.omnical.yml` and `packaging/native/`
+> shipped, and the gate's substance is met; §18.7 has the detail. The decision
+> that shaped both files: **neither one writes a `config.toml`.** Each drives
+> `rustical setup` — the same command, with the same `OMNICAL_SETUP_*` answers
+> — so "one code path" is structural here for the same reason §8.3 made it
+> structural between `gen-config` and `setup`: two config templates in a shell
+> script and a YAML file are two things to keep in step, and neither is tested
+> against the other.
+>
+> That needed one thing this section did not anticipate: **the wizard has to be
+> able to run with no stdin.** The self-host image is `FROM scratch`
+> (`rustical/Dockerfile:44`), so there is no shell to pipe a scripted answer
+> script from, and `stdin_open: true` would leave the wizard blocked on a read
+> that never ends. `rustical setup --unattended` is the answer, and it is
+> opt-in, so nothing about the interactive wizard moved.
+
 ### 8.2 C2 — the `rustical setup` wizard
 
 The single most important new **product** surface for self-hosted, and shared
@@ -777,6 +793,12 @@ with the appliance (§9.3). Today an operator must hand-write
 > (`Config` has no TLS section — a proxy or `dav-tls` owns that job); and the
 > administrator is asked **last**, after the wizard can see which accounts
 > already exist, so a re-run cannot talk someone into creating a second one.
+>
+> **EXTENDED the same day (item 6, §18.7):** `--unattended`, which takes every
+> answer from a flag or an `OMNICAL_SETUP_*` variable instead of a prompt, and
+> is what both the Compose channel and the tarball channel run. It is **opt-in**
+> and purely additive: the interactive wizard is the same command item 5
+> shipped, and all 12 of its tests pass untouched.
 
 ```
 $ rustical setup
@@ -1117,8 +1139,8 @@ Run in order; each row is a gate.
 | 38 | External reachability | `check-host.net` from many nodes (the §4.3 pattern) | TLS validates with **no `-k`**; `/ping` answers |
 | 39 | Source offer | `curl -sI /frontend/source`; download the tarball; `git rev-parse HEAD` in it | matches the running build; the tarball builds in CI |
 | **Workstream C** ||||
-| 40 | Compose path | `docker compose up` on a clean host | `/ping` answers; a user registers; a client syncs |
-| 41 | Native path | tarball + `install.sh` on a bare VM | same end state as row 40 |
+| 40 | Compose path | `docker compose up` on a clean host | `/ping` answers; a user registers; a client syncs — **PARTIAL 2026-09-28** (§18.7). The config path, the registration and the client sync are all **green on this host**: the same `rustical setup --unattended` answers the container gets were run against the release binary, and the resulting install was booted, registered into and synced from. The *Docker runtime* is the untested part — no Docker or Podman on this host — so "on a clean host" is asserted by the CI job, not by this log. Everything in the two files that can rot without Docker (the wizard variable set, the `data-dir`/`db-url` pairing, the service ordering) **is** asserted, in both directions |
+| 41 | Native path | tarball + `install.sh` on a bare VM | same end state as row 40 — **green 2026-09-28**: `scripts/selfhost-gate.sh` installs with `packaging/native/install.sh` on a clean prefix, runs the wizard, boots the server on the generated config, round-trips a real CalDAV write/read, registers a user through the invite flow, syncs as that user, and re-runs the installer over the live install without losing anything. 60 checks, wired into `.github/workflows/build.yml` as the `selfhost` job |
 | 42 | Upgrade N → N+1 | upgrade, then compare row counts | data intact; `restore` from the pre-upgrade backup works — **NOT STARTED, and no work item owns it** (§18.5): `rustical upgrade` needs the §10 release-publishing process first |
 | 43 | Backup/restore | `rustical backup` → `rustical restore` on **another** machine | DB opens; expected counts (the §14 row-18 drill, in CI) — **DONE 2026-09-28**; 15 tests in `tests/backup_restore.rs`, run as its own `test.yml` step; see §18.5 |
 | 44 | Wizard idempotence | `rustical setup` twice | second run edits, preserves DB + admin — **DONE 2026-09-28**; 12 tests in `tests/setup_wizard.rs`, run as its own `test.yml` step; the password hash is asserted byte-identical across the re-run. See §18.6 |
@@ -1174,7 +1196,7 @@ src/store_bundle.rs                     # NEW — StoreBundle struct + LRU cache
 src/commands/tenants.rs                 # NEW — rustical tenant create|list|… (§6.5)
 src/commands/backup.rs                  # NEW — rustical backup|restore (§8.4)
 src/commands/upgrade.rs                 # NEW — rustical upgrade [--rollback] (§8.4)
-src/commands/setup.rs                   # NEW — rustical setup wizard (§8.2)
+src/commands/setup.rs                   # NEW — rustical setup wizard (§8.2); --unattended added by item 6 (§18.7)
 crates/store/src/tenant.rs              # NEW — TenantId, Tenant, TenantStatus (§3.4)
 crates/store/src/tenant_store.rs        # NEW — TenantStore trait (§6.1)
 crates/store_sqlite/src/tenant_store.rs # NEW — SqliteTenantStore (§6.1)
@@ -1193,7 +1215,11 @@ src/app.rs            # make_app → make_app_for(config, stores, tenant); sessi
                       # per-tenant config override merge (:76-207 router construction)
 src/lib.rs            # get_data_stores tenant-aware (:80); tenant-aware construction (:192)
 src/config.rs         # [tenancy] + TrustedProxies; :325-351 Config
-src/register.rs       # :243 X-Forwarded-For now peer-checked against trusted_proxies
+src/register.rs       # :243 X-Forwarded-For now peer-checked against trusted_proxies;
+                      # seed_collections made `pub` and shared with `rustical setup` (§18.7)
+src/commands/health.rs # a failed /ping probe returns an error, not a panic (§18.7) — it is
+                      # the health check for the image, deploy.sh and install.sh, all of
+                      # which poll in a loop and were printing a fake crash each time
 crates/frontend/src/routes/password_reset.rs   # :499 same
 crates/store/src/auth/middleware.rs           # UNCHANGED by design (C3) — only a comment noting
                                               #   that a per-tenant router gives each tenant its own layer
@@ -1214,11 +1240,18 @@ docs/{install,operations}/ # NEW (§8.5)
 .github/workflows/{hygiene,build,test,docker,release}.yml   # NEW (§5.4)
 ```
 
+> `scripts/selfhost-gate.sh` is not in the plan's file map and is a recorded
+> deviation: a CI job that installs with `install.sh` and drives a real CalDAV
+> client needs something to run, and burying 69 assertions in a YAML `run:`
+> block would make them unrunnable by the next person holding a terminal.
+> §18.7 has the reasoning.
+
 ### 15.4 Modified — in the deploy repo
 
 ```
 scripts/build-rust.sh     # + --features passthrough, + hosted targets, + release artefact collection (§7.1)
 scripts/render-router-config.sh   # UNCHANGED — it remains OUR router's deploy path (§8.3)
+scripts/selfhost-gate.sh  # NEW (§8.1) — the rows 40-41 gate
 deploy.sh                  # + the self-host/appliance variants, sharing the fence + health-gate discipline
 README.md                  # + the three delivery models (§5.2.4's clone test is the acceptance criterion)
 ```
@@ -1304,13 +1337,20 @@ Burn scars from the existing plan, plus the new ones this model introduces.
 
 ## 18. Implementation split — first next action
 
-> **STATUS (2026-09-28): WAVE 0 DONE (§18.4), WORKSTREAM C ITEMS 4 + 5 DONE
-> (§18.5, §18.6).** The container is sanitized and clone-verified;
-> `rustical backup` / `restore` and the `rustical setup` wizard exist, with
-> the row-43 restore drill and the row-44 idempotence gate running in CI.
+> **STATUS (2026-09-28): WAVE 0 DONE (§18.4), WORKSTREAM C ITEMS 4 + 5 + 6
+> DONE (§18.5, §18.6, §18.7).** The container is sanitized and
+> clone-verified; `rustical backup` / `restore`, the `rustical setup` wizard
+> and both self-hosting channels exist. The native channel (row 41) is
+> **green end to end**; the Compose channel (row 40) is green for everything
+> except actually running Docker, which this host cannot do and which the CI
+> `selfhost` job is positioned to close.
 > **The two live credentials are still live on the router** and remain the
 > open risk; rotation is deliberately deferred to a scheduled window with a
 > written runbook (`router-dav/docs/operations/credential-rotation.md`).
+>
+> **Next: item 7** — `make_app` → `make_app_for` (§6.1, refactor only), gated
+> on 96/96 integration tests with **zero test edits**. The baseline is 98 and
+> has not moved through items 4, 5 and 6.
 
 ### 18.1 The single first thing to do
 
@@ -1342,8 +1382,8 @@ credential-disclosure incident, not a mess to tidy later.
 | 2 | §5.2.3-4 `.gitignore` + `.gitmodules` | — | **clone smoke test green** | **DONE** — both green |
 | 3 | §5.4 CI | 2 | all green on push | **DONE (3 of 5)** — `hygiene`/`build`/`test` written; `docker`/`release` deferred to Wave 4/5 |
 | 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) | **DONE 2026-09-28** — both commands shipped, 15-test restore drill green and wired into `test.yml`; see §18.5. `rustical upgrade` (row 42) is **not** part of this item and is **not started** |
-| 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6 |
-| 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | not started (W1) |
+| 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6. **Extended 2026-09-28 by item 6**: `--unattended` + `OMNICAL_SETUP_*`, 20 tests — see §18.7 |
+| 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped; the native path runs end-to-end on this host (`scripts/selfhost-gate.sh`, 60 checks). **Row 41 is green. Row 40 is green for everything except running Docker**, which is not installed here; see §18.7 |
 | 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **96/96, zero test edits** | not started (W3) |
 | 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | not started (W3) |
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | not started (W3) |
@@ -1687,7 +1727,245 @@ $ rustical setup
 **Next:** item 6, `compose.omnical.yml` + `packaging/native/` (§8.1), which
 depends on this one. The wizard it needs is done; what it does *not* yet have
 is a documented install story for the two channels, which is §8.5 and is still
-missing a work item.
+missing a work item. **DONE — §18.7.**
+
+---
+
+## 18.7 Work item 6 execution log — `compose.omnical.yml` + `packaging/native/` (2026-09-28)
+
+**Shipped, in the deploy repo (`~/router-dav`, branch `main`):**
+
+| File | Lines | What it is |
+|---|---|---|
+| `compose.omnical.yml` | new, 214 | the primary self-host channel: a one-shot `omnical-setup` service and an `omnical` server, two named volumes, and a commented Caddy service |
+| `packaging/native/install.sh` | new, 372 | the tarball channel: verify the artefact, install the binary and unit, run the wizard **as the service user**, start, health-gate |
+| `packaging/native/omnical.service` | new, 90 | the systemd unit, a template with five placeholders the installer substitutes |
+| `scripts/selfhost-gate.sh` | new, 470 | the gate for rows 40-41, runnable by hand and in CI |
+| `.github/workflows/build.yml` | +63 | a `selfhost` job: build the release binary, run the gate, parse the compose file, `bash -n` both scripts |
+
+**In the fork (`~/router-dav/rustical`):**
+
+| File | Change | Why |
+|---|---|---|
+| `src/commands/setup.rs` | +~380 | `--unattended` and the seven answer flags, and the rule that they are inert without it |
+| `src/register.rs` | signature + doc | `seed_collections` is now shared, not registration-private |
+| `src/commands/health.rs` | −1, +13 | a failed probe **errors** instead of panicking |
+| `src/commands/mod.rs` | +3 lines | re-export `SetupAnswers`, `run_setup_with` |
+| `tests/setup_wizard.rs` | +445 | 8 new tests (20 total) |
+| (in `setup.rs`) | +2 unit tests | the env-inertness rule, the bug in §18.7 that started it all |
+
+### The one thing §8.1 did not anticipate
+
+Row 40's method is `docker compose up` on a clean host. That needs the
+configuration to exist with nobody at the keyboard, and the self-host image is
+`FROM scratch` (`rustical/Dockerfile:44`) — one static binary, **no shell**. So
+the two obvious answers are both unavailable:
+
+- `sh -c 'printf … | rustical setup'` — no shell in the image.
+- `stdin_open: true` with a mounted answers file — keeps stdin *open*, so
+  `read_line` blocks forever instead of seeing EOF. A container that hangs
+  forever is worse than one that fails.
+
+The third option is the one that shipped: **`rustical setup --unattended`
+takes its answers from flags and from `OMNICAL_SETUP_*` environment
+variables.** No stdin, no shell, no second question list in a shell script.
+
+The properties that make it safe, each of them a decision rather than an
+omission:
+
+1. **Opt-in.** Without `--unattended` the wizard behaves exactly as item 5
+   shipped it. All 12 existing tests pass **untouched**, which is the evidence —
+   a refactor that edited a test would have been a behaviour change wearing a
+   test's clothes.
+2. **A missing answer is an error naming the variable, never a default.** This
+   is §18.6's burn scar 1 (a wizard that takes defaults when input runs dry
+   would have passed those tests and quietly created an admin with no password)
+   applied one level up. `preanswered()` is the single chokepoint and it is
+   unit-tested for exactly this.
+3. **The password is environment-only and the flag does not exist.** An
+   administrator password in `argv` is in `ps` output for every user on the
+   host. `--admin-password` is deliberately rejected, and the gate asserts it is.
+4. **The public URL may be set or kept, never cleared.** An unattended run is
+   re-run on every `docker compose up` for the lifetime of the install; a
+   variable that silently deletes a working hostname on the next restart is the
+   worst thing a provisioning path can do. Clearing it is an attended edit.
+5. **Mail is never configured unattended.** It is the one answer whose value is
+   a long-lived password destined for a config file in a volume, an `inspect`
+   output and a CI log. An unattended run will not *add* mail and will not
+   *remove* it either; `docker compose run --rm omnical-setup` runs the same
+   wizard with a terminal attached and asks only the mail questions.
+
+The variable namespace is `OMNICAL_SETUP_*` and not `RUSTICAL_*` for a reason
+worth writing down: the server's config is figment-parsed as `RUSTICAL_*` with
+`__` as the section separator (`main.rs:22`) and **every** config struct is
+`deny_unknown_fields`. A wizard answer smuggled in as `RUSTICAL_SETUP__DATA_DIR`
+would be a config *parse error* the moment the same environment reached
+`rustical serve` — which is exactly what happens in a Compose file, where the
+setup service and the server service share one environment block.
+
+### Three real bugs this item found, all by running it
+
+None was visible from reading the code, and none would have been caught by the
+unit tests that already existed. In order of how much damage they would have
+done.
+
+1. **An `OMNICAL_SETUP_*` variable silently pre-answered a question of the
+   *interactive* wizard — and everything after it shifted by one.** The answer
+   flags are `env`-backed, so clap fills them in *whether or not* `--unattended`
+   was passed. `install.sh` exported `OMNICAL_SETUP_DATA_DIR`, so question 1 was
+   pre-answered; the operator's next typed answer — a filesystem path — became
+   the listen address, because `HttpBindConfig::from_str` accepts almost any
+   string as a host. The run **reported success at every step** and wrote
+   `bind = "/var/lib/omnical"`, a server that cannot start. The only symptom was
+   the wizard's own step 2 printing the data directory where the bind address
+   should have been, which is how it was noticed.
+   **Fixed in `SetupAnswers::from_args`** — the answers are discarded unless
+   `unattended` is set, so the rule is structural rather than a call-site
+   convention — **and** `install.sh` no longer exports the variable, passing
+   `--data-dir` as a flag only in unattended mode. The lesson is worth more than
+   the fix: *"opt-in" is a claim about behaviour, and an `env`-backed flag makes
+   it false unless someone checks.*
+2. **The wizard's administrator had no collections at all.** The wizard prints
+   as its third next step *"sign in as {admin} at …, then add a client from the
+   calendar page"* — and the account it had just created had no `personal`
+   calendar, no `tasks` calendar and no addressbook, so the first thing a
+   self-hoster's client did was a **404**, on an account the installer had just
+   created for them. `register::seed_collections` was registration-private;
+   it is now `pub` and called from the wizard too, so a wizard-created
+   administrator and a self-registered one are indistinguishable to a client.
+   Asserted both in `tests/setup_wizard.rs` (which needs no release build) and
+   in the gate (which does a real `PROPFIND`/`REPORT`).
+3. **`rustical health` panicked instead of erroring.** `assert!` on the probe
+   result meant that "the server is not up yet" printed a Rust backtrace and an
+   `Aborted (core dumped)` line. That command is the health check for the Docker
+   image, for `deploy.sh`'s post-deploy gate on the router, and for
+   `install.sh`'s health gate — all of which *poll in a loop*, so all of them
+   were getting a fake crash on their first attempt. The gate had been hiding it
+   behind `2>/dev/null`; removing that was what surfaced it.
+
+The gate now asserts the **attended** path too — the default, and the one a
+self-hoster actually uses — because bug 1 lived there.
+
+### What the compose file is careful about, and why
+
+- **`RUSTICAL_DATA_STORE__SQLITE__DB_URL` is overridden explicitly.** The
+  inherited Dockerfile bakes in `/var/lib/rustical/db.sqlite3`
+  (`rustical/Dockerfile:54`), and figment merges the environment *after* the
+  config file — so the image's value would beat the wizard's. Left alone, the
+  server runs on a **second, empty database in a different directory**: no
+  administrator, an empty portal, and nothing in the logs to explain it. The
+  server also mounts the config volume `:ro`, because only the setup service
+  has any business writing it.
+- **The published port is `127.0.0.1` by default.** A DAV server with no TLS in
+  front of it is a password and a calendar in cleartext, and the likeliest
+  accident here is publishing `0.0.0.0:4000` and forgetting. One environment
+  variable changes it, and the header says why.
+- **`--data-dir` and `--db-url` are two spellings of one fact** — a YAML alias
+  cannot be part of a larger scalar, so they cannot be written as one. Rather
+  than leave that to review, the gate asserts `db-url == data-dir + /db.sqlite3`
+  and that each is used where it belongs.
+- **`${VAR:?message}` for the two required answers, `${VAR:-}` for the optional
+  one.** A missing administrator email stops the stack with a sentence
+  explaining what to put in `.env`, rather than starting a server with a
+  half-configured install.
+- **`build: ./rustical` with the inherited upstream Dockerfile.** The plan's own
+  top-level `Dockerfile` is item 15's file (Workstream B, W4) and does not exist.
+  Writing one here would have stolen it; using upstream's is honest, and it
+  needs no `SQLX_OFFLINE` because sqlx falls back to the committed `.sqlx/`
+  cache when `DATABASE_URL` is unset (`sqlx-macros-core-0.9.0/src/query/mod.rs:97-121`).
+
+### The native channel, and what row 41 really proves
+
+`install.sh` is idempotent by design rather than by hope, because a self-hoster's
+second run is an upgrade and an installer that demands a clean machine forces
+them to read the source before they can patch a server. It takes
+`--from-file` (the channel that works today) or `--base-url` — and
+**`--base-url` has no default and refuses to run without `OMNICAL_VERSION`**,
+because there is no published release yet (§18.5: `release.yml` is W5). A default
+URL pointing at nothing is a bug-report generator.
+
+`omnical.service` is a template, not a fixed file, because §9.2 builds a
+firmware rootfs from this same unit and `--prefix` has to reach `ExecStart`. Its
+hardening is deliberately conservative: no syscall filters, no seccomp profile,
+and no `MemoryDenyWriteExecute` (the TLS stack allocates executable memory, so
+that one produces a server that starts and then fails its first HTTPS
+connection). **The unit cannot be exercised by CI — the runners have no
+systemd — so its first `systemctl start` on a real host is the actual test.**
+That is said in the file, not hidden.
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| **§12 row 41 — native path, end to end** | **green.** `scripts/selfhost-gate.sh`, **69 checks**, against the release binary on this host: install → wizard → boot → `/ping` `Pong!` → `PROPFIND` 207/401/401 → the three seeded collections 207 → a welcome object downloads → `REPORT` returns objects → `PUT` 201 → `GET` returns the same `SUMMARY` → `/register` 200 with a CSRF token → a wrong invite 400 and leaks nothing → a valid invite registers → the same invite cannot be reused → the new user syncs → the installer re-runs with the password **removed** from the environment, leaving the admin, the hash, the RSVP secret and the registered user intact → **the attended path, with two `OMNICAL_SETUP_*` variables deliberately set in the environment to prove they are inert** → a missing required answer exits non-zero naming the variable |
+| **§12 row 40 — compose path** | **partial, and stated as such.** The config path, the registration and the client sync are all green on this host by the same gate. **The Docker runtime is not exercised — there is no Docker or Podman on this machine.** Everything in the two files that can rot without Docker is asserted in both directions: every `OMNICAL_SETUP_*` in the compose file is a flag `rustical setup --help` advertises, and every flag the wizard advertises is documented in the compose file |
+| §8.1's "one code-generation path" | **green by construction.** Neither file contains a `config.toml`; both run `rustical setup` with the same variable names, and the gate fails the build if the two sets ever diverge |
+| Workspace suite | `cargo test --workspace --all-features` green, **509 tests** (490 after item 5). `run_integration_tests` **98/98** — the §6.1 refactor baseline is untouched, as it must be |
+| fmt / clippy | `cargo fmt --all` clean; **34** clippy warnings, exactly the pre-existing baseline (`git stash` + re-count), none in the new code |
+| aarch64-musl router build | **green** — `scripts/build-rust.sh aarch64-unknown-linux-musl`, static, **5.00 MiB after UPX of the 35 MiB budget** (5,237,876 bytes, **14.3% of budget, +4,000 bytes / +0.08%** against the pre-item-6 build). `--unattended` adds **no dependency at all**, so the no-C-dependency musl recipe is untouched, and the `with_context` in `rustical health` was already in the dependency set. The router's overlay budget is the one thing that could have broken, and it did not move |
+| `bash -n` | clean on `install.sh` and `selfhost-gate.sh`; the compose file parses and its anchors resolve |
+
+### Burn scars from this item
+
+1. **`"$VAR"literal"` is not a concatenation.** In the gate,
+   `"$PERSONAL"selfhost-gate.ics"` reads like one string and is not: the trailing
+   quote **opens** a new quoted string, and bash reports
+   `unexpected EOF while looking for matching '"'` — pointing at a line 20 lines
+   *after* the cause, in a completely different section. It cost more time than
+   every other mistake here combined. Braces everywhere a variable is glued to
+   something, and a `bash -n` step in CI.
+2. **`anyhow`'s `{}` shows only the outermost error.** The first version of the
+   "that answer is not usable" message used `.with_context()`, which put the
+   *reason* one level down, where a `{}` — i.e. anything printing the error in a
+   log — never sees it. The reason is now in the message itself. The rule is not
+   "use context", it is "what does a log reader see".
+3. **A YAML alias cannot be part of a larger scalar.** `*data-dir/db.sqlite3` is
+   a scanner error, so the two paths that must agree cannot be one anchor. This
+   is the kind of thing that gets "fixed" by dropping the anchor and hardcoding
+   a path in two places; the gate asserts the relationship instead.
+4. **`rustical/Dockerfile`'s `HEALTHCHECK` shells out.** `HEALTHCHECK CMD
+   /usr/local/bin/rustical health` is exec-form, so it works — but the *inherited*
+   assumption that a health check can be a shell line does not, and a reader
+   copying it into a `command:` would get a container that cannot start. Stated
+   in the compose file.
+5. **The app token the CLI prints is `<id>_<secret>`, not 64 characters.** 69.
+   Cosmetic, but it made the gate's first "64-char token" assertion wrong, and a
+   wrong assertion in a gate is worse than no assertion.
+
+### Deliberately not done
+
+- **No Docker run.** No Docker or Podman on this host, and inventing a
+  container test I could not execute would have been a worse lie than a
+  recorded partial. The CI `selfhost` job runs the same gate on an ubuntu
+  runner, which does have Docker available if the compose path is extended there
+  — extending it is a one-line change to the workflow, deliberately not made
+  blind.
+- **No `docs/install/{docker,native,appliance}.md`.** That is §8.5 (C5), which
+  still has no work item in the §18.2 table — the third time it has been noted
+  (§18.5, §18.6, now here). The two files carry their own install story in their
+  headers, and `install.sh --help` is the reference, but that is an interim
+  answer and the §8.5 gap is real.
+- **No `rustical upgrade` (row 42).** Unchanged from §18.5: it needs the §10
+  release-publishing process first, and still has no work item of its own.
+- **No TLS.** `Config` has no TLS section because TLS is somebody else's job in
+  every channel. The compose file ships a commented Caddy service and says why
+  it is commented; `install.sh` prints the same advice.
+- **The version/support policy (Q1, §8.5)** is unanswered and still the thing
+  that turns self-distribution into an open-ended obligation.
+- **`gitleaks` has not been run over the new files.** The two hygiene secrets
+  jobs are unproven until a push (the §18.4 caveat), and `selfhost-gate.sh` and
+  `install.sh` both contain a literal test password and a `RSVP_SECRET`
+  reference. Reading the default gitleaks `generic-api-key` rule, neither should
+  match — its keyword list is `access|auth|api|jwt|key|secret|token|webhook` and
+  its value pattern excludes spaces — but "should" is not a gate. **Run
+  `gitleaks detect` locally before the first public push**, which §10 requires
+  anyway.
+
+**Next:** item 7, `make_app` → `make_app_for` (§6.1, refactor only), which is
+the gate the whole of Workstream A hangs off: **96/96 integration tests with
+zero test edits.** The baseline is 98 and has not moved through items 4, 5 and 6.
+Then item 8 (HostDispatch + control plane), and then **item 9 — the
+export/rsvp/register tenant scoping — before any hosted traffic, always.**
 
 ---
 
