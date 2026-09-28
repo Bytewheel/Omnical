@@ -1411,7 +1411,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6. **Extended 2026-09-28 by item 6**: `--unattended` + `OMNICAL_SETUP_*`, 20 tests — see §18.7 |
 | 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped and `scripts/selfhost-gate.sh` (69 checks) runs the install, the wizard, the server, a real CalDAV round trip and a registration end to end on this host. **Both rows green.** Executing a container runtime is a **stretch goal** (user decision, 2026-09-28), not a gate — the self-host channel must stand on its own and `install.sh` reaches the same end state without one. See §18.7 |
 | 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **98/98, zero test edits** | **DONE 2026-09-28** — body moved verbatim (222 lines, empty `diff`), zero test files touched, digest canary unchanged, 509 workspace tests, clippy 34→32, aarch64 +0.04%, and 9/9 CI jobs green. The `tenant` parameter was then delivered separately, without touching the refactor claim — see §18.11 and §18.12 |
-| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **partly done 2026-09-28** — §6.1's `tenant` type + parameter are in (§18.12); `HostDispatch`, `TenantStore` and the migration are **not started (W3)** |
+| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **2 of 4 parts done 2026-09-28** — the `tenant` type + `make_app_for` parameter (§18.12), the control plane + `TenantStore` + migration (§18.13), and `StoreBundle` + the LRU (§18.14). **`HostDispatch` itself and the `[tenancy]` config are not started**, so nothing resolves a `Host` header and rows 24-25 are not yet runnable |
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | not started (W3) |
 | 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | not started (W3) |
 | 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | not started (W3) |
@@ -2573,6 +2573,127 @@ the next reader is not "this was too slow" — it is reading a `Tenant` threaded
 through `app.rs` and concluding that a check is happening. It is not.
 **§6.4 rows 26-28 are what enforce scoping, and item 9 remains
 safety-critical and not started.**
+
+---
+
+## 18.13 Item 8, part 1 — the control plane (2026-09-28)
+
+**Shipped:** `crates/store/src/tenant_store.rs` (new), `crates/store_sqlite/src/tenant_store.rs`
+(new), `crates/store_sqlite/control_migrations/` (new), 21 tests. Server `ce23583c`,
+packaging `12c5785`, **9/9 CI green**. Workspace 521 → 542, aarch64-musl **−1,984 bytes**.
+
+**This cannot serve a request and does not try to.** It is the layer `HostDispatch`
+will read from. Two more parts follow (the bundle cache, then dispatch itself).
+
+### The separate migration directory is the point, and there is a test for it
+
+`control_migrations/` rather than `migrations/`. Pointing
+`create_control_plane_pool` at `./migrations` would create thirteen tables of
+calendar, addressbook and credential data inside the one database whose entire
+property is that it cannot hold any — so a per-tenant backup could take out
+every other tenant. `the_control_plane_holds_no_calendar_data` asserts the
+control plane contains exactly `tenants`, `tenant_hosts` and sqlx's ledger, and
+names six tables that must never appear. The mutation was applied to the code
+and the test caught it.
+
+### Row 29 is a SQL filter, not a code path
+
+Every getter filters `status = 'active'`, which is the whole of §3.3 step 4:
+
+```
+Host -> control plane (always) -> TenantId -> cache -> Arc<Router>
+```
+
+A suspended tenant never resolves, so it never reaches the cache — there is no
+cached router to invalidate and no window in which it is still served. The
+mutation (removing the filter from the host lookup) was applied and three tests
+failed, including the one named for the row.
+
+**A suspended tenant keeps its hostname claim.** Freeing it on suspension would
+let dispatch fall through to a slug match or `default_tenant` and serve *somebody*
+under a suspended tenant's URL — the opposite of the intent. That is the subtle
+half of the row and it has its own test.
+
+### The sqlx dynamic-SQL lint was right, and it shaped a signature
+
+sqlx 0.9 refuses to run a query string it cannot prove constant. `find_active`
+takes `&'static str`, and that is the security property rather than an accident
+of style: `&String` and `&format!(..)` both fail to *compile*, so no caller can
+interpolate anything. The alternative — taking `&str` and wrapping the result in
+`AssertSqlSafe` — would have left a one-word edit away from an injected slug on
+the dispatch path.
+
+### A test caught a contract violation
+
+`set_tenant_hosts` on an unknown tenant returned a raw SQL foreign-key error
+instead of the documented `NotFound`, because the host insert is checked before
+the tenant exists. sqlite's FK enforcement is what surfaced it — the test wrote
+`expect_err` expecting `NotFound` and got a constraint violation, which is the
+test having done its job.
+
+### `Tenant` grew three fields, and that is the honest cost
+
+`plan`, `suspended_at`, `created_at`. This broke `tests/tenant_app.rs` from
+§18.12 — a struct that partly mirrors one row costs a call-site edit whenever
+the row changes. `quota_*` deliberately did **not** join them: `NULL` means
+*unlimited*, not zero, and folding them in would have made `Tenant` a faithful
+image of a table row, which is the shape §3.2 argues against. They are
+`TenantQuota`, with their own getter and setter.
+
+## 18.14 Item 8, part 2 — the store bundle and its cache (2026-09-28)
+
+**Shipped:** `src/store_bundle.rs` (new, 468 lines), `src/lib.rs` (+56/−19),
+`lru` 0.18. Server `2b0f2692`, packaging `1b5537b`, **9/9 CI green**. Workspace
+542 → 553, clippy 32 → 32, aarch64-musl **+908 bytes**.
+
+### The leak that the visible metric could not see
+
+`LruCache::put` calls `capturing_put(_, _, false)`: it **discards the evicted
+entry** and returns `None` for a capacity eviction. It returns a value only when
+the *key* already existed. So the obvious implementation of
+`StoreBundleCache::insert` honours the memory **count** bound — the thing §7.2's
+gate and every test in the file measures — while leaking one SQLite pool per
+eviction.
+
+The count is the metric, so the leak is invisible to it. It took a test that
+asserts the *eviction is reported*, not merely that the count stayed within
+bounds. `insert` now uses `push` (the capturing variant) and the doc comment
+says why, because the crate's API invites the bug in precisely the shape that
+review and gate both miss. The mutation was applied to confirm the test bites.
+
+### The struct is not `Clone`, on purpose
+
+`mpsc::Receiver` is not `Clone` and cannot be: one tenant has one DAV-Push
+channel and one notifier loop. `update_recv: Option<Receiver<..>>` plus
+`take_update_recv()` puts that one-shot fact in the type instead of in a
+comment. The second call returns `Err` rather than panicking — "already
+consumed" is a state a running server should survive by serving without
+DAV-Push, not by dying.
+
+### `get_data_stores` survives as a shim, with a warning on it
+
+Same move as item 7's `make_app` → `make_app_for`: 5 CLI call sites, none of
+which should have moved in this commit. The 12-tuple is kept *with a comment
+saying not to use it*, because its element order is checked by nothing and
+`subscription_store` / `invite_store` are adjacent `Arc<dyn ..>` over the same
+pool — a reorder compiles silently. The construction body is untouched; the
+diff removes only the old signature and the old return expression.
+
+### Two deferrals, both deliberate
+
+1. **`[tenancy] trusted_proxies` (C5, §7.3.4) is not added in this commit.**
+   §3.6 lists it, but it is the `X-Forwarded-For` trust list — a *security*
+   knob. Shipping it in a commit that does not honour the header would mean an
+   operator sets `trusted_proxies` and gets a rate-limit bypass while the config
+   claims otherwise. A knob that is accepted and ignored is worse than a missing
+   one, so it arrives with §7.3.4.
+2. **`[tenancy] sessions` (C4, §3.7) is not added.** The `session-redis` cargo
+   feature does not exist in this tree, so `store = "redis"` would be a literal
+   that parses and does nothing. Same reasoning; it arrives with the adapter
+   crate.
+
+Both are recorded here rather than quietly taken, which is the §18.11
+convention.
 
 ---
 
