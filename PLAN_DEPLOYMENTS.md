@@ -1411,7 +1411,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 5 | §8.2 `rustical setup` wizard | 4 | 6 tests; idempotent re-run | **DONE 2026-09-28** — 12 tests (gate asks 6), row-44 idempotence green, and the wizard's config boots the production binary; see §18.6. **Extended 2026-09-28 by item 6**: `--unattended` + `OMNICAL_SETUP_*`, 20 tests — see §18.7 |
 | 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped and `scripts/selfhost-gate.sh` (69 checks) runs the install, the wizard, the server, a real CalDAV round trip and a registration end to end on this host. **Both rows green.** Executing a container runtime is a **stretch goal** (user decision, 2026-09-28), not a gate — the self-host channel must stand on its own and `install.sh` reaches the same end state without one. See §18.7 |
 | 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **98/98, zero test edits** | **DONE 2026-09-28** — body moved verbatim (222 lines, empty `diff`), zero test files touched, digest canary unchanged, 509 workspace tests, clippy 34→32, aarch64 +0.04%, and 9/9 CI jobs green. The `tenant` parameter was then delivered separately, without touching the refactor claim — see §18.11 and §18.12 |
-| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **3 of 4 parts done 2026-09-28** — the `tenant` type + `make_app_for` parameter (§18.12), the control plane + `TenantStore` + migration (§18.13), `StoreBundle` + the LRU (§18.14), and **`HostDispatch` + `[tenancy]` config, which does now resolve a `Host` header** (§18.15). Row 29 is proven end to end through a real server. **Still absent: the per-tenant `config_json` merge (item 10) and `rustical tenant` (item 11)**; row 24's auth half is item 9 |
+| 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **DONE 2026-09-29** — the `tenant` type + `make_app_for` parameter (§18.12), the control plane + `TenantStore` + migration (§18.13), `StoreBundle` + the LRU (§18.14), `HostDispatch` + `[tenancy]` config (§18.15), and **the gate itself: rows 24, 25 and 29 through a real server** (§18.16). `Host` resolution works, two tenants get two databases and two routers, and cross-tenant auth and resource access both fail as the rows require |
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | not started (W3) |
 | 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | not started (W3) |
 | 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | not started (W3) |
@@ -2794,6 +2794,76 @@ neither has code in this tree, so both would parse and do nothing, and
 built and cached, the control plane is suspended, and the next request is 404
 while the other tenant is unaffected. **Row 24 is not** — its auth half needs
 two tenants holding the same principal and is item 9.
+
+---
+
+## 18.16 Item 8's gate — rows 24 and 25, cross-tenant isolation (2026-09-29)
+
+**Shipped:** `tests/cross_tenant.rs` (new, 595 lines). Server `61b37aba`,
+packaging `f63a7b0`, **9/9 CI green**. Workspace 582 → 586, aarch64-musl
+**unchanged** (tests only).
+
+**Item 8 is done.** Its gate was rows 24-25 and 29; 29 was proven in §18.15 and
+24-25 here.
+
+### The gate, and why it is built from the CLI
+
+Two tenants, one process, one port, two databases. The fixture uses the
+product's own `rustical principals create`, `principals app-token create`, and a
+real `MKCALENDAR` over HTTP — because a fixture that inserts rows directly proves
+the rows are *readable* without proving the product can *produce* them, and
+drifts from production without anyone noticing.
+
+- **Row 24 → 401.** Acme's app token against Globex's host, and the reverse. A
+  one-directional leak is still a leak, so both directions. Each test first
+  asserts the token works on its *own* host: a test that only asserts the
+  negative passes just as happily against a broken token.
+- **Row 25 → 404.** A calendar created in Acme, read from Globex's host with
+  **Globex's own valid app token**. That is the strong form — the credential is
+  genuine, so a 404 can only mean the calendar is not in the database the request
+  reached. A 401 would prove nothing about resources; it would only repeat row 24.
+
+The same principal id and the same password exist in both tenants, because a
+per-tenant-different password would make this pass for a reason that has nothing
+to do with tenancy. This is the case a shared `principals` table with a
+`tenant_id` column would be most likely to get wrong.
+
+### A fact about the product that the test discovered
+
+**This fork has no password path for HTTP Basic auth.** `AuthenticationLayer`
+calls `validate_app_token` and nothing else; `validate_password` exists on the
+provider but is only reached by the portal's form login, which establishes a
+session. A `Principal`'s `password` is therefore not an HTTP credential.
+
+A test written as "a password from tenant A must not authenticate on tenant B"
+fails in tenant **A**, with its own password. That is the server telling us
+something true, not a broken test, and §12's row 24 wording — "tenant A's
+principal **+ app token**" — is consistent with it. The test now asserts what is
+actually available: both tenants hold an independent principal row, the password
+verifies in each against its own store, and **the two stored hashes differ**
+(different salts). Equal hashes would mean one row copied, which is exactly the
+shape a shared table produces.
+
+### A consequence for item 11
+
+A tenant's store is created **lazily, on the first request that resolves to it**.
+That is fine for serving and useless for administering: there is no way to point
+a config at a store path that does not exist yet, so `rustical principals add`
+against a new tenant fails on the missing directory. **`rustical tenant create`
+is therefore obliged to materialise the store**, and the gate materialises it by
+hand until then. Recorded in the test so the obligation survives.
+
+### The mutation that was NOT caught, and why that matters more
+
+Both rows were verified to fail when `base_domain` resolution is mutated to
+return one tenant for every host — the actual bug the rows exist to catch.
+
+But the **first** mutation I tried — forcing the bare-slug rule to one tenant —
+was **not** caught, because these tests resolve through `base_domain` and never
+reach that rule. A gate that has only ever been mutated along the path it
+already exercises proves much less than it appears to: it can be green while an
+entire resolution rule is broken. Every mutation applied from here on has to
+target the branch the test actually takes, or be recorded as untested.
 
 ---
 
