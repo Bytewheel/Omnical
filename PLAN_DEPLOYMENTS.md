@@ -617,10 +617,12 @@ refuses.*
 
 ### 6.6 A6 — admin surface
 
-**Status: design resolved 2026-09-29, not started.** §18.20 records how it was
-resolved and what changed. This section is the spec an implementer reads; it is
-written to be unambiguous, and the traps are named rather than left to be
-discovered.
+**Status: phases 1-2 implemented and green 2026-09-29** (`a5ad7aa4` audit,
+`3838c716` credentials and the startup refusals). **Phase 3, the router and the
+panel, is not started**, so nothing serves a request on `admin_host` yet and
+rows 32 and 32a-32e are open. §18.20 records how the design was resolved and
+what changed. This section is the spec an implementer reads; it is written to
+be unambiguous, and the traps are named rather than left to be discovered.
 
 #### The shape, in one paragraph
 
@@ -807,16 +809,16 @@ admin hash to the same class.
 
 | Row | Test | Expected |
 |---|---|---|
-| 32 | `/frontend/admin/tenants` as a normal principal | **404**, not 403 |
+| 32 | `/frontend/admin/tenants` as a normal principal | **404**, not 403 | *needs phase 3* |
 | 32a | the same path on a **tenant** host | 404, and no login form served |
 | 32b | an allowlisted **and** authenticated admin on the admin host | 200 |
-| 32c | a name with a valid hash but **not** in `platform_admins` | 404 (config is authoritative) |
-| 32d | `admin_host` unset | the panel does not exist, on any host |
-| 32e | a tenant claiming `admin_host` | **refuses to start** |
+| 32c | a name with a valid hash but **not** in `platform_admins` | 404 (config is authoritative) | **store half DONE 2026-09-29** — `allowlist_gaps` reports the row as `NOT ALLOWLISTED` and `tenant admin add` refuses to create one. The 404 itself needs phase 3's login form |
+| 32d | `admin_host` unset | the panel does not exist, on any host | *config half done: every other key is inert and nothing matches; the 404 needs phase 3* |
+| 32e | a tenant claiming `admin_host` | **refuses to start** | **DONE 2026-09-29** — both routes (explicit row and derivable), and by ownership rather than resolution so a suspended tenant still holds its hostname |
 | 33 | suspend via the panel, read the audit table | one row: actor + tenant + ts |
 | 33a | suspend via the **CLI** with no actor available | **refused** |
 | 33b | mutate with the audit table unwritable | **the mutation does not happen** |
-| — | `admin_host` set without the single-instance acknowledgement | **refuses to start** |
+| — | `admin_host` set without the single-instance acknowledgement | **refuses to start** | **DONE 2026-09-29** — an assertion, not a check; a test asserts the key is the *whole* check so a future heuristic has to be argued for |
 
 #### 10. What this item is *not*
 
@@ -1651,7 +1653,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 14 | §9.4 appliance control panel + diagnostics | 12 | rows 49-50 | not started (W2) |
 | 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` | not started (W4) |
 | 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | not started (W4) |
-| 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **PHASE 1/3 DONE 2026-09-29** (`a5ad7aa4`) — the audit trail and the breaking `TenantStore` signature change, landed and green. Every mutating method takes `&Actor` and writes its row **in the caller's `BEGIN IMMEDIATE` transaction**; `audit()` takes `&mut Transaction`, so the borrow *is* the guarantee and a caller cannot bypass it with another tool. Fail-closed by propagation, not by a separate mechanism. The CLI's private `config_json` write is gone — it is `TenantStore::set_config_json` now, so there is no unaudited path left. Row 33 **and** row 33b (an audit insert that fails takes the mutation with it) both pass; two mutations of the store code are caught. **Phase 2** (admin credential store, `platform_admins` — the table and its lockout columns now exist but nothing writes to them, the `platform_admins` config allowlist, `admin_host` + its k=1 acknowledgement, `tenant create --host` collision check) and **phase 3** (the pre-dispatch router and the panel; row 32 needs phase 3) are not started. The k=1 ceiling is unchanged and unfixable in code: §7.2's `N..k` needs a shared control plane and shared sessions, so the acknowledgement is the operator's |
+| 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **PHASES 1-2/3 DONE 2026-09-29** (`a5ad7aa4`, `3838c716`) — the audit trail, and the credential store behind the three startup refusals. Config is authoritative: an admin authenticates only if their name is in `[tenancy] platform_admins` **and** has a credential row, and `tenant admin add` refuses an unlisted name, because a row the config will never honour is a credential that looks live and is not. Refusals, all at startup: `admin_host` without `admin_single_instance_acknowledged`; **a tenant claiming `admin_host`** (explicit row *or* derivable as `{slug}.{base_domain}`, read by ownership so a suspended tenant still holds it); `admin_host` with no `platform_admins`. Lockout is columns and one `UPDATE`, so it survives a restart and cannot be shortened by a flood of failures. 25 tests, 10 implementation mutations all caught. **Phase 3 — the pre-dispatch router and the panel, with login, rate limiting and CSRF — is not started, so row 32 and 32a-32e are still open.** The k=1 ceiling is unchanged and unfixable in code: §7.2's `N..k` needs a shared control plane and shared sessions, so the acknowledgement is the operator's |
 | 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant | not started (W5) |
 | 19 | §10 source offer page + CI check | 15 | row 39 | not started (W5) |
 | 20 | §7.5 quotas, §7.2 load measurement | 17 | row 37; the §7.2 number is recorded | not started (W6) |
