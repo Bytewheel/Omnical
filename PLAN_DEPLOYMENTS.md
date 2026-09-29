@@ -756,8 +756,12 @@ simply no code here that could violate it.
 Quota is **limits only**. Live usage means counting rows in a tenant's store,
 which would be the first thing in the whole design to read across the boundary.
 A `rustical tenant usage` job writing a snapshot to the control plane is
-**deferred to a follow-up item with its own gate**; when it lands it writes to
-the control plane and the panel reads it, so the panel itself never changes.
+**deferred to item 20(a), with its own gate (rows 37a-37b)**; when it lands it
+writes to the control plane and the panel reads it, so the panel itself never
+changes. The test that pins this is the point of rows 37a-37b: it makes the
+tenant store *unreadable* and asserts the panel's pages still render, which is
+what stops the boundary being crossed later by someone who found it a convenient
+shortcut.
 
 #### 7. Audit: same transaction, fail closed, both paths
 
@@ -995,7 +999,10 @@ within 2× the single-tenant baseline, RSS within the pod limit.*
    identity is enabled.
 5. **Quotas and soft limits** — `tenants.quota_*` (schema in §3.4). Enforcement
    in the write path is **wave 3**; *displaying* usage in the admin panel is
-   wave 1 and is enough to start.
+   wave 1 and is enough to start. Both are **item 20** — display via the
+   `rustical tenant usage` snapshot job (20a, rows 37a-37b), enforcement after
+   it (20b). The order matters: a panel showing usage needs the snapshot to
+   exist, and a limit that is enforced needs the number it is enforcing against.
 
 ### 7.6 B6 — hosted gates
 
@@ -1399,7 +1406,9 @@ Run in order; each row is a gate.
 | 34 | `X-Forwarded-For` is not forgeable | rate-limit endpoint with a forged `XFF` from an untrusted peer | still rate-limited (per real peer IP) | **DONE 2026-09-29** — both directions over a real socket: a forged header from an unlisted peer does not move the bucket, *and* a listed proxy's header is believed, so two clients behind one proxy get separate buckets. The second half is the one that stops the control being "ignore everything" |
 | 35 | Apple UA routing survives the proxy | `/.well-known/caldav` with UA `remindd` **through the LB** | 301 → `/caldav-compat` | **DONE 2026-09-29, and the expected value was wrong**: the redirect is **308**, not 301 (`Redirect::permanent`, both arms). The code was not changed — a redirect status is a product decision — so the row records 308 and says why |
 | 36 | WebDAV-Push upgrade survives the LB | a DAVx5 push subscription through the edge | the socket is open (verify explicitly, not by "sync works") | **NOT TESTABLE, NOT STARTED** — this fork has no push-notification socket: `dav_push` routes one DELETE, there is no WebSocket dependency, and the per-tenant update receiver is dropped. Implementing RFC 8525 is its own work item. A test asserts the *absence* so the day one is added this row is revisited rather than continuing to look covered |
-| 37 | 200 tenants | load test, 50 concurrent clients | p99 within 2× single-tenant; RSS within the limit; record the number in §7.2 | **not started** — item 20, W6 |
+| 37 | 200 tenants | load test, 50 concurrent clients | p99 within 2× single-tenant; RSS within the limit; record the number in §7.2 | **not started** — item 20(c), W6 |
+| 37a | The usage job reads tenant stores; the **panel** does not | `tenant usage` for tenant A, then load the panel's tenant pages | the job reads A's store; the panel serves the *snapshot* with A's store unreadable, and a missing snapshot renders as "not measured" rather than 0 | **not started** — item 20(a), W6 |
+| 37b | A usage snapshot is attributable and bounded | one job run, then read `control_usage` | one row per tenant, written by a named actor, and the job reads **only** the tenant it was asked about — no table sweep across tenants | **not started** — item 20(a), W6 |
 | 38 | External reachability | `check-host.net` from many nodes (the §4.3 pattern) | TLS validates with **no `-k`**; `/ping` answers | **not started, and no work item owns it.** It needs a deployed public host, so it is coupled to item 15 — a test that requires something only a production deployment can provide cannot be gated in CI |
 | 39 | Source offer | `curl -sI /frontend/source`; download the tarball; `git rev-parse HEAD` in it | matches the running build; the tarball builds in CI | **not started** — item 19, W5 |
 | **Workstream C** ||||
@@ -1683,7 +1692,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **DONE 2026-09-29** (`a5ad7aa4` audit, `3838c716` credentials and the startup refusals, `6374836c` the panel) — all three phases. A control-plane router mounted **ahead of** `HostDispatch` on exactly one `admin_host`, with its own session store and a **distinct cookie name**; it answers a panel request and never forwards down, so there is no path from an admin session to a tenant's data. Config is authoritative throughout: an admin authenticates only if their name is in `platform_admins` **and** has a credential row. Three startup refusals, including a tenant claiming `admin_host` (explicit row *or* derivable, read by ownership so a suspended tenant still holds it). Metadata only, no delete, no usage, no impersonation. Rows 32, 32a-32d and 33 green. **One thing is deliberately not testable and the record says so:** the request-path `admin_host` guard is redundant with the construction guard, so mutating either alone changes nothing — both must go, and `has_admin_panel` is what makes that assertable. The k=1 ceiling is unchanged and unfixable in code: §7.2's `N..k` needs a shared control plane and shared sessions, so the acknowledgement is the operator's |
 | 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant | not started (W5) |
 | 19 | §10 source offer page + CI check | 15 | row 39 | not started (W5) |
-| 20 | §7.5 quotas, §7.2 load measurement | 17 | row 37; the §7.2 number is recorded | not started (W6) |
+| 20 | §7.5 quotas + usage snapshots, §7.2 load measurement | 17 | row 37; **rows 37a-37b**; the §7.2 number is recorded | **not started (W6), and it now owns the `rustical tenant usage` job** — which §6.6.6 promised would be "a follow-up item with its own gate" and never named. Three parts, in this order. **(a) `rustical tenant usage`**, writing a usage snapshot per tenant into the control plane. This is the **first thing in the whole design to read across the tenant boundary**: §6.6.6's panel never opens a tenant's database, and this job is where that boundary is deliberately crossed, so the property to preserve is that **the panel does not change** — it reads the snapshot, never the store. Rows 37a-37b. **(b) quota *enforcement*** in the write path, which §7.5 calls wave 3 and is the only part of quotas with real blast radius: it is the first change that makes a write *fail* because of a customer's plan, and the error has to be the customer's own limit and not a 500. **(c) the §7.2 load number** (row 37), which needs (a) to be meaningful — p99 against 200 tenants says nothing about per-tenant caches you have not measured. |
 | 21 | `rustical upgrade --rollback` | 4, 18 | row 42 | **CREATED 2026-09-29, not started** — the item that had **no owner**: §12 row 42 (upgrade N→N+1) said so in its own status cell, and §14's `.down.sql` audit was a mitigation with nothing behind it. Both now live here. The design question is settled by §18.21 (the schema rollback works; the data loss and the UID rewrite do not go away), so the item is *decidable* rather than open-ended. `backup`/`restore` already shipped (item 4); what is missing is the binary swap, and `rustical restore` is the only lossless option it has to fall back to |
 
 **Items 1-3 before 4-20. Item 9 before any hosted traffic, always.**
@@ -3472,9 +3481,12 @@ something plausible rather than something asked.
 
 ### Deferred, and where
 
-- `rustical tenant usage` — the snapshot job. Own item, own gate (§6.6.6). **Not
-  started, and no item owns it yet**; the panel displays quota *limits* only, so
-  the deferral has no visible cost today.
+- `rustical tenant usage` — the snapshot job. **Now owned by item 20(a)**, with
+  rows 37a-37b as the gate §6.6.6 asked for. It was deferred here for three
+  phases saying only "own item, own gate", which is a promise with no owner
+  behind it; §6.6.6 said the panel displays quota *limits* only, so the deferral
+  had no visible cost — and would have become the first thing anyone asked for
+  the moment quotas were enforced, with nothing designed for it.
 - **`trusted_proxies` — no longer deferred.** Closed 2026-09-29 by item 16
   (`c26a3947`): honoured only from a listed peer, fail-closed, gated in both
   directions. The panel inherited the exposure through the same `HostDispatch` and
