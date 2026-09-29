@@ -919,18 +919,44 @@ within 2× the single-tenant baseline, RSS within the pod limit.*
 1. **Terminate TLS at the edge; run HTTP/1.1 to the app.** `dav-tls` is
    ALPN-`http/1.1`-only (C15) and is not in this path at all. Never put
    `dav-tls` in front of a hosted instance.
-2. **WebDAV-Push WebSockets must pass through.** `[dav_push] enabled` is
-   `true` by default (`config.rs`, `DavPushConfig::default`). If the LB strips
-   `Upgrade`, WebDAV-Push silently degrades to polling — verify explicitly
-   (a client that still syncs is not evidence the socket works).
-3. **`.well-known` must not be rewritten.** `/.well-known/caldav` answers with
-   a `301` to `/caldav`, chosen by `User-Agent` sniffing
-   (`src/app.rs:99-113`, deliberately special-cased for Apple
-   `remindd`). A proxy that strips or rewrites UA will send every Apple client
-   down the wrong path — this is a **known upstream landmine**.
-4. **`trusted_proxies` is mandatory.** `X-Forwarded-For` is trusted
-   unconditionally today (C5). Configure it, and add the peer check in code.
-   *This is a security gate, not a nicety.*
+2. **WebDAV-Push WebSockets must pass through — but there is no socket in this
+   fork, so this requirement is currently vacuous and row 36 cannot be tested.**
+   `[dav_push] enabled` is `true` by default (`config.rs`,
+   `DavPushConfig::default`), which is what made this look like a live concern.
+   It is not: `crates/dav_push/src/endpoints.rs` routes exactly one path
+   (`DELETE /push_subscription/{id}`, the unsubscribe call), there is **no
+   WebSocket dependency anywhere in the workspace**, and `src/tenancy.rs`
+   deliberately drops the per-tenant update receiver
+   (`let _ = bundle.take_update_recv();`) rather than draining it. There is
+   nothing for an LB to strip.
+
+   **So this is a work item that does not exist yet, not an edge
+   configuration task.** Implementing RFC 8525 push notification is a feature
+   with its own gate; until then row 36 asserts the *absence*
+   (`there_is_no_webdav_push_socket_to_test`) so the day someone adds a socket
+   the row is revisited rather than continuing to look covered. Recorded
+   2026-09-29 while implementing item 16.
+3. **`.well-known` must not be rewritten.** `/.well-known/caldav` redirects,
+   chosen by `User-Agent` sniffing (`src/app.rs`, deliberately special-cased for
+   Apple `remindd` / `accountsd` / `dataaccessd`). A proxy that strips or
+   rewrites UA breaks it — a **known upstream landmine**.
+
+   Two corrections, found by testing it through a real proxy (2026-09-29):
+   the redirect is **308** (`Redirect::permanent`, both arms), not the 301 this
+   section recorded; and a proxy that *strips* `User-Agent` does not send Apple
+   clients down the wrong path, it gets them a **400** — the handler takes a
+   *required* `TypedHeader<UserAgent>`, so a missing header is rejected by the
+   extractor before the sniff runs. The requirement is unchanged; the mechanism
+   was described wrong. Gated in `tests/edge_proxy.rs`, both directions.
+4. **`trusted_proxies` is now implemented and mandatory.** `X-Forwarded-For`
+   was trusted unconditionally (C5); it is honoured **only** when the immediate
+   peer is listed in `[tenancy] trusted_proxies`, and then only up to the
+   rightmost hop that is not itself one of ours. The default is fail-closed —
+   an empty list means no peer's header is believed — because the alternative
+   default *is* the vulnerability. The peer is plumbed to handlers
+   (`into_make_service_with_connect_info`, TCP only; a Unix socket has no peer
+   address) and a malformed entry is a startup refusal. Gate: row 34, both
+   directions, over a real socket. Landed 2026-09-29, `c26a3947`.
 5. **`payload_limit_mb = 32`** must be at least as large at the LB as the app's
    (the router config sets 32, `router/etc/rustical/config.toml:11`).
 6. **Long timeouts.** A `REPORT` calendar-query on a large calendar is slow;
@@ -1370,9 +1396,9 @@ Run in order; each row is a gate.
 | 32 | Non-admin cannot see the admin panel | `/frontend/admin/tenants` as a normal principal | **404** (not 403) | *(item 17 phase 3 — the panel does not exist yet; the audit half, row 33, is done)* |
 | 33 | Admin action is audited | suspend a tenant, read the audit table | one row, actor + tenant + ts | **DONE 2026-09-29** — plus 33a (no actor ⇒ refused, not logged as "nobody") and 33b (a failed audit write rolls the mutation back). No UPDATE/DELETE path for the table exists in the fork, and no `ON DELETE CASCADE` from `tenants`, so a row outlives the tenant it describes |
 | **Workstream B** ||||
-| 34 | `X-Forwarded-For` is not forgeable | rate-limit endpoint with a forged `XFF` from an untrusted peer | still rate-limited (per real peer IP) |
-| 35 | Apple UA routing survives the proxy | `/.well-known/caldav` with UA `remindd` **through the LB** | 301 → `/caldav-compat` |
-| 36 | WebDAV-Push upgrade survives the LB | a DAVx5 push subscription through the edge | the socket is open (verify explicitly, not by "sync works") |
+| 34 | `X-Forwarded-For` is not forgeable | rate-limit endpoint with a forged `XFF` from an untrusted peer | still rate-limited (per real peer IP) | **DONE 2026-09-29** — both directions over a real socket: a forged header from an unlisted peer does not move the bucket, *and* a listed proxy's header is believed, so two clients behind one proxy get separate buckets. The second half is the one that stops the control being "ignore everything" |
+| 35 | Apple UA routing survives the proxy | `/.well-known/caldav` with UA `remindd` **through the LB** | 301 → `/caldav-compat` | **DONE 2026-09-29, and the expected value was wrong**: the redirect is **308**, not 301 (`Redirect::permanent`, both arms). The code was not changed — a redirect status is a product decision — so the row records 308 and says why |
+| 36 | WebDAV-Push upgrade survives the LB | a DAVx5 push subscription through the edge | the socket is open (verify explicitly, not by "sync works") | **NOT TESTABLE, NOT STARTED** — this fork has no push-notification socket: `dav_push` routes one DELETE, there is no WebSocket dependency, and the per-tenant update receiver is dropped. Implementing RFC 8525 is its own work item. A test asserts the *absence* so the day one is added this row is revisited rather than continuing to look covered |
 | 37 | 200 tenants | load test, 50 concurrent clients | p99 within 2× single-tenant; RSS within the limit; record the number in §7.2 |
 | 38 | External reachability | `check-host.net` from many nodes (the §4.3 pattern) | TLS validates with **no `-k`**; `/ping` answers |
 | 39 | Source offer | `curl -sI /frontend/source`; download the tarball; `git rev-parse HEAD` in it | matches the running build; the tarball builds in CI |
@@ -1652,7 +1678,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 13 | §9.3 first-boot setup mode | 5, 12 | rows 46-47 | not started (W2) |
 | 14 | §9.4 appliance control panel + diagnostics | 12 | rows 49-50 | not started (W2) |
 | 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` | not started (W4) |
-| 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | not started (W4) |
+| 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | **DONE 2026-09-29, PARTIALLY** (`c26a3947`) — the security half is complete and row 34 passes in both directions over a real socket. `X-Forwarded-For` was read unconditionally by **four** rate limiters (registration, *both* password-reset POSTs, admin login) and took its first hop, which is attacker-chosen; it is now honoured only from a listed peer, and only up to the rightmost hop that is not one of ours. Fail-closed by default, malformed entries are a startup refusal, and the peer is plumbed to handlers. **Row 35 is done for the application half**, gated through a real byte-level reverse proxy in `tests/edge_proxy.rs`, with negative controls for both failures. **Row 36 is not testable and is not claimed**: this fork has no WebDAV-Push notification socket at all (no dependency, one DELETE route, the update receiver is dropped), so there is nothing for a proxy to preserve — implementing RFC 8525 is a new work item, and a test asserts the *absence* so the row is revisited the day one is added. §7.3's remaining six requirements (TLS termination, payload limit, timeouts, no path rewriting) are properties of a *deployment*, not of this binary, and are item 15's |
 | 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **DONE 2026-09-29** (`a5ad7aa4` audit, `3838c716` credentials and the startup refusals, `6374836c` the panel) — all three phases. A control-plane router mounted **ahead of** `HostDispatch` on exactly one `admin_host`, with its own session store and a **distinct cookie name**; it answers a panel request and never forwards down, so there is no path from an admin session to a tenant's data. Config is authoritative throughout: an admin authenticates only if their name is in `platform_admins` **and** has a credential row. Three startup refusals, including a tenant claiming `admin_host` (explicit row *or* derivable, read by ownership so a suspended tenant still holds it). Metadata only, no delete, no usage, no impersonation. Rows 32, 32a-32d and 33 green. **One thing is deliberately not testable and the record says so:** the request-path `admin_host` guard is redundant with the construction guard, so mutating either alone changes nothing — both must go, and `has_admin_panel` is what makes that assertable. The k=1 ceiling is unchanged and unfixable in code: §7.2's `N..k` needs a shared control plane and shared sessions, so the acknowledgement is the operator's |
 | 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant | not started (W5) |
 | 19 | §10 source offer page + CI check | 15 | row 39 | not started (W5) |
@@ -2914,7 +2940,9 @@ diff removes only the old signature and the old return expression.
 
 ### Two deferrals, both deliberate
 
-1. **`[tenancy] trusted_proxies` (C5, §7.3.4) is not added in this commit.**
+1. **`[tenancy] trusted_proxies` (C5, §7.3.4) was not added by *this* commit**;
+   it arrives with item 16, which landed on 2026-09-29 (`c26a3947`). This
+   section's scope was the per-tenant config merge, not the edge.
    §3.6 lists it, but it is the `X-Forwarded-For` trust list — a *security*
    knob. Shipping it in a commit that does not honour the header would mean an
    operator sets `trusted_proxies` and gets a rate-limit bypass while the config
@@ -3463,11 +3491,22 @@ only one that can be deferred without stopping the other two models.*
 
 *On safety: **§6.4 is done** (§18.17) — the three routers mounted outside the
 auth layer are tenant-scoped, and the RSVP HMAC is per-tenant, which was the one
-real cross-tenant forge. §5.2 is done but for the deferred rotation, so **one
-live credential exposure remains and it is waiting on a maintenance window, not
-on code.** **§7.3.4 (`X-Forwarded-For`) is untouched and is the next
-security-relevant gap** — and it is also what the admin panel inherits until
-§7.3.4 lands. None of the three was optional, and each has a test row in §12.*
+real cross-tenant forge. **§7.3.4 is done** (2026-09-29, `c26a3947`): the
+`X-Forwarded-For` bypass is closed, fail-closed, and row 34 passes in both
+directions. §5.2 is done but for the deferred rotation, so **one live credential
+exposure remains and it is waiting on a maintenance window, not on code.**
+
+*Of the three, all are now addressed. Two by code, one by a window someone has to
+book.*
+
+*One consequence of §7.3.4 landing is worth naming: **the admin panel inherited
+the same exposure through the same `HostDispatch`**, and its login limiter was the
+one guarding the credential that crosses every tenant boundary. It is closed by
+the same mechanism, which is why the panel tests read
+`trusted_proxies` rather than a second list. What is **not** closed, and is
+recorded in §7.3.2, is row 36: this fork has no push-notification socket, so a
+requirement written against a build that has one is currently vacuous — and
+implementing RFC 8525 is a work item that does not yet exist.*
 
 *Escalate to the user rather than deciding: the history rewrite (§5.2.5), the
 Q1-Q8 answers (§17), the credential rotation window (item 1), and anything in
