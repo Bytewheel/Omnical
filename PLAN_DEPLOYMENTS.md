@@ -1412,7 +1412,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 6 | §8.1 `compose.omnical.yml` + `packaging/native/` | 5 | rows 40-41 | **DONE 2026-09-28** — both files shipped and `scripts/selfhost-gate.sh` (69 checks) runs the install, the wizard, the server, a real CalDAV round trip and a registration end to end on this host. **Both rows green.** Executing a container runtime is a **stretch goal** (user decision, 2026-09-28), not a gate — the self-host channel must stand on its own and `install.sh` reaches the same end state without one. See §18.7 |
 | 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **98/98, zero test edits** | **DONE 2026-09-28** — body moved verbatim (222 lines, empty `diff`), zero test files touched, digest canary unchanged, 509 workspace tests, clippy 34→32, aarch64 +0.04%, and 9/9 CI jobs green. The `tenant` parameter was then delivered separately, without touching the refactor claim — see §18.11 and §18.12 |
 | 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **DONE 2026-09-29** — the `tenant` type + `make_app_for` parameter (§18.12), the control plane + `TenantStore` + migration (§18.13), `StoreBundle` + the LRU (§18.14), `HostDispatch` + `[tenancy]` config (§18.15), and **the gate itself: rows 24, 25 and 29 through a real server** (§18.16). `Host` resolution works, two tenants get two databases and two routers, and cross-tenant auth and resource access both fail as the rows require |
-| 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | not started (W3) |
+| 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | **DONE 2026-09-29** — all three public routers are tenant-scoped and rows 26-28 pass end to end (§18.17). `rsvp_secret` is now per-tenant, which was the real cross-tenant forge. **§3.6's config merge came with it** — item 9 could not be done before item 10, see §18.17 |
 | 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | not started (W3) |
 | 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | not started (W3) |
 | 12 | §9.2 appliance firmware image | 4, 6 | rows 46, 48 | not started (W2) |
@@ -2864,6 +2864,91 @@ reach that rule. A gate that has only ever been mutated along the path it
 already exercises proves much less than it appears to: it can be green while an
 entire resolution rule is broken. Every mutation applied from here on has to
 target the branch the test actually takes, or be recorded as untested.
+
+---
+
+## 18.17 Item 9 — the three routers with no principal (§6.4), rows 26-28 (2026-09-29)
+
+**SAFETY-CRITICAL, now done.** Shipped: `src/tenant_overrides.rs` (new),
+`tests/public_routes.rs` (new), `tests/tenant_support/mod.rs` (new, shared with
+`cross_tenant.rs`), the per-tenant build in `src/tenancy.rs`. Server `cb5144f2`,
+packaging `faf70dc`, **9/9 CI green**. Workspace 586 → 602, aarch64-musl
+**+2,888 bytes**.
+
+`export_`, `rsvp_` and `register_` are the three routers mounted **outside**
+`AuthenticationLayer`. There is no principal for the layer to check and nothing in
+the type system tying a request to a tenant, which is §6.4's "do not skip these"
+in one sentence.
+
+### Items 9 and 10 could not be separated, and the plan had them backwards
+
+Row 26's gate is "`/export/{token}.ics` returns **200 in its own tenant** and 404
+in the other". The first half is not a scoping property — it is a *mounting*
+property. And under tenancy the three routers were mounted for **nobody**:
+`app_config_for` set `scheduler: None` and `subscriptions: None`, so
+`/export/{token}.ics` returned 404 for every tenant including its own, and RSVP
+did not exist at all. Mounting them needs a per-tenant `SubscriptionStore` and a
+per-tenant `Scheduler` — which is §3.6's config merge, i.e. **item 10**.
+
+So the merge arrived with item 9. Rows 30-31 remain item 10's own gate, and this
+ordering inversion is worth recording because the plan's dependency column put 10
+after 9 and the code says otherwise.
+
+### Row 27 is the one that needed a code change
+
+Rows 26 and 28 are structural: the subscription and the invite are rows in the
+requesting tenant's own database. The tests keep them that way.
+
+RSVP is different, and it is the forge C6 warns about. The token is an **HMAC
+over a secret**, so "is this token in my database?" is not the question — "does it
+verify with *my* secret?" is. While `rsvp_secret` was one global value, every
+tenant shared it; and since item 8 established that the same principal id may
+exist in two tenants, a token minted by A verified under B **and resolved to B's
+copy of the same event**. A could forge a reply to B's invitation with no
+credential at all. The secret now comes from the tenant's `config_json`, with the
+global as the inherited default.
+
+### The first version of this gate was green against a build that ignored `config_json`
+
+"Acme's token is rejected under Globex" passes just as happily when **both
+tenants share one secret**, or when the per-tenant secret is never read at all.
+Two mutations confirmed the hole: ignoring the `rsvp_secret` override, and
+dropping the per-tenant build entirely — **both left all eight tests green.**
+
+The fix pins down *which* secret each tenant runs with, from the server's own
+answers:
+
+- a token minted with the **global** secret must come back *invalid* at the
+  tenant's own host — so the tenant is not on the global secret;
+- a token minted with the **tenant's own** secret must **not** come back invalid.
+
+Both are 404, and they are told apart by the response body: `render_invalid()`
+means the HMAC did not verify, `render_gone()` means it verified and resolution
+got further. After the fix, both mutations fail.
+
+### Positive controls for rows 26 and 28
+
+"A's token 404s under B" is equally consistent with a broken token, an unmounted
+route, or a disabled extension — every one of which leaves the gate green while
+measuring nothing. So both rows now also assert the **inverse**: put A's token (or
+invite) into B's *own* store and it must then work under B's host. That is what
+makes the 404 mean "not in my database", which is the claim.
+
+Row 26's control passes. Row 28's needed a corrected column list first — the
+`20260907` invites migration has no `target_collection` column, and my first
+guess at the schema did.
+
+### Smaller decisions
+
+- A malformed `config_json` **inherits the global** rather than failing. A stray
+  comma must not become a 500 storm, and RSVP links already mailed out keep
+  working. Wrong-but-working beats right-but-broken for a config blob.
+- A wrongly *typed* override is ignored with a `warn!` — `rsvp_secret: 42` gets
+  the global secret, not the string `"42"` as an HMAC key.
+- `scheduling.imap` is deliberately **not** merged. It configures the ingestion
+  poller, which `cmd_serve` spawns once per process; per-tenant means N pollers,
+  which is a §7 wave-3 decision. Recorded in `tenant_overrides` rather than left
+  as a silent gap.
 
 ---
 
