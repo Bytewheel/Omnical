@@ -617,16 +617,247 @@ refuses.*
 
 ### 6.6 A6 — admin surface
 
-- New `[tenancy] admin_group` (or an explicit `platform_admins` list in
-  `[tenancy]`, defaulting to a single principal) — an admin must be able to
-  cross tenant boundaries deliberately, and that must be **audited**.
-- A minimal `/frontend/admin/tenants` page: list, create, suspend, resume,
-  show quota usage. **Deliberately minimal** — billing, plan management and
-  per-tenant branding are out of scope (§1 non-goals).
-- Audit: every admin action appends to a `control_admin_audit` table
-  (actor, action, tenant, timestamp).
-*Gate: a non-admin principal gets 404 (not 403) on `/frontend/admin/*` — do not
-confirm the panel's existence; 3 tests.*
+**Status: design resolved 2026-09-29, not started.** §18.20 records how it was
+resolved and what changed. This section is the spec an implementer reads; it is
+written to be unambiguous, and the traps are named rather than left to be
+discovered.
+
+#### The shape, in one paragraph
+
+A **control-plane router**, mounted *before* `HostDispatch`, reachable on
+**exactly one host** (`[tenancy] admin_host`). It has **its own credential
+store** in `control.sqlite3` and **its own session store**. Admin *names* live in
+config; their *hashes* live in the control plane. It shows **tenant metadata
+only** — never a tenant's calendars, and never even opens a tenant's database.
+Every mutating operation is **audited in the same transaction** that performs it,
+by both the panel and the CLI. Deletion is **not** in the panel.
+
+#### 1. Placement: a pre-dispatch router, not a tenant router
+
+```
+TenancyAwareApp::call(request):
+    host == admin_host  →  panel router        (zero tenant content, ever)
+    path == /healthz    →  health
+    otherwise           →  HostDispatch        (unchanged)
+```
+
+Two properties fall out of the ordering, and both are the point:
+
+- **The admin host serves no tenant data at all.** Not "metadata about tenants" —
+  no tenant's portal, no DAV, no export feed. There is no request the panel
+  router forwards downward, so there is no path from an admin session to
+  customer content.
+- **On every other host the panel does not exist**, and a `/frontend/admin/*`
+  request falls through to that tenant's own router, which has no such route.
+  See §6.6.1 for why that is a coincidence and must not be relied on.
+
+#### 2. `admin_host`: one host, and it is a reserved name
+
+New key, `[tenancy] admin_host`. **Unset means there is no panel** — not a
+panel on every host, not a panel at a default path. Absence has to mean absence,
+or a self-hosted install acquires a cross-tenant control surface by upgrading.
+
+The panel router is selected by normalised host, exactly as `HostDispatch` does,
+so a `Host: ADMIN.EXAMPLE.COM:8443` claim still matches.
+
+**`admin_host` is reserved and must be validated as such**, in both directions:
+
+- At startup, refuse to serve if any tenant claims it — via an explicit
+  `tenant_hosts` row *or* derivably as `{slug}.{base_domain}`. The panel is
+  pre-dispatch, so a collision would make that tenant **silently unreachable**
+  rather than produce an error, which is the worst available failure mode.
+- In `tenant create --host`, refuse the value, so the collision cannot be
+  introduced in the first place.
+
+#### 3. Identity: names in config, hashes in the control plane
+
+`[tenancy] platform_admins = ["ops", "sre"]` — **names only**. Reviewable in
+version control, no secret in it, and a rename is a one-line deploy.
+
+The control plane gains a credential table: name, argon2 hash (the same
+primitive and parameters `principals` uses), plus `failed_attempts`,
+`locked_until` and `last_login_at` for the lockout.
+
+**The config list is authoritative.** A name with a valid hash that is *not* in
+`platform_admins` can never authenticate. This is what stops anyone who can
+write `control.sqlite3` — the file holding every tenant's SMTP password (§3.6,
+§18.18) — from promoting themselves, and it is the reason the two halves live in
+different places at all.
+
+Consequence to accept: revoking an admin is a config edit **and** a row delete,
+and the two can disagree. The panel reports allowlisted names with no credential
+row so the operator can see the gap.
+
+Bootstrap needs a path, since the hashes live in a database: `rustical tenant
+admin add|remove|list|lockout`. `add` **refuses a name not in `platform_admins`**,
+because a row the config will never honour is a credential that looks live and
+is not.
+
+#### 4. The panel's session is its own, and that is a k=1 statement
+
+The panel's session store is separate from every tenant's — necessarily, since
+§3.2 gives each tenant its own `MemoryStore` — and uses a **distinct cookie
+name**, so a panel session and a portal session can never be confused for one
+another on a shared host.
+
+This is where the topology bites, and it is the item's largest constraint:
+
+> §7.2's diagram says `omnical (N=1..k)`. Each instance has its own
+> `control.sqlite3` and its own in-memory sessions. So with k>1 a tenant created
+> on instance 1 **does not resolve on instance 2**, and an admin's session is
+> **lost whenever the LB routes them elsewhere**.
+
+**The panel therefore supports k=1 only.** Not as a caveat in a README — as a
+startup refusal.
+
+**Be honest about how that refusal is implemented:** a process cannot detect how
+many copies of itself exist, and it cannot tell whether a path is on shared
+storage. So "refuse unless it can tell" is only implementable as an **operator
+assertion**: the panel requires an explicit acknowledgement that the deployment
+is single-instance (a config key, not a probe). A guessed check — "is this a
+local filesystem?" — would be a false reassurance, which is worse than the
+documented requirement. §18.20 records this explicitly because it is a weaker
+guarantee than the decision it implements.
+
+k>1 needs a shared control plane (Postgres, per C7) and shared sessions (the
+`session-redis` adapter, deferred in §18.14). Both are §7 work, and the panel is
+the first thing that is actually blocked on them.
+
+#### 5. Login: throttle, lockout, CSRF
+
+The panel is a new credential store with a login form, and this one credential
+crosses every tenant boundary — so it gets the strictest handling in the tree,
+which is also the *only* precedent in the tree:
+
+- **Rate limiting per username *and* per source**, copied from
+  `crates/frontend/src/routes/password_reset.rs` rather than invented.
+- **Lockout after N failures**, also from that file.
+- **A session-bound CSRF token on every POST**, same pattern. The portal's own
+  `POST /register` has **no** CSRF check, so the panel must not copy the portal
+  here — it copies `password_reset.rs`. That pre-existing gap in `/register` is
+  recorded here rather than fixed here; it is not made worse by this item.
+
+#### 6. Scope: metadata only, and never a tenant's database
+
+| In the panel | Out, deliberately |
+|---|---|
+| list tenants | acting as a tenant / impersonation |
+| create | reading a tenant's calendars, principals or objects |
+| suspend, resume | **delete** (§6.6.1) |
+| show quota **limits** | billing, plan management, branding (§1 non-goals) |
+
+§3.2's isolation argument is that a tenant's router holds only that tenant's
+pool and there is no `WHERE tenant_id = ?` to forget. **The panel never opens a
+tenant's database**, so that argument is untouched by this item — there is
+simply no code here that could violate it.
+
+Quota is **limits only**. Live usage means counting rows in a tenant's store,
+which would be the first thing in the whole design to read across the boundary.
+A `rustical tenant usage` job writing a snapshot to the control plane is
+**deferred to a follow-up item with its own gate**; when it lands it writes to
+the control plane and the panel reads it, so the panel itself never changes.
+
+#### 7. Audit: same transaction, fail closed, both paths
+
+New `control_admin_audit` table: actor, action, tenant, timestamp (row 33).
+
+**Every mutating `TenantStore` method gains an `actor` parameter and writes its
+audit row in the same transaction as the mutation.** Three properties, all
+chosen deliberately:
+
+- **Same transaction, not ordering.** Write-then-mutate leaves a phantom row if
+  the process dies between them; mutate-then-audit leaves the mutation
+  *unaudited*, which is the exact hole fail-closed exists to close.
+- **Fail closed.** If the audit write fails, the operation does not happen. A
+  control that can be silently skipped is not a control.
+- **In the trait, not the callers.** The audit write lives in `TenantStore`, so
+  the CLI gets it for free and **no caller can bypass it by choosing a different
+  tool** — which was the hole as originally specified, since `rustical tenant`
+  could already create, suspend and delete with no audit at all.
+
+This is a **breaking signature change** to a trait shipped in item 8, and it
+requires making `SqliteTenantStore`'s mutating methods transactional. The
+mechanical fallout (item 8's tests, the CLI, the store impl) is expected and is
+part of the item.
+
+**The actor.** The panel knows the authenticated admin. The CLI does not know
+who is running it, so: `--actor`, defaulting to `$OMNICAL_TENANT`-independent
+`$OMNICAL_ACTOR`, then `$SUDO_USER`, then `$USER`. **A mutating command with no
+actor refuses** — an action that cannot be attributed does not happen, which is
+the same rule as the rest of this item. The flag is optional and the env
+fallbacks mean existing scripts keep working.
+
+**A consequence to accept:** fail-closed means the control plane is on the
+critical path for *every* tenant mutation, **including `suspend`** — and
+`suspend` is the incident-response tool. If `control.sqlite3` is locked or the
+disk is full, an operator cannot suspend the tenant they most need to. That is
+the intended trade (§6.6.2), and it is the one thing most likely to surprise.
+
+#### 8. `control.sqlite3` is now the most sensitive file in the system
+
+It holds every tenant's SMTP password **and** the platform admin's hash. Item 10
+made it `0600` (§18.18) when it held only the former; that work now protects the
+latter too. `deny_unknown_fields` means a typo'd key is a loud error, and the
+secrets inventory (§8.6) already covers `scheduling.smtp` — this item adds the
+admin hash to the same class.
+
+#### 9. Gates
+
+§12's rows 32-33, unchanged, plus what this design added:
+
+| Row | Test | Expected |
+|---|---|---|
+| 32 | `/frontend/admin/tenants` as a normal principal | **404**, not 403 |
+| 32a | the same path on a **tenant** host | 404, and no login form served |
+| 32b | an allowlisted **and** authenticated admin on the admin host | 200 |
+| 32c | a name with a valid hash but **not** in `platform_admins` | 404 (config is authoritative) |
+| 32d | `admin_host` unset | the panel does not exist, on any host |
+| 32e | a tenant claiming `admin_host` | **refuses to start** |
+| 33 | suspend via the panel, read the audit table | one row: actor + tenant + ts |
+| 33a | suspend via the **CLI** with no actor available | **refused** |
+| 33b | mutate with the audit table unwritable | **the mutation does not happen** |
+| — | `admin_host` set without the single-instance acknowledgement | **refuses to start** |
+
+#### 10. What this item is *not*
+
+No impersonation, no cross-tenant reads, no per-tenant branding, no billing, no
+`tenant delete` in the browser. `trusted_proxies` and `[tenancy.sessions` remain
+deferred (§18.14), and the panel is **not** a second reason to defer them — it
+sits behind the same `HostDispatch` and inherits the same `X-Forwarded-For`
+exposure until §7.3.4 lands.
+
+#### 6.6.1 Two corrections to the original §6.6
+
+1. **Delete is not in the panel.** The original list was "list, create, suspend,
+   resume, show quota usage" and did not include delete. A browser form is the
+   only irreversible, easily-misclicked path to a customer's data, and the CLI
+   already does it with `--confirm`/`--purge-data` kept deliberately separate
+   (§18.19). Keeping the sharpest action off the web surface costs an operator
+   one shell command.
+2. **A login page confirms the panel exists** — which §6.4's gate forbids
+   *confirming*. Resolved by the dedicated host: only `admin_host` serves a login
+   form, so nothing but the admin host reveals that a panel exists at all.
+
+**On non-admin hosts the panel's absence is a coincidence, not a guarantee.** A
+tenant's router has a `/{user}` route (`crates/frontend/src/lib.rs:94`), so
+`/frontend/admin` matches a tenant principal *named* `admin` and renders that
+tenant's own page. That leaks nothing about the panel — it is the tenant's own
+data — but it means "the panel is absent" is not strictly provable from the
+outside, and any future test asserting a 404 there is asserting the tenant's
+routing rather than the panel's absence. The panel's *own* 404s are the real
+gate, and they are on the admin host.
+
+#### 6.6.2 The single-instance guard is an assertion, not a detection
+
+Restating §6.6.4 because it is the weakest part of this design and should not be
+discovered later: a process cannot know how many copies of it are running, and
+cannot tell whether its `data_root` is on shared storage. The decision was
+"refuse to start the panel unless the deployment is single-instance", and the
+honest implementation of that is an explicit operator acknowledgement. A
+heuristic — "does this look like a local filesystem?" — would produce a false
+sense of safety, which for a control that crosses every tenant boundary is worse
+than an explicit requirement. When the control plane becomes shared (§7), the
+assertion becomes a check and this note goes away.
 
 ---
 
@@ -1420,7 +1651,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 14 | §9.4 appliance control panel + diagnostics | 12 | rows 49-50 | not started (W2) |
 | 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` | not started (W4) |
 | 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | not started (W4) |
-| 17 | §6.6 admin surface + audit | 11 | rows 32-33 | not started (W4) |
+| 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **DESIGN RESOLVED 2026-09-29, not started** — §6.6 is now a full spec, settled by 16 questions (§18.20). Pre-dispatch control-plane router on one `admin_host`; own credential store; config allowlist is authoritative; metadata only; delete stays CLI-only; audit in the same transaction, both paths. **It is a breaking `TenantStore` signature change, and it is blocked on k=1** — §7.2's `N..k` needs a shared control plane and shared sessions first |
 | 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant | not started (W5) |
 | 19 | §10 source offer page + CI check | 15 | row 39 | not started (W5) |
 | 20 | §7.5 quotas, §7.2 load measurement | 17 | row 37; the §7.2 number is recorded | not started (W6) |
@@ -3117,23 +3348,120 @@ a second control plane somewhere unexpected.
 
 ---
 
+## 18.20 Item 17's design — sixteen questions, and what the answers changed (2026-09-29)
+
+**Nothing implemented.** §6.6 is now a spec rather than three bullets, and this
+is the log of how it got there and which parts of the original text it contradicts.
+
+The design was settled by asking, not by choosing. Sixteen questions across four
+batches, because §6.6 as written left the *architecture* unspecified — and the
+first thing the questions found is that it could not be built as described.
+
+### What the questions found before any decision was made
+
+Three facts in the existing code, none of which §6.6 mentions:
+
+- **Each tenant's router has its own `MemoryStore`** (`src/app.rs:312` is inside
+  `make_app_for`). A session on tenant A is invisible to tenant B. §6.6's "an
+  admin must cross tenant boundaries deliberately" therefore has **no identity to
+  cross with**, and no shared session to cross in.
+- **The control plane has no principals.** `PrincipalType` is
+  `Individual/Group/Resource/Room/Unknown`; `Privilege::Admin` is *per collection*,
+  not platform-wide. There is no admin concept in the fork to extend.
+- **CSRF exists in exactly one place** — `routes/password_reset.rs`. The portal's
+  own `POST /register` is not CSRF-protected. So there is one good precedent to
+  copy and one bad one to avoid, and the plan did not say which.
+
+And one in the plan itself: §7.2's topology is `omnical (N=1..k)`, so hosted is
+multi-instance, and each instance has a **local** `control.sqlite3`.
+
+### The decisions, and what each one displaced
+
+| # | Decision | What it displaced |
+|---|---|---|
+| 1 | Control-plane router, mounted **before** `HostDispatch`, own credential table | §6.6's "`[tenancy] admin_group` … resolved against a principal store" — a per-tenant group cannot span tenants |
+| 2 | Names in config, hashes in the control plane | a single-source list; the two halves exist so that writing the control plane does not grant admin |
+| 3 | Metadata only | any "open tenant" / impersonation, which would put an admin session and a tenant principal in one request |
+| 4 | Audit inside `TenantStore`, both paths | the hole as specified — `rustical tenant` could already create/suspend/delete unaudited |
+| 5 | Dedicated `admin_host`, unset = no panel | serving the panel everywhere, which is a phishing surface for the one credential that crosses every boundary |
+| 6 | Audit in the **same transaction** | ordering, which leaves either a phantom row or an unaudited mutation |
+| 7 | Rate limit + lockout + CSRF, from `password_reset.rs` | shipping a new credential store with a login form and no throttle |
+| 8 | Quota **limits** only; usage job deferred | "show quota usage", which means opening tenant stores |
+| 9 | Single-instance, with a startup refusal | assuming the panel works on §7.2's `N..k` |
+| 10 | Config allowlist is **authoritative** | DB-only authorisation, where writing `control.sqlite3` grants admin |
+| 11 | Delete is **CLI-only** | the `metadata only` option I offered, which listed delete — see below |
+| 12 | `--actor` with env fallbacks, refusing when absent | a best-effort `$USER`, and a required flag that breaks every existing invocation |
+
+### Three things I offered that were wrong, and the user caught them
+
+Worth recording, because each was a place where I filled a gap in the plan with
+something plausible rather than something asked.
+
+1. **The `metadata only` option I offered listed `delete`.** §6.6's own list is
+   "list, create, suspend, resume, show quota usage" — delete is not on it. I
+   added it to a summary of "what §6.6 requires" without marking it as an
+   addition, and the user picked the option. It was surfaced as a question rather
+   than implemented, and the answer was **no**: a browser form is the only
+   irreversible, easily-misclicked path to a customer's data, and the CLI already
+   does it with `--confirm` and `--purge-data` kept separate (§18.19).
+2. **My `[tenancy] admin_group` option text said "resolved against a named
+   principal store"**, which pointed at a tenant's store, while the placement
+   answer said the panel has *its own credential table in `control.sqlite3`*.
+   Those are two different places for the hashes. It was only visible because the
+   answers were asked in sequence rather than reconciled silently.
+3. **"Refuse to start the panel if it cannot tell whether k>1" cannot be
+   implemented as stated.** A process cannot know how many copies of it exist, and
+   cannot tell whether `data_root` is on shared storage. The decision was right
+   and the mechanism is an **explicit operator acknowledgement**, recorded as
+   §6.6.2 rather than smoothed over. A heuristic would be a false reassurance on
+   the one control that crosses every tenant boundary.
+
+### The constraints the design now inherits
+
+- **A breaking signature change to `TenantStore`**, shipped in item 8: every
+  mutating method gains an `actor`, and `SqliteTenantStore`'s mutating methods
+  become transactional. Item 8's tests and the CLI move with it.
+- **Fail-closed puts the control plane on the critical path for `suspend`** — the
+  incident-response tool. Recorded in §6.6.7 as the thing most likely to
+  surprise an operator, rather than discovered during an incident.
+- **`admin_host` must be validated in both directions**: a tenant claiming it is
+  a *silent* outage (the panel is pre-dispatch, so the tenant is shadowed, not
+  refused), and `tenant create --host` must refuse the value.
+- **`control.sqlite3` is now the most sensitive file in the system**: every
+  tenant's SMTP password *and* the platform admin's hash. Item 10 made it `0600`
+  when it held only the former.
+
+### Deferred, and where
+
+- `rustical tenant usage` — the snapshot job. Own item, own gate (§6.6.6).
+- `trusted_proxies`, `[tenancy.sessions` — unchanged from §18.14. The panel does
+  not add a reason to defer them; it inherits the same `X-Forwarded-For` exposure
+  through the same `HostDispatch` until §7.3.4 lands.
+- The portal's missing CSRF on `POST /register` — recorded, not fixed here, and
+  not copied by the panel.
+
+---
+
 *End of plan. **Where this actually stands: §5 is done except the deferred
 credential rotation (item 1, user decision — the runbook is written and the
-key/tokens are still live), and §6 items 2-7 are shipped. The next thing to do
-is item 8's `HostDispatch` + `TenantStore` + migration, then item 9.*
+key/tokens are still live). §6 items 2-11 are shipped and **W3 is complete**.
+Item 17 (the admin surface) has a **resolved design and no code** — §6.6 is a
+spec, and §18.20 records how it was settled and which parts of the original text
+it contradicts.*
 
 *§5 came first because it blocked all three models and D2 meant the repo was
 about to be public. That reasoning held. §6 is the only expensive work and the
 only one that can be deferred without stopping the other two models.*
 
-*Two of the three safety-critical items remain open and one is now urgent:
-**§6.4 (the three un-authenticated routers) is item 9 and is not started** —
-rows 26-28 in §12 are the only thing standing between a valid token from tenant
-A and tenant B's data, and §18.12 added the type those rows will assert against
-without adding any of the enforcement. §5.2 (secrets) is done but for the
-deferred rotation, and §7.3.4 (`X-Forwarded-For`) is untouched. None of the
-three is optional, and each has a test row in §12.*
+*On safety: **§6.4 is done** (§18.17) — the three routers mounted outside the
+auth layer are tenant-scoped, and the RSVP HMAC is per-tenant, which was the one
+real cross-tenant forge. §5.2 is done but for the deferred rotation, so **one
+live credential exposure remains and it is waiting on a maintenance window, not
+on code.** **§7.3.4 (`X-Forwarded-For`) is untouched and is the next
+security-relevant gap** — and it is also what the admin panel inherits until
+§7.3.4 lands. None of the three was optional, and each has a test row in §12.*
 
 *Escalate to the user rather than deciding: the history rewrite (§5.2.5), the
 Q1-Q8 answers (§17), the credential rotation window (item 1), and anything in
-§6 that would require touching the store traits.*
+§6 that would require touching the store traits — which item 17's audit change
+now does, deliberately, with the breakage recorded in advance in §6.6.7.*
