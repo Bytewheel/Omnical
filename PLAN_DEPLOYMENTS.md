@@ -115,7 +115,7 @@ exact.
 | Release profile | `rustical/Cargo.toml:228-233` — `opt-level="z"`, `lto`, `panic="abort"`, `codegen-units=1`, `strip` |
 | Static assets | Askama templates + `rust-embed` static assets **compiled into the binary** — single-file deploy, no asset sidecar |
 | Data store | **SQLite only** — `config.rs:185-200`, `DataStoreConfig` is a single-variant enum. No Postgres anywhere |
-| Migrations | 19 `.up.sql` in `crates/store_sqlite/migrations/` (2025-04-26 → 2026-09-22), 19 `.down.sql` (`principals.sql` has no down) |
+| Migrations | `crates/store_sqlite/migrations/` holds **38 files**: **17** `.up`/`.down` pairs, **4** bare upstream base migrations with **no down at all**, and 21 files applied going up (2025-04-26 → 2026-09-22). Audited 2026-09-29, §18.21 |
 | Config | TOML via `figment` — `src/main.rs:18-25`; file then `RUSTICAL_*` env (`__` = section split). **Every struct is `#[serde(deny_unknown_fields)]`** |
 | CLI | `serve`, `gen-config`, `health`, `principals`, `subscriptions`, `invites`, `guest-share` — `src/lib.rs:51-77` |
 | Config sections | `data_store`, `http`, `frontend`, `oidc`, `tracing`, `dav_push`, `nextcloud_login`, `caldav`, `scheduling`, `subscriptions`, `registration`, `maintenance` — `config.rs:325-351` |
@@ -971,7 +971,7 @@ within 2× the single-tenant baseline, RSS within the pod limit.*
 |---|---|---|
 | Backup | `scripts/nightly-backup.sh` — **dev machine + SSH** (`router-dav/scripts/nightly-backup.sh`) | In-binary `rustical backup` (§8.4), invoked per tenant from CI/cron. Back up **each** tenant file separately — that is the payoff of C7 |
 | Restore / tenant deletion | none | `rustical tenant delete --purge-data` (§6.5) + a documented restore drill |
-| Migrations | automatic on boot (`sqlx::migrate!`, `crates/store_sqlite/src/lib.rs:43-57`); `--no-migrations` to suppress | Per-tenant migration on tenant creation; document that a rollback of the binary past a migration needs a `.down.sql` — **9 of 19 pairs have no `.up`/`.down` symmetry guarantees; audit before the first downgrade** |
+| Migrations | automatic on boot (`sqlx::migrate!`); `--no-migrations` to suppress | **AUDITED 2026-09-29** (§18.21): all **17** pairs are reversible and gated; the 4 base migrations have no down and never will; a rollback destroys what its down drops, and a rollback/re-upgrade rewrites every calendar object's UID. Per-tenant migration on tenant creation is still open and belongs with item 18 |
 | Health / readiness | `health` CLI + `/ping` (`src/app.rs:78`) | Add `/readyz` that checks the control plane + the tenant pool, so the LB does not route to a process that cannot serve |
 | Observability | `[tracing] opentelemetry` behind the `debug` feature | Enable `opentelemetry` in the hosted build; per-tenant request tagging from the `HostDispatch` decision |
 | Secrets | `pass` on a dev machine | A real secret store (Doppler/Vault/SSM). **The control plane now holds SMTP passwords** (C6/§6.3) |
@@ -1380,42 +1380,42 @@ Run in order; each row is a gate.
 | # | Test | Method | Expected |
 |---|---|---|---|
 | **Workstream 0** ||||
-| 20 | No secrets in the repo | `gitleaks detect`; `git ls-files \| grep -E 'out/tls/\|\.pem$\|\.mobileconfig$'` | no findings; the old LE serial is revoked |
+| 20 | No secrets in the repo | `gitleaks detect`; `git ls-files \| grep -E 'out/tls/\|\.pem$\|\.mobileconfig$'` | no findings; the old LE serial is revoked | **PARTLY DONE** — the scan runs in the `hygiene` job on every push and is green, and `out/tls/`, `*.pem` and `*.mobileconfig` are not tracked. **The old LE serial is not revoked**, which is item 1's deferred half and the one live credential exposure in the tree: a window, not code |
 | 21 | Clean clone builds | `git clone <url> /tmp/ct && cd /tmp/ct && ./scripts/build-rust.sh x86_64-unknown-linux-gnu` | **GREEN 2026-09-28 on a runner** (§18.10): `actions/checkout` with `submodules: recursive` from the public repository, then the cold build, in the `x86_64-gnu` job of `build.yml`. `out/x86_64-unknown-linux-gnu/rustical` = 5.58 MB, and 5.00 MB after UPX on aarch64, of the 35 MiB budget |
 | 22 | CI green | push; all 5 workflows | **GREEN 2026-09-28, 9/9 jobs** (§18.10): `hygiene` (secret scan, tracked-file policy, submodule-remote-is-reachable), `test` (workspace + the 98-baseline and its name digest, fmt, clippy), `build` (aarch64-musl, x86_64-gnu, self-host rows 40-41). Took four pushes: the first exposed a missing repository, the next four each exposed a gate that had been written but never executed |
 | **Workstream A** ||||
 | 23 | Refactor is behaviour-neutral | `cargo test --test run_integration_tests` after the `make_app` extraction | **98/98 unchanged** — no test edits, and the test *names* unchanged (the names are digested and pinned in `test.yml`, so a delete-and-replace cannot hide behind a matching count; the baseline was **96, wrongly, until 2026-09-28** — §18.8) |
-| 24 | Cross-tenant auth isolation | tenant A's principal + app token against tenant B's host | 401 |
-| 25 | Cross-tenant resource isolation | tenant A's calendar id on tenant B's host | 404 |
-| 26 | Export token isolation | tenant A's `/export/{token}.ics` under tenant B's host | 404/410, never 200 |
-| 27 | RSVP secret isolation | tenant A's token verified with tenant B's secret | 404 |
-| 28 | Invite isolation | tenant A's invite code redeemed under tenant B's host | rejected |
-| 29 | Suspension is immediate | suspend, then request the same URL | 404, with no cached router |
-| 30 | Per-tenant SMTP identity | send a registration invite as tenant A | `From:`/`Return-Path` are tenant A's identity |
-| 31 | Per-tenant public_url | render a subscribe link as tenant A | tenant A's host |
-| 32 | Non-admin cannot see the admin panel | `/frontend/admin/tenants` as a normal principal | **404** (not 403) | *(item 17 phase 3 — the panel does not exist yet; the audit half, row 33, is done)* |
+| 24 | Cross-tenant auth isolation | tenant A's principal + app token against tenant B's host | 401 | **DONE 2026-09-29** — item 8, through a real server with two real tenant databases |
+| 25 | Cross-tenant resource isolation | tenant A's calendar id on tenant B's host | 404 | **DONE 2026-09-29** — item 8 |
+| 26 | Export token isolation | tenant A's `/export/{token}.ics` under tenant B's host | 404/410, never 200 | **DONE 2026-09-29** — item 9. The export router is mounted **outside** the auth layer, which is why this row and not a normal authenticated route is where the scoping shows |
+| 27 | RSVP secret isolation | tenant A's token verified with tenant B's secret | 404 | **DONE 2026-09-29** — item 9, and **the one real cross-tenant forge**: `rsvp_secret` is an HMAC key, so it had to become per-tenant, not just per-request |
+| 28 | Invite isolation | tenant A's invite code redeemed under tenant B's host | rejected | **DONE 2026-09-29** — item 9 |
+| 29 | Suspension is immediate | suspend, then request the same URL | 404, with no cached router | **DONE 2026-09-29** — item 8. The store filters on `status = 'active'` in SQL on **every** request, so there is no cache to evict and no propagation step to wait for |
+| 30 | Per-tenant SMTP identity | send a registration invite as tenant A | `From:`/`Return-Path` are tenant A's identity | **DONE 2026-09-29** — item 10. `scheduling.smtp` is a per-tenant override and the tenant's router is built with its own `smtp_accounts`; this is also why the control plane is 0600 |
+| 31 | Per-tenant public_url | render a subscribe link as tenant A | tenant A's host | **DONE 2026-09-29** — item 10. A tenant with no `public_url` falls back to `base_domain`, so a link is never generated pointing at the wrong host |
+| 32 | Non-admin cannot see the admin panel | `/frontend/admin/tenants` as a normal principal | **404** (not 403) | **DONE 2026-09-29** — item 17, all three phases. The unauthenticated **POST** paths are covered too, which the first mutation run found were not; and the 404 is asserted on the **admin host**, which is where the panel's own 404s live (§6.6.1's caveat: a tenant's `/{user}` route can match `/frontend/admin`, which leaks nothing but means only the panel's own 404s are a real gate) |
 | 33 | Admin action is audited | suspend a tenant, read the audit table | one row, actor + tenant + ts | **DONE 2026-09-29** — plus 33a (no actor ⇒ refused, not logged as "nobody") and 33b (a failed audit write rolls the mutation back). No UPDATE/DELETE path for the table exists in the fork, and no `ON DELETE CASCADE` from `tenants`, so a row outlives the tenant it describes |
 | **Workstream B** ||||
 | 34 | `X-Forwarded-For` is not forgeable | rate-limit endpoint with a forged `XFF` from an untrusted peer | still rate-limited (per real peer IP) | **DONE 2026-09-29** — both directions over a real socket: a forged header from an unlisted peer does not move the bucket, *and* a listed proxy's header is believed, so two clients behind one proxy get separate buckets. The second half is the one that stops the control being "ignore everything" |
 | 35 | Apple UA routing survives the proxy | `/.well-known/caldav` with UA `remindd` **through the LB** | 301 → `/caldav-compat` | **DONE 2026-09-29, and the expected value was wrong**: the redirect is **308**, not 301 (`Redirect::permanent`, both arms). The code was not changed — a redirect status is a product decision — so the row records 308 and says why |
 | 36 | WebDAV-Push upgrade survives the LB | a DAVx5 push subscription through the edge | the socket is open (verify explicitly, not by "sync works") | **NOT TESTABLE, NOT STARTED** — this fork has no push-notification socket: `dav_push` routes one DELETE, there is no WebSocket dependency, and the per-tenant update receiver is dropped. Implementing RFC 8525 is its own work item. A test asserts the *absence* so the day one is added this row is revisited rather than continuing to look covered |
-| 37 | 200 tenants | load test, 50 concurrent clients | p99 within 2× single-tenant; RSS within the limit; record the number in §7.2 |
-| 38 | External reachability | `check-host.net` from many nodes (the §4.3 pattern) | TLS validates with **no `-k`**; `/ping` answers |
-| 39 | Source offer | `curl -sI /frontend/source`; download the tarball; `git rev-parse HEAD` in it | matches the running build; the tarball builds in CI |
+| 37 | 200 tenants | load test, 50 concurrent clients | p99 within 2× single-tenant; RSS within the limit; record the number in §7.2 | **not started** — item 20, W6 |
+| 38 | External reachability | `check-host.net` from many nodes (the §4.3 pattern) | TLS validates with **no `-k`**; `/ping` answers | **not started, and no work item owns it.** It needs a deployed public host, so it is coupled to item 15 — a test that requires something only a production deployment can provide cannot be gated in CI |
+| 39 | Source offer | `curl -sI /frontend/source`; download the tarball; `git rev-parse HEAD` in it | matches the running build; the tarball builds in CI | **not started** — item 19, W5 |
 | **Workstream C** ||||
 | 40 | Compose path | `docker compose up` on a clean host, **or** the wizard answers it is given run against the release binary | **DONE 2026-09-28** (§18.7). `/ping` answers, a user registers through the invite flow, and a client syncs — all **green on this host** against the release binary, using the same `rustical setup --unattended` answers the container gets, plus every assertion that does not need a container runtime: the `OMNICAL_SETUP_*` sets match in both directions, the `data-dir`/`db-url` pairing agrees, and the two services are ordered so the server waits for the wizard. **Executing the container runtime is a stretch goal, not part of this row** (user decision, 2026-09-28) — the channel's substance is a working unattended install, and `install.sh` reaches the identical end state with no container at all |
 | 41 | Native path | tarball + `install.sh` on a bare VM | same end state as row 40 — **green 2026-09-28**: `scripts/selfhost-gate.sh` installs with `packaging/native/install.sh` on a clean prefix, runs the wizard, boots the server on the generated config, round-trips a real CalDAV write/read, registers a user through the invite flow, syncs as that user, and re-runs the installer over the live install without losing anything. 60 checks, wired into `.github/workflows/build.yml` as the `selfhost` job |
-| 42 | Upgrade N → N+1 | upgrade, then compare row counts | data intact; `restore` from the pre-upgrade backup works — **NOT STARTED, and no work item owns it** (§18.5): `rustical upgrade` needs the §10 release-publishing process first |
+| 42 | Upgrade N → N+1 | upgrade, then compare row counts | data intact; `restore` from the pre-upgrade backup works | **not started — item 21, created 2026-09-29.** It previously had no owner, which is why it sat here for six waves. `rustical upgrade`
 | 43 | Backup/restore | `rustical backup` → `rustical restore` on **another** machine | DB opens; expected counts (the §14 row-18 drill, in CI) — **DONE 2026-09-28**; 15 tests in `tests/backup_restore.rs`, run as its own `test.yml` step; see §18.5 |
 | 44 | Wizard idempotence | `rustical setup` twice | second run edits, preserves DB + admin — **DONE 2026-09-28**; 12 tests in `tests/setup_wizard.rs`, run as its own `test.yml` step; the password hash is asserted byte-identical across the re-run. See §18.6 |
 | 45 | Config round-trip | a wizard config loads under the production binary, and vice versa | no `deny_unknown_fields` error either way — **DONE 2026-09-28**: both paths build `Config::default_config()`, so this is structural; asserted in both directions in `tests/setup_wizard.rs`, and the wizard's config was booted with the release binary (`/ping` 200, `/.well-known/caldav` 308, admin login 303) |
 | **Workstream D** ||||
-| 46 | Factory unit boots | flash the image | setup page on the **LAN only**; not reachable from the WAN |
-| 47 | First-boot wizard | create the admin, restart | reachable on 8443; working DAV |
-| 48 | Survives `sysupgrade` | `sysupgrade` to itself, then the §2 reboot gate | services running; the DB and config intact; init scripts re-installed |
-| 49 | Appliance backup | backup → restore on a second unit | counts match |
-| 50 | Diagnostics bundle has no secrets | `rustical` support bundle → `grep` for every SMTP password + the RSVP secret | **no matches** |
-| 51 | Overlay budget | `df -k /` after `sysupgrade` staging | ≥ 5 MB free; `wc -c /usr/sbin/rustical` ≤ 35 MiB |
+| 46 | Factory unit boots | flash the image | setup page on the **LAN only**; not reachable from the WAN | **not started** — item 12 |
+| 47 | First-boot wizard | create the admin, restart | reachable on 8443; working DAV | **not started** — item 13. Note the wizard *itself* is done (item 5, row 44); what is missing is the appliance's first-boot path to it |
+| 48 | Survives `sysupgrade` | `sysupgrade` to itself, then the §2 reboot gate | services running; the DB and config intact; init scripts re-installed | **not started** — item 12 |
+| 49 | Appliance backup | backup → restore on a second unit | counts match | **not started** — item 14. The commands exist (item 4, row 43); the per-tenant job that drives them is item 18 |
+| 50 | Diagnostics bundle has no secrets | `rustical` support bundle → `grep` for every SMTP password + the RSVP secret | **no matches** | **not started** — item 14 |
+| 51 | Overlay budget | `df -k /` after `sysupgrade` staging | ≥ 5 MB free; `wc -c /usr/sbin/rustical` ≤ 35 MiB | **partly green** — the binary half is enforced on every build (5,350,168 B of 35 MiB, 14.6%); the `df -k` half needs a flashed unit, so it is item 12 |
 
 ---
 
@@ -1425,7 +1425,7 @@ Destructive command first, in every case.
 
 | Model | Rollback | Data recovery |
 |---|---|---|
-| **Hosted** | roll the image tag back; **downgrade past a migration needs a `.down.sql` that may not exist** — audit the 19 pairs before the first downgrade (§7.4) | restore the affected tenant's SQLite from its own backup file (per-tenant files make this a one-file operation) |
+| **Hosted** | roll the image tag back; a downgrade past a migration **works for all 17 pairs** and restores the schema — **audited and gated 2026-09-29** (§18.21). Two limits: the 4 base migrations have no `.down.sql` at all, and a rollback/re-upgrade cycle **rewrites every calendar object's UID** | restore the affected tenant's SQLite from its own backup file (per-tenant files make this a one-file operation) |
 | **Self-hosted** | `rustical upgrade --rollback` swaps back to the retained previous binary; **the same migration caveat applies** | `rustical restore <archive>` on the same host or a different one |
 | **Appliance** | re-flash the previous `sysupgrade` image; note the config + DB live in preserved paths (`/etc/rustical`, `/usr/local/share/rustical`, `router/etc/sysupgrade.conf.additions`) so a flash-back keeps the data | restore from a USB/SD backup, or re-run the factory image and restore |
 | **All three** | the deploy fence (`/tmp/rustical-deploy.lock`) and the watchdog (`router/usr/bin/rustical-watchdog`) exist precisely so a half-applied deploy never leaves a broken service — **preserve that discipline in every new install path** | `scripts/nightly-backup.sh` is the *reference* implementation of the backup method (§8.4.1) even where the mechanism differs |
@@ -1441,7 +1441,7 @@ Destructive command first, in every case.
 | `X-Forwarded-For` rate-limit bypass on public hosted | **High** if unfixed | High | §7.3 item 4 + §12 row 34 — a **release gate** for hosted |
 | Per-tenant SMTP sending hurts deliverability (SPF/DMARC) | High | Medium | Per-tenant verified-domain requirement before enabling an identity (§7.5.4) |
 | One process cannot hold enough tenants (§7.2 limit) | Medium | Medium | Measure in W3, record the number, escape hatch is **process sharding**, not a model change |
-| Downgrade past a migration is impossible (missing `.down.sql`) | Medium | High | Audit all 19 pairs in W0; document "restore from backup" as the only supported downgrade path until fixed |
+| Downgrade past a migration loses data, and a rollback/re-upgrade rewrites UIDs | Medium | High | **AUDITED AND GATED 2026-09-29** (§18.21): `tests/migration_roundtrip.rs` applies every migration, rolls all 17 pairs back, and re-upgrades, asserting the schema returns. The reversibility is real; the *loss* is not, and thirteen of the downs drop a table or a column. Documented as a supported rollback, with the UID rewrite and the 4 un-revertible base migrations called out |
 | Scope creep into a product we cannot support | High | High | §1 non-goals are explicit; §8.5 requires a written support policy before self-host ships |
 | The fork diverges so far that an upstream rebase is impossible | Medium | Medium | 19 commits is still small. Keep Omnical changes in identifiable commits; the tenancy design (§3.2) deliberately touches **no store traits**, which keeps a rebase tractable |
 | Secrets in a public repo (H1/H2) once we go public per AGPL | **High** if §5 slips | **Critical** | §5 is wave 0 and blocks everything. This is the plan's single most important prerequisite |
@@ -1468,6 +1468,7 @@ crates/store_sqlite/migrations/2026MMDDHHMMSS_tenants.sql   # NEW — tenants, t
 crates/store_redis/                     # NEW — Redis SessionStore, `session-redis` feature (§3.7)
 crates/frontend/src/routes/setup.rs     # NEW — appliance first-boot setup mode (§9.3)
 crates/frontend/src/routes/admin.rs     # NEW — /frontend/admin/tenants (§6.6)
+tests/migration_roundtrip.rs   # NEW — the .down.sql rollback audit, as a gate (§18.21)
 crates/frontend/src/routes/source.rs     # NEW — AGPL §13 source offer (§10.1)
 crates/frontend/public/templates/pages/{setup,admin_tenants,source}.html   # NEW
 ```
@@ -1683,6 +1684,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant | not started (W5) |
 | 19 | §10 source offer page + CI check | 15 | row 39 | not started (W5) |
 | 20 | §7.5 quotas, §7.2 load measurement | 17 | row 37; the §7.2 number is recorded | not started (W6) |
+| 21 | `rustical upgrade --rollback` | 4, 18 | row 42 | **CREATED 2026-09-29, not started** — the item that had **no owner**: §12 row 42 (upgrade N→N+1) said so in its own status cell, and §14's `.down.sql` audit was a mitigation with nothing behind it. Both now live here. The design question is settled by §18.21 (the schema rollback works; the data loss and the UID rewrite do not go away), so the item is *decidable* rather than open-ended. `backup`/`restore` already shipped (item 4); what is missing is the binary swap, and `rustical restore` is the only lossless option it has to fall back to |
 
 **Items 1-3 before 4-20. Item 9 before any hosted traffic, always.**
 
@@ -3380,11 +3382,12 @@ a second control plane somewhere unexpected.
 
 ## 18.20 Item 17's design — sixteen questions, and what the answers changed (2026-09-29)
 
-**Phase 1 has since shipped** (`a5ad7aa4`, 2026-09-29): the audit trail, the
-breaking `TenantStore` signature change and the removal of the CLI's private
-`config_json` write. Everything below is the design record that preceded it and is
-unchanged by it. The credential store, the config allowlist and the router itself
-are phases 2 and 3.
+**All three phases have since shipped** (2026-09-29): `a5ad7aa4` the audit trail
+and the breaking `TenantStore` signature change, `3838c716` the credential store
+and the startup refusals, `6374836c` the panel router and the surface itself.
+Everything below is the design record that preceded them and is unchanged by
+them — which is the point of writing it down first, because §6.6 as written could
+not be built and the sixteen questions are what made it buildable.
 
 §6.6 went from three bullets to a spec, and this
 is the log of how it got there and which parts of the original text it contradicts.
@@ -3469,44 +3472,155 @@ something plausible rather than something asked.
 
 ### Deferred, and where
 
-- `rustical tenant usage` — the snapshot job. Own item, own gate (§6.6.6).
-- `trusted_proxies`, `[tenancy.sessions` — unchanged from §18.14. The panel does
-  not add a reason to defer them; it inherits the same `X-Forwarded-For` exposure
-  through the same `HostDispatch` until §7.3.4 lands.
+- `rustical tenant usage` — the snapshot job. Own item, own gate (§6.6.6). **Not
+  started, and no item owns it yet**; the panel displays quota *limits* only, so
+  the deferral has no visible cost today.
+- **`trusted_proxies` — no longer deferred.** Closed 2026-09-29 by item 16
+  (`c26a3947`): honoured only from a listed peer, fail-closed, gated in both
+  directions. The panel inherited the exposure through the same `HostDispatch` and
+  is now covered by the same mechanism, so it reads one list rather than having
+  its own.
+- `[tenancy.sessions` / `crates/store_redis` (C4, §3.7) — still deferred, and this
+  is the one that **blocks the panel at k>1**: with per-process sessions an
+  admin's session dies whenever the load balancer routes them elsewhere, and
+  §6.6.4's answer to that is an operator acknowledgement rather than a fix. It
+  arrives with item 15's multi-instance story.
 - The portal's missing CSRF on `POST /register` — recorded, not fixed here, and
-  not copied by the panel.
+  not copied by the panel. Still open; it is a pre-existing gap in the portal,
+  not something this item introduced or inherited.
+- **RFC 8525 WebDAV-Push notification** — found 2026-09-29 while implementing
+  item 16, and **no item owns it**. Row 36 cannot be tested because this fork has
+  no notification socket at all (§7.3.2), so implementing one is a feature with
+  its own gate rather than an edge configuration task.
+
+### 18.21 The `.down.sql` audit (2026-09-29) — §13, §14, row 42
+
+§14's mitigation for *"downgrade past a migration is impossible"* read
+**"audit all 19 pairs in W0"**. Done, and it was a gate rather than a
+one-time reading, because an audit is a snapshot that rots on the next
+migration: `tests/migration_roundtrip.rs` applies every migration, rolls
+every one back, applies them all again, and asserts the schema returns.
+
+**What the count actually is.** Not 19 pairs.
+
+| | Count |
+|---|---|
+| files in `crates/store_sqlite/migrations/` | **38** |
+| `.up.sql` / `.down.sql` pairs | **17** |
+| bare upstream base migrations, **no `.down.sql`** | **4** |
+| files applied going up | **21** |
+
+The four are `20250426122310_principals`, `…_calendars`, `…_addressbooks`,
+`…_davpush` — the original upstream files, which predate this fork's
+`.up`/`.down` convention. An audit that reported "19 pairs" would have
+looked complete and left the base schema unreversible. Nobody downgrades
+past a base schema, so this is a **limit of the rollback story, not a
+defect** — but it is a limit, and it is now stated rather than assumed.
+
+**What the audit found.**
+
+1. **All 17 pairs are reversible, and a full rollback plus re-upgrade
+   restores the schema exactly.** The plan was *more pessimistic than
+   reality* here. Every `down.sql` executes without error and none grows
+   the schema — the two properties a real rollback depends on, because a
+   statement that fails aborts the revert mid-way and leaves a
+   half-reverted database.
+
+2. **A rollback is not lossless, and thirteen of the downs destroy data**
+   by dropping a table or a column: `password_resets`, `collection_shares`,
+   `group_members`, `group_owners`, `birthday_calendars`,
+   `davpush_vapid_key`, `scheduling_inbox_objects`, `subscriptions`,
+   `invites`, `calendar_sources`, plus the `davpush` public-key trio, the
+   three `invites` columns and `principals.needs_password_change`. That is
+   what a rollback *is*; what was missing was anyone having said so.
+
+3. **A rollback followed by a re-upgrade silently rewrites every calendar
+   object's UID.** `add_calendar_uid`'s down rebuilds `calendarobjects`
+   without the `uid` column, and the up sets `uid = id`. For CalDAV a UID
+   is the object's identity, so a client holding the old one treats the
+   re-created object as new. This is **silent**, which is what makes it the
+   one finding worth an operator's attention rather than a footnote. It is
+   pinned by a test that fails if someone later writes a `uid`-preserving
+   down, so the fix would be noticed.
+
+4. **A down/up cycle moves a column within its table's stored definition.**
+   SQLite's `ALTER TABLE … ADD COLUMN` appends, so `invites.target_group`
+   comes back at the end rather than in the middle. Cosmetic: SQLite stores
+   rows by `rowid`, and the tree's only `SELECT *` sites are on `calendars`
+   (which round-trips exactly) and inside a `FROM (SELECT * FROM principals …)`
+   sub-select, while `sqlx::query_as!` binds by column *name*. Checked
+   rather than assumed, and pinned.
+
+**What was already true and worth stating.** Nothing in the product runs
+these files. `store_sqlite` calls `Migrator::run`, never a revert, and
+there is no `upgrade` command — `rustical backup`/`restore` shipped (item
+4) but `rustical upgrade --rollback` did not. So the downs were
+**documentation**, and this audit answers "would a rollback work if one
+were built" rather than "does one work".
+
+**Three false findings, all from the audit script, recorded because the
+next person will make one of them too.** A `*.sql` glob swept the `.down`
+files in with the `.up` ones and produced a confident "this down is broken"
+that was entirely the glob's fault. Comparing a rolled-back schema against
+a re-applied one asserted that a down/up cycle returns to the *rolled-back*
+state, which can never be right. And re-applying only one pair's `up` after
+rolling that pair back cannot restore HEAD when later migrations built on
+it — which is why the per-pair test now asserts the two properties that
+*are* true (the down runs, and it only removes) and the full round trip
+asserts the strong one.
+
+**The supported-downgrade policy this implies,** which the plan did not
+previously state: a rollback across these 17 migrations is *supported* for
+the schema, is *destructive* for the data its `down` files drop, and
+**rewrites calendar UIDs** if it is later re-upgraded. Below the 4 base
+migrations there is no rollback at all. `rustical restore` from a backup is
+the only lossless option, and the audit's contribution is that "rollback
+the binary" is now a known quantity rather than a hope.
+
+**Ownership.** The audit was §14's mitigation with no work item behind it,
+and §13's downgrade row is still owned by nothing. Both are now folded
+into **item 21**, created for them: `rustical upgrade --rollback` plus row
+42's gate. The audit being done does not retire that item — it is what
+makes the item's design decidable.
+
 
 ---
 
-*End of plan. **Where this actually stands: §5 is done except the deferred
-credential rotation (item 1, user decision — the runbook is written and the
-key/tokens are still live). §6 items 2-11 are shipped and **W3 is complete**.
-Item 17 (the admin surface) has a **resolved design and no code** — §6.6 is a
-spec, and §18.20 records how it was settled and which parts of the original text
-it contradicts.*
+*End of plan. **Where this actually stands, 2026-09-29.***
 
-*§5 came first because it blocked all three models and D2 meant the repo was
-about to be public. That reasoning held. §6 is the only expensive work and the
-only one that can be deferred without stopping the other two models.*
+*§5 is done except the deferred rotation (item 1 — user decision; the runbook
+is written and the old key and 15 app tokens are still live). **§6 items 2-11
+and 17 are shipped and W3 is complete.** The admin surface exists: audit trail,
+credential store, and the panel on its own host. **§7.3.4 is closed** — the
+`X-Forwarded-For` bypass is gone, fail-closed, and gated in both directions over
+a real socket. **The `.down.sql` audit is done and gated** (§18.21): 17 pairs,
+all reversible; the plan had said 19 and had been counting the wrong thing.*
 
 *On safety: **§6.4 is done** (§18.17) — the three routers mounted outside the
 auth layer are tenant-scoped, and the RSVP HMAC is per-tenant, which was the one
-real cross-tenant forge. **§7.3.4 is done** (2026-09-29, `c26a3947`): the
-`X-Forwarded-For` bypass is closed, fail-closed, and row 34 passes in both
-directions. §5.2 is done but for the deferred rotation, so **one live credential
-exposure remains and it is waiting on a maintenance window, not on code.**
+real cross-tenant forge. **§7.3.4 is done** (`c26a3947`) — and the admin panel
+inherited that exposure through the same `HostDispatch`, so its login limiter, the
+one guarding the credential that crosses every tenant boundary, is closed by the
+same mechanism. §5.2 is done but for the deferred rotation, so **one live
+credential exposure remains and it is waiting on a maintenance window, not on
+code.***
 
-*Of the three, all are now addressed. Two by code, one by a window someone has to
-book.*
+*Three of the plan's own descriptions turned out to be wrong when tested rather
+than assumed, and each is now corrected in place: row 35's expected redirect is
+**308**, not 301; §7.3.3's failure mode for a `User-Agent`-stripping proxy is a
+**400**, not a misdirected redirect; and §14's migration count was **17 pairs
+plus 4 base files with no down**, not 19 pairs. Two rows also had no owner at
+all — row 42 and the audit — and both now sit in **item 21**.*
 
-*One consequence of §7.3.4 landing is worth naming: **the admin panel inherited
-the same exposure through the same `HostDispatch`**, and its login limiter was the
-one guarding the credential that crosses every tenant boundary. It is closed by
-the same mechanism, which is why the panel tests read
-`trusted_proxies` rather than a second list. What is **not** closed, and is
-recorded in §7.3.2, is row 36: this fork has no push-notification socket, so a
-requirement written against a build that has one is currently vacuous — and
-implementing RFC 8525 is a work item that does not yet exist.*
+*On the remaining work: §5, §6 and the security part of §7.3 are done. What is
+left is the appliance (§9.2-9.4), the hosted artefacts (§7.1), operations
+(§7.4), the source offer (§10), quotas and load (§7.5), and the upgrade path
+(item 21). One thing surfaced during item 16 has no item and is not a
+configuration task: **row 36 cannot be tested because this fork has no
+WebDAV-Push notification socket**, so implementing RFC 8525 is a feature that
+does not yet exist — a test asserts the absence so the row is revisited the day
+it does.*
+
 
 *Escalate to the user rather than deciding: the history rewrite (§5.2.5), the
 Q1-Q8 answers (§17), the credential rotation window (item 1), and anything in
