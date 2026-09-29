@@ -1414,7 +1414,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **DONE 2026-09-29** — the `tenant` type + `make_app_for` parameter (§18.12), the control plane + `TenantStore` + migration (§18.13), `StoreBundle` + the LRU (§18.14), `HostDispatch` + `[tenancy]` config (§18.15), and **the gate itself: rows 24, 25 and 29 through a real server** (§18.16). `Host` resolution works, two tenants get two databases and two routers, and cross-tenant auth and resource access both fail as the rows require |
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | **DONE 2026-09-29** — all three public routers are tenant-scoped and rows 26-28 pass end to end (§18.17). `rsvp_secret` is now per-tenant, which was the real cross-tenant forge. **§3.6's config merge came with it** — item 9 could not be done before item 10, see §18.17 |
 | 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | **DONE 2026-09-29** — the merge shipped with item 9; this item closed its **command-side** gap. `OMNICAL_TENANT` selects a tenant so a command sees that tenant's `config_json`, and the control plane is now created **0600** because it holds SMTP passwords (§18.18) |
-| 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | not started (W3) |
+| 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | **DONE 2026-09-29** — 8 subcommands and **17 tests**; `delete` without `--confirm` refuses, and `--purge-data` is separate from it (§18.19). `create` discharges the store-materialisation obligation §18.16 and §18.17 recorded. **W3 is now complete** |
 | 12 | §9.2 appliance firmware image | 4, 6 | rows 46, 48 | not started (W2) |
 | 13 | §9.3 first-boot setup mode | 5, 12 | rows 46-47 | not started (W2) |
 | 14 | §9.4 appliance control panel + diagnostics | 12 | rows 49-50 | not started (W2) |
@@ -3034,6 +3034,86 @@ a fake SMTP server needs a certificate, and no cert-issuing crate (`rcgen`) is
 vendored in this workspace. Adding one as a dev-dependency is a worse trade than
 naming the gap, because the untested half is `MAIL FROM:` framing in a function
 the global-tenant path already exercises.
+
+---
+
+## 18.19 Item 11 — `rustical tenant`, and W3 closes (2026-09-29)
+
+**Shipped:** `src/commands/tenants.rs` (new, 617 lines), `tests/tenant_cli.rs`
+(new, 535 lines), `TenancyConfig::data_root` shared by two callers. Server
+`5b69d85e`, packaging `eb5bbe8`, **9/9 CI green**. Workspace 608 → 627,
+aarch64-musl **+17,464 bytes**.
+
+Eight subcommands: `create`, `list`, `show`, `suspend`, `resume`, `set-quota`,
+`config set|show`, `delete`. The plan's gate is "8 tests; `tenant delete` without
+`--confirm` refuses" — this ships **17**, because two of §6.5's claims are about
+destructive behaviour and one is about a store path.
+
+### `create` discharges an obligation recorded twice
+
+A tenant's store is otherwise created lazily, on the first request that resolves
+to it — fine for serving, useless for administering, because no config can point
+at a path that does not exist, so `rustical principals create` against a new
+tenant fails on the missing directory. §18.16 and §18.17 both recorded that
+`tenant create` would have to do this. It does, and it **migrates** the store
+rather than creating an empty file, so the tenant is usable the moment the command
+returns and a failure lands on whoever typed `create` rather than on somebody's
+login an hour later.
+
+### `suspend` is a database write and nothing else — a correction, not an omission
+
+§6.5 annotates it `# evicts the router, closes the pool`, and that is worth
+correcting rather than implementing. **Eviction is not needed and is not
+possible from here.** `HostDispatch` consults the control plane on every request
+and filters on `status = 'active'` in SQL (§18.13), so a suspended tenant never
+reaches the cache at all — there is no running-server state to reach into. A
+cache-eviction call would imply a coupling that does not exist and would need a
+mechanism (a signal, a shared handle) that would then need to work.
+
+The command says so in its own output, because the next person will otherwise go
+looking for the eviction.
+
+### `delete` has two flags, not one
+
+`--confirm` and `--purge-data` are separate because "remove the tenant" and
+"destroy the customer's calendars" are different acts, and one flag would let a
+typo in a slug destroy a backup. `--confirm` refuses **before** doing anything and
+prints "Nothing has been changed"; without `--purge-data` the data path is
+printed so it can be backed up. Three mutations were applied and all three are
+caught: proceeding without `--confirm`, purging without `--purge-data`, and not
+materialising the store on `create`.
+
+### `TenancyConfig::data_root` is now one function, called from two places
+
+The server's per-tenant build and this CLI both need it, and the first draft
+duplicated it. Had the two ever disagreed the failure would have been silent and
+specific: `create` prepares one path, the server opens another, and the tenant
+appears to exist while every request to it fails. Both now call
+`config.rs`.
+
+### A bug the unit test caught, in code written minutes earlier
+
+`set_dotted` used `rsplit_once('.')` to split a key and **inverted the path**:
+`registration.enabled` produced `{"enabled":{"registration":false}}`. The
+end-to-end test caught it and a two-line unit test pinned it. The rewrite splits
+on every segment, and the comment says why the clever version was wrong — because
+the clever version is the one somebody would write again.
+
+### One dangerous default, made explicit
+
+`set-quota` with no flags **clears** every limit to unlimited rather than leaving
+them alone. That is the safer of the two readings of "I did not pass the flag" —
+a quota that silently keeps an old value is a limit the operator believes they
+raised — and the help text says so.
+
+### Also
+
+`config set` refuses to merge into a blob that does not parse rather than
+replacing it, because overwriting would silently discard whatever an operator had
+hand-edited. `--config-json` warns about keys the product does not read, so a
+typo like `rsvp_secrect` is reported by the command rather than ignored at request
+time. The CLI refuses to run against a single-tenant config rather than creating
+a second control plane somewhere unexpected.
 
 ---
 
