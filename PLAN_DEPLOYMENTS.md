@@ -1419,11 +1419,11 @@ Run in order; each row is a gate.
 | 44 | Wizard idempotence | `rustical setup` twice | second run edits, preserves DB + admin — **DONE 2026-09-28**; 12 tests in `tests/setup_wizard.rs`, run as its own `test.yml` step; the password hash is asserted byte-identical across the re-run. See §18.6 |
 | 45 | Config round-trip | a wizard config loads under the production binary, and vice versa | no `deny_unknown_fields` error either way — **DONE 2026-09-28**: both paths build `Config::default_config()`, so this is structural; asserted in both directions in `tests/setup_wizard.rs`, and the wizard's config was booted with the release binary (`/ping` 200, `/.well-known/caldav` 308, admin login 303) |
 | **Workstream D** ||||
-| 46 | Factory unit boots | flash the image | setup page on the **LAN only**; not reachable from the WAN | **not started** — item 12 |
-| 47 | First-boot wizard | create the admin, restart | reachable on 8443; working DAV | **not started** — item 13. Note the wizard *itself* is done (item 5, row 44); what is missing is the appliance's first-boot path to it |
-| 48 | Survives `sysupgrade` | `sysupgrade` to itself, then the §2 reboot gate | services running; the DB and config intact; init scripts re-installed | **not started** — item 12 |
+| 46 | Factory unit boots | flash the image | setup page on the **LAN only**; not reachable from the WAN | **partly green 2026-09-29** — item 12 stages the payload as a package and item 13's LAN rule is gated per request, but *flashing* and booting are not done: **item 12**, needs a unit — item 12 |
+| 47 | First-boot wizard | create the admin, restart | reachable on 8443; working DAV | **partly green 2026-09-29** — the wizard, the LAN restriction, the config/tenant/admin writes and the restart are gated (`tests/setup_mode.rs`); the 8443 leg and a real reboot need a unit. **item 13** — item 13. Note the wizard *itself* is done (item 5, row 44); what is missing is the appliance's first-boot path to it |
+| 48 | Survives `sysupgrade` | `sysupgrade` to itself, then the §2 reboot gate | services running; the DB and config intact; init scripts re-installed | **not started** — but item 12 addresses the *mechanism* (package-owned init scripts, `omnical.keep.d`, idempotent `/etc/sysupgrade.conf`) and the postinst is gated against a fake root, so what is left is the flash itself. **item 12**, needs a unit — item 12 |
 | 49 | Appliance backup | backup → restore on a second unit | counts match | **not started** — item 14. The commands exist (item 4, row 43); the per-tenant job that drives them is item 18 |
-| 50 | Diagnostics bundle has no secrets | `rustical` support bundle → `grep` for every SMTP password + the RSVP secret | **no matches** | **not started** — item 14 |
+| 50 | Diagnostics bundle has no secrets | `rustical` support bundle → `grep` for every SMTP password + the RSVP secret | **no matches** | **GREEN 2026-09-29** — `tests/support_bundle.rs`, 13 tests. The command **verifies before writing** and writes nothing if a secret survives, because a bundle that exists and is then found to hold a password is already the incident. **item 14** |
 | 51 | Overlay budget | `df -k /` after `sysupgrade` staging | ≥ 5 MB free; `wc -c /usr/sbin/rustical` ≤ 35 MiB | **partly green** — the binary half is enforced on every build (5,350,168 B of 35 MiB, 14.6%); the `df -k` half needs a flashed unit, so it is item 12 |
 
 ---
@@ -1684,9 +1684,9 @@ credential-disclosure incident, not a mess to tidy later.
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | **DONE 2026-09-29** — all three public routers are tenant-scoped and rows 26-28 pass end to end (§18.17). `rsvp_secret` is now per-tenant, which was the real cross-tenant forge. **§3.6's config merge came with it** — item 9 could not be done before item 10, see §18.17 |
 | 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | **DONE 2026-09-29** — the merge shipped with item 9; this item closed its **command-side** gap. `OMNICAL_TENANT` selects a tenant so a command sees that tenant's `config_json`, and the control plane is now created **0600** because it holds SMTP passwords (§18.18) |
 | 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | **DONE 2026-09-29** — 8 subcommands and **17 tests**; `delete` without `--confirm` refuses, and `--purge-data` is separate from it (§18.19). `create` discharges the store-materialisation obligation §18.16 and §18.17 recorded. **W3 is now complete** |
-| 12 | §9.2 appliance firmware image | 4, 6 | rows 46, 48 | not started (W2) |
-| 13 | §9.3 first-boot setup mode | 5, 12 | rows 46-47 | not started (W2) |
-| 14 | §9.4 appliance control panel + diagnostics | 12 | rows 49-50 | not started (W2) |
+| 12 | §9.2 appliance firmware image | 4, 6 | rows 46, 48 (both need a flashed unit); `scripts/firmware-gate.sh` for everything provable without one | **DONE 2026-09-29** — the payload is an **OpenWrt package**, so a flash restores the binaries, both init scripts and the watchdog *by construction* rather than by a script that can be skipped, which is the difference §9.2's "the image must re-install them" asks for and does not get. `omnical.keep.d` covers the **in-place** `sysupgrade` path, which is a different code path from a fresh flash and is the one that bit us |
+| 13 | §9.3 first-boot setup mode | 5, 12 | `tests/setup_mode.rs` (19 tests); row 47's substance, minus the hardware | **DONE 2026-09-29** — a browser wizard that writes the config, the control DB, tenant #1 and the admin, then `SIGTERM`s itself into normal mode. The LAN requirement is a **per-request peer check, not a bind** (§9.5 already records that pinning an address is what breaks on DHCP retail hardware), and `X-Forwarded-For` is deliberately *ignored* here because nothing is configured yet and any header is an attacker's |
+| 14 | §9.4 appliance control panel + diagnostics | 12 | row 50 (`tests/support_bundle.rs`, 13 tests); rows 49/51 need a unit | **partly done 2026-09-29** — §9.4's **Support** section is the whole value of the panel and it is done and gated. The **Data/Network/Firmware** sections are not built: they are thin wrappers over `backup`/`restore` and a `sysupgrade` call, and building them well needs a unit to test against. The diagnostics bundle is reachable as a procd action, writing to tmpfs |
 | 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` | not started (W4) |
 | 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | **DONE 2026-09-29, PARTIALLY** (`c26a3947`) — the security half is complete and row 34 passes in both directions over a real socket. `X-Forwarded-For` was read unconditionally by **four** rate limiters (registration, *both* password-reset POSTs, admin login) and took its first hop, which is attacker-chosen; it is now honoured only from a listed peer, and only up to the rightmost hop that is not one of ours. Fail-closed by default, malformed entries are a startup refusal, and the peer is plumbed to handlers. **Row 35 is done for the application half**, gated through a real byte-level reverse proxy in `tests/edge_proxy.rs`, with negative controls for both failures. **Row 36 is not testable and is not claimed**: this fork has no WebDAV-Push notification socket at all (no dependency, one DELETE route, the update receiver is dropped), so there is nothing for a proxy to preserve — implementing RFC 8525 is a new work item, and a test asserts the *absence* so the row is revisited the day one is added. §7.3's remaining six requirements (TLS termination, payload limit, timeouts, no path rewriting) are properties of a *deployment*, not of this binary, and are item 15's |
 | 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **DONE 2026-09-29** (`a5ad7aa4` audit, `3838c716` credentials and the startup refusals, `6374836c` the panel) — all three phases. A control-plane router mounted **ahead of** `HostDispatch` on exactly one `admin_host`, with its own session store and a **distinct cookie name**; it answers a panel request and never forwards down, so there is no path from an admin session to a tenant's data. Config is authoritative throughout: an admin authenticates only if their name is in `platform_admins` **and** has a credential row. Three startup refusals, including a tenant claiming `admin_host` (explicit row *or* derivable, read by ownership so a suspended tenant still holds it). Metadata only, no delete, no usage, no impersonation. Rows 32, 32a-32d and 33 green. **One thing is deliberately not testable and the record says so:** the request-path `admin_host` guard is redundant with the construction guard, so mutating either alone changes nothing — both must go, and `has_admin_panel` is what makes that assertable. The k=1 ceiling is unchanged and unfixable in code: §7.2's `N..k` needs a shared control plane and shared sessions, so the acknowledgement is the operator's |
@@ -3504,6 +3504,137 @@ something plausible rather than something asked.
   item 16, and **no item owns it**. Row 36 cannot be tested because this fork has
   no notification socket at all (§7.3.2), so implementing one is a feature with
   its own gate rather than an edge configuration task.
+
+### 18.22 Items 12-14 — the appliance, and the two bugs that came out of it (2026-09-29)
+
+Three items, and the interesting part is not the code — it is that §9.2 and §9.3
+were **individually plausible and jointly wrong**, and the pinned test suite is
+what noticed.
+
+#### What landed
+
+| Item | What | Gate |
+|---|---|---|
+| 12 | The payload is an **OpenWrt package** (`packaging/firmware/omnical/`) | `scripts/firmware-gate.sh`, a 2-second CI job |
+| 13 | A browser first-boot wizard (`src/setup_mode.rs`) | `tests/setup_mode.rs`, 19 tests |
+| 14 | `rustical support-bundle`, the panel's **Support** section | `tests/support_bundle.rs`, 13 tests |
+
+#### §9.2's structural fix, which is not the one §9.2 describes
+
+§9.2 says *"the image must re-install them on every flash"*, listing the wiped
+files. The natural reading is a `postinst` that re-copies them. That is still a
+script, and a script can be skipped, so it does not actually fix anything.
+
+The fix is to make the init scripts **files the package owns**: opkg restores a
+package's file list on install, so a flash puts them back whether or not anything
+runs afterwards. `omnical.keep.d` then covers the *in-place* `sysupgrade* path,
+which does not reinstall the package at all — it restores a tarball of the old
+`/etc` — and a custom init script is not a conffile, so it is not in that tarball.
+**Two different code paths, two different mechanisms**, and the second one is the
+one that bit us.
+
+#### The postinst is the only file that can destroy a customer's data
+
+Everything else in the image is restored by opkg. The postinst runs on every
+flash, forever, with nobody watching, and the line that decides whether a
+*preserved* `config.toml` — holding per-tenant SMTP credentials and the RSVP
+signing secret — survives was, in the first draft, unconditional. On a post-flash
+boot that silently reverts a production unit to defaults, and the only symptom is
+bounced invites minutes later with no obvious cause.
+
+So `firmware-gate.sh` runs the **real** postinst against a fake root holding a
+config with secrets in it, asserts the file comes out **byte-identical**, and runs
+it twice more for idempotence. It then enumerates the rows it does *not* close
+(46/48/51 and §9.2's own gate), so a green run cannot be read as a hardware pass.
+
+#### §9.3's LAN requirement is a check, not a bind
+
+*"Bind to the LAN only until setup completes... This is a hard requirement, not a
+nicety."* Binding the LAN address is not enough, and on a DHCP-assigned retail
+unit it is not available: §9.5 already records that pinning an address is what
+breaks on retail hardware. So the bind is left to the operator and **the peer
+address is checked per request**.
+
+CGNAT (`100.64/10`) is refused on purpose — it is not a LAN, and a box that
+trusted it would be reachable from an upstream network the owner has never thought
+about. IPv4-mapped IPv6 is judged as the IPv4 it wraps, so a dual-stack listener
+cannot wave a public client through.
+
+**`X-Forwarded-For` is deliberately ignored here, and that is the subtle part.**
+Everywhere else this server resolves a client IP through `client_ip`, which
+honours XFF from a trusted peer. Setup mode must not: there are no trusted
+proxies configured — nothing is set up yet — so any header is an attacker's, and
+believing it is exactly the compromise §9.3 warns about.
+
+#### The bug: a setup wizard on a *broken* install
+
+The first version entered setup mode for **three** reasons: no config, the reset
+marker, or *"tenancy on but the control plane has no tenants."* The third existed
+because item 12's postinst seeded a base `config.toml`, which made *"has a config
+file"* and *"is configured"* different states, so the server had to guess.
+
+It guessed wrong, and `a_misconfigured_tenancy_section_refuses_to_start` — a
+**pinned** test from item 7 — caught it. A config that parses but cannot resolve
+any Host is a **broken install**, and §3.3's `validate` exists to name the fix.
+Setup mode swallowed that error and served the wizard instead: a server with a bad
+`base_domain` sat there offering anyone on the LAN a **fresh administrator
+account**. That is the takeover §9.3 exists to prevent, performed by the device
+itself, and it is silent.
+
+The fix is at the other end, not here: **the postinst no longer seeds a config**,
+so *"no config"* and *"not configured"* are one state, and the init script starts
+without one (every init script in this repo refuses to start without a config, and
+that is correct everywhere else — a factory unit has no `config.toml`, so the check
+made the wizard unreachable and the device a brick with a database).
+
+`only_two_things_open_setup_mode` pins the decision surface, and
+`the_removed_branch_would_have_offered_the_wizard` proves the regression fixture
+still reproduces the old behaviour. That second test exists because the first
+version of the fixture was **hand-written TOML that `deny_unknown_fields`
+rejected**, which silently reduced the test to the much weaker *"malformed config
+is not setup mode"*, and a later version used a control plane that did not exist
+on disk — a database that was never there could never be read as *"no tenants"*.
+A test that cannot tell the difference proves nothing.
+
+#### Row 50: the gate is the feature
+
+A support bundle is precisely the artefact somebody is asked to attach to a public
+issue tracker, so the redaction works on **values discovered at runtime** rather
+than a list of key names someone remembered: known secrets replaced by
+*occurrence*, everything else redacted **by key shape**, replacement
+**longest-first** so a secret containing another secret goes whole, and — the part
+that matters — **verification before writing**. If a secret survives redaction the
+command refuses and writes nothing. A bundle that exists and is *then* found to
+hold a password is already the incident, and by then it has been attached to
+something.
+
+Four mutations of the redactor are all caught. Two of them **passed the suite
+first**, which is why two tests look redundant: replacing only the first
+occurrence, and over-redacting paths. Both are now pinned with fixtures that
+cannot be satisfied by the key-shape pass alone.
+
+#### Three gate bugs worth recording, because the pattern repeats
+
+1. **A gate that matched a comment.** The recipe check grepped for a path that
+   the Makefile's own header documents, so deleting the very install line under
+   test still reported `ok`. A check that passes for the wrong reason is worse
+   than no check, because it is read as coverage.
+2. **A mutation step that could not tell whether it mutated anything.** The CI
+   mutation used `sed` with a pattern from an older revision of the postinst. It
+   matched nothing, applied nothing, and then reported *"the gate passed with a
+   clobbering postinst"* — which reads as the gate being broken when the
+   mutation was simply never made. It now replaces exact text in python and
+   **asserts the replacement happened**.
+3. **A whitespace-exact check failing on a correct file.** The same recipe check
+   matched `…init.d/rustical $(1)…` with one space, and the Makefile aligns its
+   columns — so a *correct* Makefile looked broken. Now whitespace-normalised.
+
+#### Still open, and it needs hardware
+
+Rows 46, 47's `8443` leg, 48 and 51 all need a flashed unit, and §9.4's
+Data/Network/Firmware sections need one to be worth building. §9.5's real new
+work — `dav-tls` hard-pinning `WAN_IF=eth0` and a DHCP-assigned `WAN_IP` — is
+untouched and is the one place §9 needs genuine work in `dav-tls`.
 
 ### 18.21 The `.down.sql` audit (2026-09-29) — §13, §14, row 42
 
