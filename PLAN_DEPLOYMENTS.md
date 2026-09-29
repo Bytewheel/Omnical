@@ -1365,8 +1365,8 @@ Run in order; each row is a gate.
 | 29 | Suspension is immediate | suspend, then request the same URL | 404, with no cached router |
 | 30 | Per-tenant SMTP identity | send a registration invite as tenant A | `From:`/`Return-Path` are tenant A's identity |
 | 31 | Per-tenant public_url | render a subscribe link as tenant A | tenant A's host |
-| 32 | Non-admin cannot see the admin panel | `/frontend/admin/tenants` as a normal principal | **404** (not 403) |
-| 33 | Admin action is audited | suspend a tenant, read the audit table | one row, actor + tenant + ts |
+| 32 | Non-admin cannot see the admin panel | `/frontend/admin/tenants` as a normal principal | **404** (not 403) | *(item 17 phase 3 — the panel does not exist yet; the audit half, row 33, is done)* |
+| 33 | Admin action is audited | suspend a tenant, read the audit table | one row, actor + tenant + ts | **DONE 2026-09-29** — plus 33a (no actor ⇒ refused, not logged as "nobody") and 33b (a failed audit write rolls the mutation back). No UPDATE/DELETE path for the table exists in the fork, and no `ON DELETE CASCADE` from `tenants`, so a row outlives the tenant it describes |
 | **Workstream B** ||||
 | 34 | `X-Forwarded-For` is not forgeable | rate-limit endpoint with a forged `XFF` from an untrusted peer | still rate-limited (per real peer IP) |
 | 35 | Apple UA routing survives the proxy | `/.well-known/caldav` with UA `remindd` **through the LB** | 301 → `/caldav-compat` |
@@ -1651,7 +1651,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 14 | §9.4 appliance control panel + diagnostics | 12 | rows 49-50 | not started (W2) |
 | 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` | not started (W4) |
 | 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | not started (W4) |
-| 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **DESIGN RESOLVED 2026-09-29, not started** — §6.6 is now a full spec, settled by 16 questions (§18.20). Pre-dispatch control-plane router on one `admin_host`; own credential store; config allowlist is authoritative; metadata only; delete stays CLI-only; audit in the same transaction, both paths. **It is a breaking `TenantStore` signature change, and it is blocked on k=1** — §7.2's `N..k` needs a shared control plane and shared sessions first |
+| 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **PHASE 1/3 DONE 2026-09-29** (`a5ad7aa4`) — the audit trail and the breaking `TenantStore` signature change, landed and green. Every mutating method takes `&Actor` and writes its row **in the caller's `BEGIN IMMEDIATE` transaction**; `audit()` takes `&mut Transaction`, so the borrow *is* the guarantee and a caller cannot bypass it with another tool. Fail-closed by propagation, not by a separate mechanism. The CLI's private `config_json` write is gone — it is `TenantStore::set_config_json` now, so there is no unaudited path left. Row 33 **and** row 33b (an audit insert that fails takes the mutation with it) both pass; two mutations of the store code are caught. **Phase 2** (admin credential store, `platform_admins` — the table and its lockout columns now exist but nothing writes to them, the `platform_admins` config allowlist, `admin_host` + its k=1 acknowledgement, `tenant create --host` collision check) and **phase 3** (the pre-dispatch router and the panel; row 32 needs phase 3) are not started. The k=1 ceiling is unchanged and unfixable in code: §7.2's `N..k` needs a shared control plane and shared sessions, so the acknowledgement is the operator's |
 | 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant | not started (W5) |
 | 19 | §10 source offer page + CI check | 15 | row 39 | not started (W5) |
 | 20 | §7.5 quotas, §7.2 load measurement | 17 | row 37; the §7.2 number is recorded | not started (W6) |
@@ -3350,7 +3350,13 @@ a second control plane somewhere unexpected.
 
 ## 18.20 Item 17's design — sixteen questions, and what the answers changed (2026-09-29)
 
-**Nothing implemented.** §6.6 is now a spec rather than three bullets, and this
+**Phase 1 has since shipped** (`a5ad7aa4`, 2026-09-29): the audit trail, the
+breaking `TenantStore` signature change and the removal of the CLI's private
+`config_json` write. Everything below is the design record that preceded it and is
+unchanged by it. The credential store, the config allowlist and the router itself
+are phases 2 and 3.
+
+§6.6 went from three bullets to a spec, and this
 is the log of how it got there and which parts of the original text it contradicts.
 
 The design was settled by asking, not by choosing. Sixteen questions across four
