@@ -1413,7 +1413,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 7 | §6.1 `make_app` → `make_app_for` (**refactor only**) | 2 | **98/98, zero test edits** | **DONE 2026-09-28** — body moved verbatim (222 lines, empty `diff`), zero test files touched, digest canary unchanged, 509 workspace tests, clippy 34→32, aarch64 +0.04%, and 9/9 CI jobs green. The `tenant` parameter was then delivered separately, without touching the refactor claim — see §18.11 and §18.12 |
 | 8 | §6.1–6.2 HostDispatch + control plane + stores | 7 | rows 24-25, 29 | **DONE 2026-09-29** — the `tenant` type + `make_app_for` parameter (§18.12), the control plane + `TenantStore` + migration (§18.13), `StoreBundle` + the LRU (§18.14), `HostDispatch` + `[tenancy]` config (§18.15), and **the gate itself: rows 24, 25 and 29 through a real server** (§18.16). `Host` resolution works, two tenants get two databases and two routers, and cross-tenant auth and resource access both fail as the rows require |
 | 9 | **§6.4 export/rsvp/register tenant scoping** | 8 | **rows 26-28 — SAFETY-CRITICAL** | **DONE 2026-09-29** — all three public routers are tenant-scoped and rows 26-28 pass end to end (§18.17). `rsvp_secret` is now per-tenant, which was the real cross-tenant forge. **§3.6's config merge came with it** — item 9 could not be done before item 10, see §18.17 |
-| 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | not started (W3) |
+| 10 | §6.3 per-tenant config overrides | 8 | rows 30-31 | **DONE 2026-09-29** — the merge shipped with item 9; this item closed its **command-side** gap. `OMNICAL_TENANT` selects a tenant so a command sees that tenant's `config_json`, and the control plane is now created **0600** because it holds SMTP passwords (§18.18) |
 | 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | not started (W3) |
 | 12 | §9.2 appliance firmware image | 4, 6 | rows 46, 48 | not started (W2) |
 | 13 | §9.3 first-boot setup mode | 5, 12 | rows 46-47 | not started (W2) |
@@ -2949,6 +2949,91 @@ guess at the schema did.
   poller, which `cmd_serve` spawns once per process; per-tenant means N pollers,
   which is a §7 wave-3 decision. Recorded in `tenant_overrides` rather than left
   as a silent gap.
+
+---
+
+## 18.18 Item 10 — the command side of per-tenant config, and a 0644 credential (2026-09-29)
+
+**Shipped:** `OMNICAL_TENANT` selection in `src/main.rs`, `Config::with_tenant_overrides`,
+`0600` control-plane creation, `tests/tenant_overrides.rs` (new, 290 lines). Server
+`029d2930`, packaging `8d1324a`, **9/9 CI green**. Workspace 602 → 608,
+aarch64-musl **+5,320 bytes**.
+
+### The gap was on a different surface than §6.4's rows
+
+§6.4's rows are about what the **server** does with a `Host` header. Rows 30-31
+are about what a **command** does, and §6.4's tests never touch it.
+
+`rustical invites create --send` picks its SMTP identity from
+`config.scheduling.smtp[0]` and builds its register link from
+`config.subscriptions.public_url` — both from the config *file*. The per-tenant
+overrides live in the *control plane*. So an admin operating on tenant A's data
+would have sent A's invitation with the **platform's** `From:` and a link to the
+**platform's** host, and nothing in §6.4's tests would have noticed.
+
+`OMNICAL_TENANT=<slug>` selects a tenant, applied in `load_config` — the single
+place every command already goes through, so no command can forget it.
+`rustical tenant` (item 11) will make the selection explicit rather than ambient.
+
+### Why not `RUSTICAL_TENANT`
+
+Because config is loaded through `Env::prefixed("RUSTICAL_").split("__")`, every
+`RUSTICAL_*` variable is read as a **config key** — and `Config` is
+`deny_unknown_fields`, so `RUSTICAL_TENANT` is not ignored, it makes **every
+command fail** with `unknown field: found 'tenant'`. The first version used that
+name and failed exactly that way, on every command, which is how it was found.
+
+A separate prefix is also the honest shape: this is a *selection*, not a
+configuration value, and it should not be settable in `config.toml` next to
+`[tenancy]`.
+
+An unknown or **suspended** tenant is refused rather than falling back. The
+fallback is quiet and expensive: an admin who believes they are inviting someone
+on tenant A's behalf, whose invitation goes out with the platform's own identity
+and the platform's own link. Nothing about the resulting mail is obviously wrong.
+
+### §6.3's "critical" note was true: the control plane held secrets at 0644
+
+Per-tenant `scheduling.smtp` credentials live in `tenants.config_json`, and a
+SQLite file is created **0644** — world-readable. On a shared host, every other
+account on the machine could read every tenant's SMTP password. Verified on this
+machine before changing anything, not assumed.
+
+Now created with `OpenOptionsExt::mode(0o600)` **before** SQLx opens it, so
+there is no window in which the file exists world-readable — `set_permissions`
+after the fact would have one. An existing control plane keeps its mode, so an
+operator's deliberate `0o640` for a group-readable service account survives a
+restart.
+
+### A refusal test that was green against a build that *did* fall back
+
+`a_named_tenant_that_does_not_exist_refuses_rather_than_falling_back` first ran
+`subscriptions add` with a non-existent collection — so the command failed for an
+unrelated reason and the test passed **even when the code silently fell back to
+the global config**. The fallback mutation left all six tests green.
+
+It now runs `principals list`, which succeeds on its own, and asserts that same
+command succeeds with no selection *first* — so the failure is attributable to
+the refusal. The fallback mutation now fails two tests.
+
+Third instance of this shape after §18.16 and §18.17. The pattern is consistent
+enough to state as a rule: **a negative assertion needs a positive control in the
+same file**, or it will pass against the bug it was written for whenever anything
+else in the path can also produce that result.
+
+### What is not covered
+
+Row 30's gate is "`From:`/`Return-Path` are tenant A's identity", and the bytes
+that leave the process come from `send_mail(account, &account.identity, …)`.
+This item asserts the two halves that could regress — the account a command
+*resolves*, and the `From:` that account produces via the product's own
+`build_registration_invite` — but **not** an actual SMTP transaction.
+
+It cannot cheaply: `send_mail_inner` requires the peer to advertise `STARTTLS`, so
+a fake SMTP server needs a certificate, and no cert-issuing crate (`rcgen`) is
+vendored in this workspace. Adding one as a dev-dependency is a worse trade than
+naming the gap, because the untested half is `MAIL FROM:` framing in a function
+the global-tenant path already exercises.
 
 ---
 
