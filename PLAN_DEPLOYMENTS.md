@@ -3732,38 +3732,45 @@ makes the item's design decidable.
 *End of plan. **Where this actually stands, 2026-09-29.***
 
 *§5 is done except the deferred rotation (item 1 — user decision; the runbook
-is written and the old key and 15 app tokens are still live). **§6 items 2-11
-and 17 are shipped and W3 is complete.** The admin surface exists: audit trail,
+is written and the old key and 15 app tokens are still live). **§6 items 2-11 and
+17 are shipped and W3 is complete.** The admin surface exists: audit trail,
 credential store, and the panel on its own host. **§7.3.4 is closed** — the
 `X-Forwarded-For` bypass is gone, fail-closed, and gated in both directions over
-a real socket. **The `.down.sql` audit is done and gated** (§18.21): 17 pairs,
-all reversible; the plan had said 19 and had been counting the wrong thing.*
+a real socket. **The `.down.sql` audit is done and gated** (§18.21): 17 pairs, all
+reversible; the plan had said 19 and had been counting the wrong thing.*
 
-*On safety: **§6.4 is done** (§18.17) — the three routers mounted outside the
-auth layer are tenant-scoped, and the RSVP HMAC is per-tenant, which was the one
-real cross-tenant forge. **§7.3.4 is done** (`c26a3947`) — and the admin panel
+*On safety: **§6.4 is done** (§18.17) — the three routers mounted outside the auth
+layer are tenant-scoped, and the RSVP HMAC is per-tenant, which was the one real
+cross-tenant forge. **§7.3.4 is done** (`c26a3947`) — and the admin panel
 inherited that exposure through the same `HostDispatch`, so its login limiter, the
 one guarding the credential that crosses every tenant boundary, is closed by the
-same mechanism. §5.2 is done but for the deferred rotation, so **one live
-credential exposure remains and it is waiting on a maintenance window, not on
-code.***
+same mechanism. **§9.2-9.4 are done where they can be proved without hardware**
+(§18.22): the appliance re-provisions itself after a flash, a factory unit offers
+a LAN-only first-boot wizard, and the support bundle is gated on containing no
+secret. §5.2 is done but for the deferred rotation, so **one live credential
+exposure remains and it is waiting on a maintenance window, not on code.***
 
-*Three of the plan's own descriptions turned out to be wrong when tested rather
-than assumed, and each is now corrected in place: row 35's expected redirect is
-**308**, not 301; §7.3.3's failure mode for a `User-Agent`-stripping proxy is a
-**400**, not a misdirected redirect; and §14's migration count was **17 pairs
-plus 4 base files with no down**, not 19 pairs. Two rows also had no owner at
-all — row 42 and the audit — and both now sit in **item 21**.*
+*Four of the plan's own descriptions turned out to be wrong when tested rather
+than assumed, and each is now corrected where it lives: row 35's expected
+redirect is **308**, not 301; §7.3.3's failure mode for a `User-Agent`-stripping
+proxy is a **400**, not a misdirected redirect; §14's migration count was **17
+pairs plus 4 base files with no down**, not 19; and **§9.2 and §9.3 were
+individually plausible and jointly wrong** — item 12's postinst seeded a base
+config, which is what forced §9.3's setup mode to guess whether the box was
+*configured*, and the guess turned a misconfigured server into an invitation to
+re-create the administrator from the LAN.*
 
-*On the remaining work: §5, §6 and the security part of §7.3 are done. What is
-left is the appliance (§9.2-9.4), the hosted artefacts (§7.1), operations
-(§7.4), the source offer (§10), quotas and load (§7.5), and the upgrade path
-(item 21). One thing surfaced during item 16 has no item and is not a
-configuration task: **row 36 cannot be tested because this fork has no
-WebDAV-Push notification socket**, so implementing RFC 8525 is a feature that
-does not yet exist — a test asserts the absence so the row is revisited the day
-it does.*
+*Three things had no owner and now do. The `.down.sql` audit and row 42 are
+**item 21**. The deferred `rustical tenant usage` job is **item 20(a)**, with the
+gate §6.6.6 promised but never wrote. And **RFC 8525 push notification** has no
+item, because row 36 cannot be tested — this fork has no notification socket at
+all, so implementing one is a feature rather than an edge configuration task.*
 
+*On the remaining work: the hosted artefacts (§7.1), operations (§7.4, item 18),
+the source offer (§10, item 19), quotas and load (§7.5, item 20), the upgrade
+path (item 21), and the parts of §9.4 and §9.5 that need a flashed unit —
+including `dav-tls`'s hard-pinned `WAN_IF`/`WAN_IP`, which is the one place §9
+needs genuine new work in that crate.*
 
 *Escalate to the user rather than deciding: the history rewrite (§5.2.5), the
 Q1-Q8 answers (§17), the credential rotation window (item 1), and anything in
