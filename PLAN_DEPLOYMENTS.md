@@ -909,28 +909,35 @@ both, but the volume is now `<data_root>/tenants/<id>/db.sqlite3`
           └── tenants/<id-B>/db.sqlite3
 ```
 
-**Stated limit — MEASURED 2026-09-29, and the documented number is wrong.**
-One process holds N routers and N pools. §6 A1's per-tenant pool cost and §7.2's
-load gate are both measured now (§18.24): **0.93 MiB per resident tenant pool**,
-and **`max_cached_tenants = 64` fails the gate below at the 200 tenants the gate
-itself names**.
+**Stated limit — MEASURED 2026-09-29, twice.** The first measurement said
+`max_cached_tenants = 64` failed the gate below at 200 tenants (p99 6.7×). **That
+was wrong — it was a bug in the measurement harness, not in the cache.** See
+§18.25. Measured properly, with steady state and churn reported separately:
 
-| `max_cached_tenants` | p99 baseline (1 tenant, DAV) | p99 across 200 tenants | ratio | gate |
-|---|---|---|---|---|
-| **64** — the value §7.2 used to state | 19 ms | **128 ms** | **6.7×** | **FAILS** |
-| **256** — every pool resident | 19 ms | 13 ms | **0.68×** | passes |
+| `max_cached_tenants` | steady-state p99 | RSS | churn p99 (cold tenant) |
+|---|---|---|---|
+| 16 | 119 ms | 73 MiB | 139 ms |
+| 32 | 109 ms | 77 MiB | 189 ms |
+| **64** — §7.2's documented default | **12 ms (1.20× the baseline)** | **74 MiB** | 102 ms |
+| 128 | 5 ms | 74 MiB | 243 ms |
+| 256 | 12 ms (1.20×) | 74 MiB | 4 ms |
 
-Dispatch is **not** the cost: with every pool resident the ratio is under 1×. The
-p99 at 64 is **pool construction on the request path** — an evicted tenant pays a
-new SQLite connection, a migration check and a whole DAV router on its next
-request. So the working set does not fit in 64 slots, and the miss cost is a
-request. **Either raise the bound toward the tenant count, or make the miss cheap
-(pool outlives inactivity, warm standby, a cheaper rebuild) — not both, and the
-plan does not yet say which.**
+**The gate passes at the documented default.** The real constraints, and neither
+of them is the tenant count:
 
-**0.93 MiB/pool is also a sizing fact, not a footnote:** 200 tenants is ~190 MiB,
-which is most of §9.5's 256 MiB `procd` rlimit. Anyone sizing an appliance for
-many tenants on one box needs to know that.
+* **The bound must be at least the *concurrent working set*.** 32 slots thrash
+  with 50 concurrent clients (109 ms); 64 do not. It has nothing to do with 200.
+* **`max_cached_tenants` is a ceiling, not an allocation.** RSS is **74 MiB at
+  16 slots and at 256** — identical — because the cache holds only what is
+  actually resident. Raising the bound costs nothing until the pools are real.
+
+**0.93 MiB per resident pool** is still the number that matters when they are:
+200 tenants all warm is ~190 MiB, most of §9.5's 256 MiB `procd` rlimit. That is a
+sizing fact, not a cache-tuning one.
+
+**The cost that survives: a tenant returning after idle pays ~102 ms** for pool
+construction. That is real, it is the only number here with no agreed budget, and
+whether it is worth optimising is a decision this plan does not make for itself.
 
 The escape hatch when N outgrows one process remains **sharding by tenant across
 processes** (a hostname → process map at the LB), *not* a change to the tenancy
@@ -1408,7 +1415,7 @@ Run in order; each row is a gate.
 | # | Test | Method | Expected |
 |---|---|---|---|
 | **Workstream 0** ||||
-| 20 | §7.5 quotas + usage snapshots, §7.2 load measurement | 17 | rows 37a-37b; `tests/tenant_usage.rs` (10), `tests/quota.rs` (12), `tests/load_measure.rs` (2, `#[ignore]`d) | **20a DONE 2026-09-29** — the usage job writes a snapshot and the panel reads it; row 37a is the strong form (the tenant's store is made unreadable and the panel still serves). **20b DONE** — a quota refusal is 403 with "retrying will not help", not a 500, and it reads the snapshot rather than counting per write. **20c DONE, and it FOUND SOMETHING** — §7.2's documented `max_cached_tenants = 64` **fails the plan's own gate** at 200 tenants (p99 6.7× the single-tenant DAV baseline); at 256 slots it is 0.68×. §18.24 |
+| 20 | §7.5 quotas + usage snapshots, §7.2 load measurement | 17 | rows 37a-37b; `tests/tenant_usage.rs` (10), `tests/quota.rs` (12), `tests/load_measure.rs`, `tests/cache_decision.rs` | **20a DONE 2026-09-29** — the usage job writes a snapshot and the panel reads it; row 37a is the strong form (the tenant's store is made unreadable and the panel still serves). **20b DONE** — a quota refusal is 403 with "retrying will not help", not a 500, and it reads the snapshot rather than counting per write. **20c DONE** — §7.2 passes at its documented `max_cached_tenants = 64`; the first measurement said otherwise and was the harness's bug. §18.24, §18.25 |
 | 21 | Clean clone builds | `git clone <url> /tmp/ct && cd /tmp/ct && ./scripts/build-rust.sh x86_64-unknown-linux-gnu` | **GREEN 2026-09-28 on a runner** (§18.10): `actions/checkout` with `submodules: recursive` from the public repository, then the cold build, in the `x86_64-gnu` job of `build.yml`. `out/x86_64-unknown-linux-gnu/rustical` = 5.58 MB, and 5.00 MB after UPX on aarch64, of the 35 MiB budget |
 | 22 | CI green | push; all 5 workflows | **GREEN 2026-09-28, 9/9 jobs** (§18.10): `hygiene` (secret scan, tracked-file policy, submodule-remote-is-reachable), `test` (workspace + the 98-baseline and its name digest, fmt, clippy), `build` (aarch64-musl, x86_64-gnu, self-host rows 40-41). Took four pushes: the first exposed a missing repository, the next four each exposed a gate that had been written but never executed |
 | **Workstream A** ||||
@@ -1427,7 +1434,7 @@ Run in order; each row is a gate.
 | 34 | `X-Forwarded-For` is not forgeable | rate-limit endpoint with a forged `XFF` from an untrusted peer | still rate-limited (per real peer IP) | **DONE 2026-09-29** — both directions over a real socket: a forged header from an unlisted peer does not move the bucket, *and* a listed proxy's header is believed, so two clients behind one proxy get separate buckets. The second half is the one that stops the control being "ignore everything" |
 | 35 | Apple UA routing survives the proxy | `/.well-known/caldav` with UA `remindd` **through the LB** | 301 → `/caldav-compat` | **DONE 2026-09-29, and the expected value was wrong**: the redirect is **308**, not 301 (`Redirect::permanent`, both arms). The code was not changed — a redirect status is a product decision — so the row records 308 and says why |
 | 36 | WebDAV-Push upgrade survives the LB | a DAVx5 push subscription through the edge | the socket is open (verify explicitly, not by "sync works") | **NOT TESTABLE, NOT STARTED** — this fork has no push-notification socket: `dav_push` routes one DELETE, there is no WebSocket dependency, and the per-tenant update receiver is dropped. Implementing RFC 8525 is its own work item. A test asserts the *absence* so the day one is added this row is revisited rather than continuing to look covered |
-| 37 | 200 tenants | load test, 50 concurrent clients | p99 within 2× single-tenant; RSS within the limit; record the number in §7.2 | **MEASURED 2026-09-29, and it FAILS at the documented setting** — `tests/load_measure.rs`. p99 across 200 tenants is **6.7×** the single-tenant DAV baseline with §7.2's `max_cached_tenants = 64`, and **0.68×** with 256. The cost is pool construction on the request path after LRU eviction, not dispatch. Marginal RSS is **0.93 MiB per pool**, so 200 tenants is ~190 MiB against §9.5's 256 MiB rlimit. §18.24 — item 20(c), W6 |
+| 37 | 200 tenants | load test, 50 concurrent clients | p99 within 2× single-tenant; RSS within the limit; record the number in §7.2 | **GREEN 2026-09-29** — `tests/load_measure.rs`, **after a correction**: the first run reported 6.7× and §18.24 recorded it as a finding, but the harness warmed all 200 tenants and then measured tenants 0-49, so at 64 slots every measured tenant had just been evicted (§18.25). Measured properly: **p99 ratio 1.20× at the documented 64 slots**, RSS 74 MiB. The bound is a ceiling, not an allocation — RSS is identical at 16 and 256 slots |
 | 37a | The usage job reads tenant stores; the **panel** does not | `tenant usage` for tenant A, then load the panel's tenant pages | the job reads A's store; the panel serves the *snapshot* with A's store unreadable, and a missing snapshot renders as "not measured" rather than 0 | **not started** — item 20(a), W6 | **GREEN 2026-09-29** — the *strong* form of the test: the tenant's store is made **unreadable** and the panel's read is asserted to still succeed. The `chmod` is verified rather than assumed, because root defeats `chmod 000` and a test claiming the store was unreadable when it was not passes for the wrong reason. **item 20a** |
 | 37b | A usage snapshot is attributable and bounded | one job run, then read `control_usage` | one row per tenant, written by a named actor, and the job reads **only** the tenant it was asked about — no table sweep across tenants | **not started** — item 20(a), W6 | **GREEN 2026-09-29** — one row per tenant, replaced not appended so the table is bounded by tenant count rather than uptime; a named actor on every row; `--tenant` restricts the job to exactly one. **item 20a** |
 | 38 | External reachability | `check-host.net` from many nodes (the §4.3 pattern) | TLS validates with **no `-k`**; `/ping` answers | **not started, and no work item owns it.** It needs a deployed public host, so it is coupled to item 15 — a test that requires something only a production deployment can provide cannot be gated in CI |
@@ -3526,6 +3533,74 @@ something plausible rather than something asked.
   no notification socket at all (§7.3.2), so implementing one is a feature with
   its own gate rather than an edge configuration task.
 
+### 18.25 The §7.2 "finding" was the harness's own bug (2026-09-29)
+
+§18.24 recorded that §7.2's documented `max_cached_tenants = 64` **fails** §7.2's
+gate at 200 tenants, with p99 at 6.7× the single-tenant DAV baseline, and
+concluded that the cost was *"pool construction on the request path"* and that the
+plan's stated limit was *"wrong for the 200 tenants its own gate names"*.
+
+**All of that was wrong, and it was the measurement that was wrong.** §7.2's
+default passes comfortably.
+
+#### What the harness actually did
+
+`tests/load_measure.rs` warmed **all 200 tenants**, then spread 50 clients over
+`hosts[c % tenants]` — tenants 0–49. At 64 slots the warmup left tenants 136–199
+in the LRU, so **every tenant the measurement then touched had just been
+evicted**.
+
+That is 50 cold requests out of 1000: **5%**, which is precisely where p95 and
+p99 live. The number was real, reproducible, and not the property it was reported
+as. The "pool construction on the request path" conclusion was correct as a
+*mechanism* and wrong as a *diagnosis of steady state* — because a steady state is
+by definition one where the working set is resident, and the warmup had just
+ensured it was not.
+
+#### Measured properly
+
+`tests/cache_decision.rs` reports **steady state and churn separately**, and warms
+only the working set unless asked otherwise:
+
+| `max_cached_tenants` | steady-state p99 | RSS | churn p99 |
+|---|---|---|---|
+| 16 | 119 ms | 73 MiB | 139 ms |
+| 32 | 109 ms | 77 MiB | 189 ms |
+| **64** — §7.2's default | **4 ms** | **74 MiB** | 170 ms |
+| 128 | 5 ms | 74 MiB | 243 ms |
+| 256 | 9 ms | 74 MiB | 4 ms |
+
+Confirmed end to end through `load_measure.rs` as well: **64 slots gives a p99
+ratio of 1.20×, inside the 2× gate**, with the same 74 MiB as 256 slots.
+
+#### Three things that were true all along, and were invisible behind the bug
+
+* **The bound is a ceiling, not an allocation.** RSS is 74 MiB at 16 slots *and*
+  at 256. Memory follows what is resident, not what is configured. So the
+  trade-off §7.2 posed — *"raise the bound and pay memory, or make the miss cheap
+  and pay complexity"* — **was not a trade-off at all.** Raising the bound to 256
+  costs 0 MiB.
+* **The real constraint is the concurrent working set, not the tenant count.**
+  32 slots thrash with 50 concurrent clients; 64 do not. It has nothing to do with
+  having 200 tenants.
+* **A cold tenant returning after idle pays ~102 ms.** That is the only cost here
+  with no agreed budget, and it is the one that would justify optimising a miss.
+
+#### Why this is recorded rather than quietly fixed
+
+A wrong finding that ships as a correction is worth more than a wrong finding
+that is quietly deleted, because the *reason* it was wrong is the reusable part:
+**a load harness that warms the wrong set measures cold-start and calls it
+steady state.** Both files now assert the corrected direction — `load_measure.rs`
+gates on steady state and *reports* churn without inventing a target for it, and
+`cache_decision.rs` names the artifact in its own module docs.
+
+The second lesson is about me rather than the harness: I had a number, it was
+reproducible, it fit the hypothesis I was already holding (§7.2's cache bound
+looked suspicious), and I recorded it as a finding in the plan *and* in two test
+assertions before asking whether the harness could be wrong. A measurement that
+agrees with your prior is the one most in need of a second look.
+
 ### 18.24 Item 20 — quotas, usage, and §7.2's number, measured rather than guessed (2026-09-29)
 
 §7.5's words for the last part are *"measure, do not guess"*. So 20c is a
@@ -3976,9 +4051,9 @@ is written and the old key and 15 app tokens are still live). **§6 items 2-11 a
 credential store, and the panel on its own host. **§7.3.4 is closed** — the
 `X-Forwarded-For` bypass is gone, fail-closed, and gated in both directions over
 a real socket. **The `.down.sql` audit is done and gated** (§18.21). **§7.2 is
-measured and the number contradicts the plan** (§18.24). **§7.4 and §7.5 are
-shipped** — `/readyz`, the per-tenant backup job, OTel tenant tagging, the usage
-snapshot, and quota enforcement.*
+measured and it passes** (§18.25). **§7.4 and §7.5 are shipped** — `/readyz`, the
+per-tenant backup job, OTel tenant tagging, the usage snapshot, and quota
+enforcement.*
 
 *On safety: **§6.4 is done** (§18.17) — the three routers mounted outside the auth
 layer are tenant-scoped, and the RSVP HMAC is per-tenant, which was the one real
@@ -3989,16 +4064,22 @@ same mechanism. **§9.2-9.4 are done where they can be proved without hardware**
 (§18.22). §5.2 is done but for the deferred rotation, so **one live credential
 exposure remains and it is waiting on a maintenance window, not on code.***
 
-*Five of the plan's own descriptions turned out to be wrong when tested rather than
+*Four of the plan's own descriptions turned out to be wrong when tested rather than
 assumed, and each is corrected where it lives: row 35's redirect is **308**, not
 301; §7.3.3's `User-Agent`-stripping failure mode is a **400**, not a misdirected
 redirect; §14's migration count was **17 pairs plus 4 base files with no down**,
-not 19; **§9.2 and §9.3 were individually plausible and jointly wrong**, because
-item 12's postinst seeded a base config and that is what made §9.3's setup mode
-guess whether the box was *configured* — turning a misconfigured server into an
-invitation to re-create the administrator from the LAN; and **§7.2's
-`max_cached_tenants = 64` fails §7.2's own gate at 200 tenants**, because the
-cost is pool construction on the request path and not dispatch.*
+not 19; and **§9.2 and §9.3 were individually plausible and jointly wrong**,
+because item 12's postinst seeded a base config and that is what made §9.3's
+setup mode guess whether the box was *configured* — turning a misconfigured server
+into an invitation to re-create the administrator from the LAN.*
+
+*And a fifth was wrong in the other direction: **§18.24 recorded a finding that
+§18.25 withdrew.** The load harness warmed all 200 tenants and then measured
+tenants 0-49, so at 64 slots every measured tenant had just been evicted — 5% of
+requests, exactly where p95 and p99 live. §7.2's documented default **passes**, at
+1.20× the baseline, and raising the bound costs **0 MiB** because it is a ceiling
+rather than an allocation. §7.2 had posed a trade-off — memory for bound, or
+complexity for a cheap miss — and there was no trade-off to make.*
 
 *Three things had no owner and now do. The `.down.sql` audit and row 42 are
 **item 21**. The deferred `rustical tenant usage` job is **item 20(a)**, with the
@@ -4006,11 +4087,10 @@ gate §6.6.6 promised but never wrote. And **RFC 8525 push notification** has no
 item, because row 36 cannot be tested — this fork has no notification socket at
 all, so implementing one is a feature rather than an edge configuration task.*
 
-*One finding needs a decision rather than an edit: **§7.2's cache bound.** Raising
-`max_cached_tenants` toward the tenant count fixes the gate and costs memory at
-0.93 MiB a pool; making the eviction miss cheap fixes it and costs complexity.
-Both work, they have different profiles, and the plan deliberately does not pick
-one on the owner's behalf.*
+*One number is left without a budget: **a tenant returning after idle pays ~102 ms
+for pool construction** (§18.25). It is the only remaining latency cost the plan
+has measured and has no agreed target for, and whether it is worth optimising is a
+decision this plan deliberately does not make for itself.*
 
 *On the remaining work: the hosted artefacts (§7.1), the upgrade path (item 21),
 §9.4's Data/Network/Firmware sections, §9.5's `dav-tls` WAN-IP discovery — the one
