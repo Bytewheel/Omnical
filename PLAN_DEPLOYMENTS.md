@@ -1410,7 +1410,7 @@ Run in order; each row is a gate.
 | 37a | The usage job reads tenant stores; the **panel** does not | `tenant usage` for tenant A, then load the panel's tenant pages | the job reads A's store; the panel serves the *snapshot* with A's store unreadable, and a missing snapshot renders as "not measured" rather than 0 | **not started** — item 20(a), W6 |
 | 37b | A usage snapshot is attributable and bounded | one job run, then read `control_usage` | one row per tenant, written by a named actor, and the job reads **only** the tenant it was asked about — no table sweep across tenants | **not started** — item 20(a), W6 |
 | 38 | External reachability | `check-host.net` from many nodes (the §4.3 pattern) | TLS validates with **no `-k`**; `/ping` answers | **not started, and no work item owns it.** It needs a deployed public host, so it is coupled to item 15 — a test that requires something only a production deployment can provide cannot be gated in CI |
-| 39 | Source offer | `curl -sI /frontend/source`; download the tarball; `git rev-parse HEAD` in it | matches the running build; the tarball builds in CI | **not started** — item 19, W5 |
+| 39 | Source offer | `curl -sI /frontend/source`; download the tarball; `git rev-parse HEAD` in it | matches the running build; the tarball builds in CI | **GREEN 2026-09-29** — `tests/source_offer.rs` (10) plus `scripts/source-offer-gate.sh` as a CI job. The *reachable-from-the-internet* half is still row 38's and needs a deployed host. **item 19** — item 19, W5 |
 | **Workstream C** ||||
 | 40 | Compose path | `docker compose up` on a clean host, **or** the wizard answers it is given run against the release binary | **DONE 2026-09-28** (§18.7). `/ping` answers, a user registers through the invite flow, and a client syncs — all **green on this host** against the release binary, using the same `rustical setup --unattended` answers the container gets, plus every assertion that does not need a container runtime: the `OMNICAL_SETUP_*` sets match in both directions, the `data-dir`/`db-url` pairing agrees, and the two services are ordered so the server waits for the wizard. **Executing the container runtime is a stretch goal, not part of this row** (user decision, 2026-09-28) — the channel's substance is a working unattended install, and `install.sh` reaches the identical end state with no container at all |
 | 41 | Native path | tarball + `install.sh` on a bare VM | same end state as row 40 — **green 2026-09-28**: `scripts/selfhost-gate.sh` installs with `packaging/native/install.sh` on a clean prefix, runs the wizard, boots the server on the generated config, round-trips a real CalDAV write/read, registers a user through the invite flow, syncs as that user, and re-runs the installer over the live install without losing anything. 60 checks, wired into `.github/workflows/build.yml` as the `selfhost` job |
@@ -1690,8 +1690,8 @@ credential-disclosure incident, not a mess to tidy later.
 | 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` | not started (W4) |
 | 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | **DONE 2026-09-29, PARTIALLY** (`c26a3947`) — the security half is complete and row 34 passes in both directions over a real socket. `X-Forwarded-For` was read unconditionally by **four** rate limiters (registration, *both* password-reset POSTs, admin login) and took its first hop, which is attacker-chosen; it is now honoured only from a listed peer, and only up to the rightmost hop that is not one of ours. Fail-closed by default, malformed entries are a startup refusal, and the peer is plumbed to handlers. **Row 35 is done for the application half**, gated through a real byte-level reverse proxy in `tests/edge_proxy.rs`, with negative controls for both failures. **Row 36 is not testable and is not claimed**: this fork has no WebDAV-Push notification socket at all (no dependency, one DELETE route, the update receiver is dropped), so there is nothing for a proxy to preserve — implementing RFC 8525 is a new work item, and a test asserts the *absence* so the row is revisited the day one is added. §7.3's remaining six requirements (TLS termination, payload limit, timeouts, no path rewriting) are properties of a *deployment*, not of this binary, and are item 15's |
 | 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **DONE 2026-09-29** (`a5ad7aa4` audit, `3838c716` credentials and the startup refusals, `6374836c` the panel) — all three phases. A control-plane router mounted **ahead of** `HostDispatch` on exactly one `admin_host`, with its own session store and a **distinct cookie name**; it answers a panel request and never forwards down, so there is no path from an admin session to a tenant's data. Config is authoritative throughout: an admin authenticates only if their name is in `platform_admins` **and** has a credential row. Three startup refusals, including a tenant claiming `admin_host` (explicit row *or* derivable, read by ownership so a suspended tenant still holds it). Metadata only, no delete, no usage, no impersonation. Rows 32, 32a-32d and 33 green. **One thing is deliberately not testable and the record says so:** the request-path `admin_host` guard is redundant with the construction guard, so mutating either alone changes nothing — both must go, and `has_admin_panel` is what makes that assertable. The k=1 ceiling is unchanged and unfixable in code: §7.2's `N..k` needs a shared control plane and shared sessions, so the acknowledgement is the operator's |
-| 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 15 | a restore drill per tenant | not started (W5) |
-| 19 | §10 source offer page + CI check | 15 | row 39 | not started (W5) |
+| 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 17 | `tests/readiness.rs` (6), `tests/backup_all.rs` (7), `tests/tenant_telemetry.rs` (12) | **DONE 2026-09-29** — `/readyz` is a **separate** endpoint from `/healthz` and must stay one, because the two have opposite dependency rules. `backup --all-tenants` is C7's payoff, and partial success is a non-zero exit. Per-tenant span tagging, with the trap that `Span::record` is a silent no-op on a span that did not declare the field. §18.23 |
+| 19 | §10 source offer page + CI check | 15 | row 39; `scripts/source-offer-gate.sh` in CI | **DONE 2026-09-29** — `/frontend/source`, unauthenticated on every host **including the single-tenant path**, because §10.2.4 makes the appliance AGPL-licensed too and a page that 404s on the model we ship hardware on is a page that is not there. The commit is baked in at build time, and the page **refuses to offer a tarball it cannot match to a commit**: no commit, or a dirty tree, means the link is withheld and the page says that is not acceptable under §13 |
 | 20 | §7.5 quotas + usage snapshots, §7.2 load measurement | 17 | row 37; **rows 37a-37b**; the §7.2 number is recorded | **not started (W6), and it now owns the `rustical tenant usage` job** — which §6.6.6 promised would be "a follow-up item with its own gate" and never named. Three parts, in this order. **(a) `rustical tenant usage`**, writing a usage snapshot per tenant into the control plane. This is the **first thing in the whole design to read across the tenant boundary**: §6.6.6's panel never opens a tenant's database, and this job is where that boundary is deliberately crossed, so the property to preserve is that **the panel does not change** — it reads the snapshot, never the store. Rows 37a-37b. **(b) quota *enforcement*** in the write path, which §7.5 calls wave 3 and is the only part of quotas with real blast radius: it is the first change that makes a write *fail* because of a customer's plan, and the error has to be the customer's own limit and not a 500. **(c) the §7.2 load number** (row 37), which needs (a) to be meaningful — p99 against 200 tenants says nothing about per-tenant caches you have not measured. |
 | 21 | `rustical upgrade --rollback` | 4, 18 | row 42 | **CREATED 2026-09-29, not started** — the item that had **no owner**: §12 row 42 (upgrade N→N+1) said so in its own status cell, and §14's `.down.sql` audit was a mitigation with nothing behind it. Both now live here. The design question is settled by §18.21 (the schema rollback works; the data loss and the UID rewrite do not go away), so the item is *decidable* rather than open-ended. `backup`/`restore` already shipped (item 4); what is missing is the binary swap, and `rustical restore` is the only lossless option it has to fall back to |
 
@@ -3504,6 +3504,113 @@ something plausible rather than something asked.
   item 16, and **no item owns it**. Row 36 cannot be tested because this fork has
   no notification socket at all (§7.3.2), so implementing one is a feature with
   its own gate rather than an edge configuration task.
+
+### 18.23 Items 18 and 19 — the operations and the compliance page (2026-09-29)
+
+Two items, and the through-line is that **each one has a failure that looks like
+success**. A readiness probe that always says ready, a backup job that silently
+backs up nothing, a tracer that exports to nowhere, and a compliance page that
+renders correctly and points at the wrong tree all produce green logs and green
+builds.
+
+#### `/readyz` is a different endpoint from `/healthz`, and must stay one
+
+`/healthz` (item 7) deliberately does **not** consult the control plane, and its
+own doc comment records why: a control-plane outage that marks every instance
+unhealthy causes the thundering herd the check provokes. That reasoning is
+correct, so `/healthz` must not grow a database check.
+
+Readiness has the **opposite** trade. A false negative sends traffic somewhere
+that can serve it; a false positive *is* the outage. So `/readyz` checks the
+control plane and every **cached** tenant's store, and the empty cache is
+`skipped`, not `failed` — a cold instance has loaded no tenants, so none is
+broken, and reporting otherwise takes a starting instance out of rotation at the
+moment it is trying to join, which is how a rolling deploy becomes a full outage.
+
+What it deliberately does **not** check, each stated in the module: disk, because
+a `df` check that fails on a full volume takes the whole fleet out at once and
+turns one full disk into an outage for every tenant; migrations, because that is a
+deployment fact; and uncached tenants, because building a pool per tenant to
+probe it would be a load generator pointed at ourselves on a request path.
+
+`healthz_is_not_readyz_and_must_stay_that_way` reads the liveness handler's
+*source* and fails if a dependency check ever appears in it, so merging the two
+becomes a deliberate edit.
+
+#### `backup --all-tenants` is where C7 pays
+
+One archive per tenant, so restoring a customer is a one-file operation with no
+shared failure and nothing else to stop. The command exists to **report**, and
+the first version had a bug the tests caught immediately: `cmd_backup` names its
+archive `omnical-backup-<timestamp>.tar` and a timestamp has one-second
+resolution, so 200 tenants in a loop all wrote to the **same path** and each
+overwrote the last. Three tenants, one archive, two customers' data silently
+gone — which is exactly the failure the command exists to prevent, arriving
+through the command's own naming. Each tenant now gets its own directory, which
+also makes a restore drill obvious.
+
+Partial success is an `Err` and a non-zero exit. A cron job that backs up 3 of
+200 and exits 0 is the specific thing this prevents, and `one_failure_of_two_
+hundred_is_a_failure` is the test that says so in its name.
+
+#### The trap in the telemetry API was mine
+
+`Span::record` is a **silent no-op** on a span that did not declare the field. My
+first `tag_span` returned `()` and a handler calling it from its own
+`info_span!("work")` got an unattributable span with no diagnostic at all — and
+`Span::record` returns `&Span`, so it cannot report success either. The fix uses
+`Span::field(...)`, which is the only way to *ask*, and the function now warns and
+returns `false`.
+
+`app.rs`'s `http-request` span already declared a `tenant` field "for exactly this
+purpose", so the tag goes there rather than into a parallel field set — and a
+test reads `app.rs` to assert every field `tag_span` records is **declared**,
+because a rename that misses that list makes the tag vanish with no error.
+
+The tag is a plain `tracing` field, not an `OpenTelemetry`-only one, and that is
+the point: `opentelemetry` is **not in the default build**, so an OTel-only tag
+would be invisible in every real deployment and appear to work in the one
+environment nobody looks at.
+
+#### §10's page refuses to lie
+
+A tarball link with no commit is the offer without the offer: it satisfies the
+letter of §10.3 and none of its purpose. So when the build had no repository, or
+the tree was dirty, the page **withholds the link** and says that this is not
+acceptable under §13. Both cases are a compliance failure, and a page edited into
+a softer sentence with no other change is a plausible review accident — so the
+wording is asserted, and a mutation that softens it fails the suite.
+
+The commit is baked in at build time because it cannot be found at runtime: there
+is no `.git` beside a deployed binary, and on the appliance the whole point is
+that it is a sysupgrade image with no repository on the device. `dav-tls`'s SHA
+cannot be seen from here at all, so the release job passes it in and the page
+says "unknown" rather than inventing a second SHA equal to the server's.
+
+#### Three bugs found by running the gates against real artefacts
+
+* `cut -d' ' -f2` on `commit:     <sha>` returns an **empty field**, because the
+  header is column-aligned with a run of spaces. The §10.3 gate reported "the
+  binary does not report a commit" on a binary that plainly reported one.
+* `support-bundle --no-config` still required a config to parse, so a freshly
+  flashed appliance — which has none, and is exactly when a bundle is wanted —
+  answered `missing field 'data_store'`. A support bundle you cannot produce on
+  the one machine that most needs it.
+* A `git archive` tarball has no `.git`, so the §10.3 comparison cannot be made at
+  all. The gate **reports that** rather than assuming it, because a check that
+  silently degrades to "ok" when its input is missing is worse than no check.
+
+#### Mutations
+
+Thirty-one tests across six files, and **fourteen mutations**, all caught. Two
+passed the suite on the first attempt and are worth naming, because both are the
+kind that survives review:
+
+* an emptied failure message in the backup report — the tenant was still recorded
+  as failed, so the exit status was right and the log line was `FAIL acme: ` with
+  no reason;
+* a store check that was never reached, because the fixture's control plane did
+  not exist on disk.
 
 ### 18.22 Items 12-14 — the appliance, and the two bugs that came out of it (2026-09-29)
 
