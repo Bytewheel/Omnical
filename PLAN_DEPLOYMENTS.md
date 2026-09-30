@@ -1701,7 +1701,7 @@ credential-disclosure incident, not a mess to tidy later.
 
 | # | Work item | Depends on | Gate | Status |
 |---|---|---|---|---|
-| 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401, **and `drill verify` exits 0** | **PARTIALLY DONE 2026-09-30 (§18.29). H1 the TLS key: ROTATED and revoked, new serial `059C0280…`, verified externally with no `-k`. H2 the tokens: 19 guest tokens revoked (`app_tokens 69 → 50`); **the 50 tokens across 11 named accounts remain** because nine of those accounts belong to other people and the runbook requires telling them first. Retention verified against production: every other table unchanged, `integrity_check: ok` |
+| 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401, **and `drill verify` exits 0** | **DONE 2026-09-30 (§18.29).** H1: TLS key rotated (`f6eaefb0…` → `addf644b…`, serial `059C0280…`) and revoked, verified externally with no `-k`. H2: all 69 app tokens revoked (19 guest + 50 across 11 accounts) and 50 fresh ones minted into `pass`; the Apple profile was regenerated from them. Retention verified across the whole window: **only `app_tokens` moved**, every other table identical, `integrity_check: ok` throughout. **Two gates are recorded as unverified, not passed** — the CA revocation (no OCSP URI, CRLs 404, `/acme/cert/` needs auth) and a positive authenticated DAV request with a fresh token (the DAV base path was never determined, so all three paths returned 404) |
 | 2 | §5.2.3-4 `.gitignore` + `.gitmodules` | — | **clone smoke test green** | **DONE** — both green |
 | 3 | §5.4 CI | 2 | all green on push | **WRITTEN (3 of 5)**, and the first push proved they are wired — all three ran, all three red, all three on the same missing-repository cause (§18.9). `hygiene`/`build`/`test`; `docker`/`release` deferred to Wave 4/5. Plus `submodule-url-exists`, added 2026-09-28 so the next occurrence of that failure is legible |
 | 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) | **DONE 2026-09-28** — both commands shipped, 15-test restore drill green and wired into `test.yml`; see §18.5. `rustical upgrade` (row 42) is **not** part of this item and is **not started** |
@@ -3679,7 +3679,44 @@ told before they are cut off, and prefer a window where the affected people are
 reachable."* That cannot be satisfied from a terminal, and the step is
 irreversible. It is the one part of this window that needs a human.
 
-#### Data retention: verified against production
+#### Part 2, completed: all 69 tokens rotated
+
+The operator authorised the remaining 50. All 69 tokens — 19 guest plus the 50
+across 11 named accounts — are now revoked, and 50 fresh secrets were minted and
+stored in `pass` (`secrets/omnical/<principal>/<client>`), from which the Apple
+profile was regenerated: 15 payloads, mode 0600.
+
+**The runbook's Part 2 recipe is wrong in two ways**, both found by running it:
+
+* it says `principals app-token add <principal> <name> <token>` — the subcommand
+  is **`create`**, there is no `add`, and `create` takes **only** `--name` and
+  the principal. It **generates** the secret itself and prints it once;
+* it says to `remove` then `add`. There is an **`app-token regenerate`** that
+  rotates a secret in place, keeping the token row and its id — which is the
+  right operation for re-provisioning a known client. Remove-then-create is the
+  destructive version of it.
+
+Also load-bearing, and not in the runbook: **secrets are stored hashed**
+(`$pbkdf2-sha512$i=1000,l=32$…`). A plaintext token cannot be re-inserted, so
+`pass` cannot be replayed into the server — the router must mint, and its
+one-time output is the only copy. `pass` is the store it is *distributed* from,
+not a source that can be pushed in, despite the direction the architecture
+implies.
+
+**Two defects I introduced and caught:**
+
+* the mint loop used `IFS=$'\t' read -r principal client` over a **three**-field
+  file, so `client` absorbed the leftover token and every display name became
+  `apple<TAB><43-char-token>`. All 50 tokens were created against the *right*
+  principals — the count distribution matched exactly — so the damage was
+  confined to labels, and was repaired with one `UPDATE`. It printed
+  `created=50` and exited 0 throughout;
+* an earlier diff helper printed fields with `x[:0]`, which is **empty by
+  construction**, making two non-empty fields look empty and briefly
+  mis-diagnosing the same file. A diagnostic that cannot print a value should
+  print its length — which it also did, two fields later.
+
+#### Data retention: verified across the whole window
 
 Every table except `app_tokens` is **byte-identical in row count**, and
 `integrity_check: ok`. Live: 31 principals, 34 calendars, 216 events/tasks, 12
