@@ -1433,7 +1433,7 @@ Run in order; each row is a gate.
 | **Workstream B** ||||
 | 34 | `X-Forwarded-For` is not forgeable | rate-limit endpoint with a forged `XFF` from an untrusted peer | still rate-limited (per real peer IP) | **DONE 2026-09-29** — both directions over a real socket: a forged header from an unlisted peer does not move the bucket, *and* a listed proxy's header is believed, so two clients behind one proxy get separate buckets. The second half is the one that stops the control being "ignore everything" |
 | 35 | Apple UA routing survives the proxy | `/.well-known/caldav` with UA `remindd` **through the LB** | 301 → `/caldav-compat` | **DONE 2026-09-29, and the expected value was wrong**: the redirect is **308**, not 301 (`Redirect::permanent`, both arms). The code was not changed — a redirect status is a product decision — so the row records 308 and says why |
-| 36 | WebDAV-Push upgrade survives the LB | a DAVx5 push subscription through the edge | the socket is open (verify explicitly, not by "sync works") | **NOT TESTABLE, NOT STARTED** — this fork has no push-notification socket: `dav_push` routes one DELETE, there is no WebSocket dependency, and the per-tenant update receiver is dropped. Implementing RFC 8525 is its own work item. A test asserts the *absence* so the day one is added this row is revisited rather than continuing to look covered |
+| 36 | WebDAV-Push upgrade survives the LB | a DAVx5 push subscription through the edge | the socket is open (verify explicitly, not by "sync works") | **NOT TESTABLE, NOT STARTED** — this fork has no push-notification socket: `dav_push` routes one DELETE, there is no WebSocket dependency, and the per-tenant update receiver is dropped. **Worked up in `NEXT_AGENT_PLAN.md`.** `tests/trusted_proxies.rs` (`there_is_no_webdav_push_socket_to_test`) asserts the **absence** of `tokio-tungstenite`/`tungstenite`/`async-tungstenite` **on purpose**, so adding a WebSocket dependency fails it by design — **convert it into the real row-36 test, do not delete it, and do not pick a crate name outside that list** just to get past it, which would leave this row falsely claiming coverage |
 | 37 | 200 tenants | load test, 50 concurrent clients | p99 within 2× single-tenant; RSS within the limit; record the number in §7.2 | **GREEN 2026-09-29** — `tests/load_measure.rs`, **after a correction**: the first run reported 6.7× and §18.24 recorded it as a finding, but the harness warmed all 200 tenants and then measured tenants 0-49, so at 64 slots every measured tenant had just been evicted (§18.25). Measured properly: **p99 ratio 1.20× at the documented 64 slots**, RSS 74 MiB. The bound is a ceiling, not an allocation — RSS is identical at 16 and 256 slots |
 | 37a | The usage job reads tenant stores; the **panel** does not | `tenant usage` for tenant A, then load the panel's tenant pages | the job reads A's store; the panel serves the *snapshot* with A's store unreadable, and a missing snapshot renders as "not measured" rather than 0 | **not started** — item 20(a), W6 | **GREEN 2026-09-29** — the *strong* form of the test: the tenant's store is made **unreadable** and the panel's read is asserted to still succeed. The `chmod` is verified rather than assumed, because root defeats `chmod 000` and a test claiming the store was unreadable when it was not passes for the wrong reason. **item 20a** |
 | 37b | A usage snapshot is attributable and bounded | one job run, then read `control_usage` | one row per tenant, written by a named actor, and the job reads **only** the tenant it was asked about — no table sweep across tenants | **not started** — item 20(a), W6 | **GREEN 2026-09-29** — one row per tenant, replaced not appended so the table is bounded by tenant count rather than uptime; a named actor on every row; `--tenant` restricts the job to exactly one. **item 20a** |
@@ -1701,7 +1701,7 @@ credential-disclosure incident, not a mess to tidy later.
 
 | # | Work item | Depends on | Gate | Status |
 |---|---|---|---|---|
-| 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401, **and `drill verify` exits 0** | **runbook written; retention gate built and rehearsed on real data (§18.27)**. Live rotation still needs the router + ACME/DNS + token inventory, so it is **NOT executed** — what changed is that it can now fail |
+| 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401, **and `drill verify` exits 0** | **PARTIALLY DONE 2026-09-30 (§18.29). H1 the TLS key: ROTATED and revoked, new serial `059C0280…`, verified externally with no `-k`. H2 the tokens: 19 guest tokens revoked (`app_tokens 69 → 50`); **the 50 tokens across 11 named accounts remain** because nine of those accounts belong to other people and the runbook requires telling them first. Retention verified against production: every other table unchanged, `integrity_check: ok` |
 | 2 | §5.2.3-4 `.gitignore` + `.gitmodules` | — | **clone smoke test green** | **DONE** — both green |
 | 3 | §5.4 CI | 2 | all green on push | **WRITTEN (3 of 5)**, and the first push proved they are wired — all three ran, all three red, all three on the same missing-repository cause (§18.9). `hygiene`/`build`/`test`; `docker`/`release` deferred to Wave 4/5. Plus `submodule-url-exists`, added 2026-09-28 so the next occurrence of that failure is legible |
 | 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) | **DONE 2026-09-28** — both commands shipped, 15-test restore drill green and wired into `test.yml`; see §18.5. `rustical upgrade` (row 42) is **not** part of this item and is **not started** |
@@ -1714,7 +1714,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 11 | §6.5 `rustical tenant` CLI | 8 | 8 CLI tests | **DONE 2026-09-29** — 8 subcommands and **17 tests**; `delete` without `--confirm` refuses, and `--purge-data` is separate from it (§18.19). `create` discharges the store-materialisation obligation §18.16 and §18.17 recorded. **W3 is now complete** |
 | 12 | §9.2 appliance firmware image | 4, 6 | rows 46, 48 (both need a flashed unit); `scripts/firmware-gate.sh` for everything provable without one | **DONE 2026-09-29** — the payload is an **OpenWrt package**, so a flash restores the binaries, both init scripts and the watchdog *by construction* rather than by a script that can be skipped, which is the difference §9.2's "the image must re-install them" asks for and does not get. `omnical.keep.d` covers the **in-place** `sysupgrade` path, which is a different code path from a fresh flash and is the one that bit us |
 | 13 | §9.3 first-boot setup mode | 5, 12 | `tests/setup_mode.rs` (19 tests); row 47's substance, minus the hardware | **DONE 2026-09-29** — a browser wizard that writes the config, the control DB, tenant #1 and the admin, then `SIGTERM`s itself into normal mode. The LAN requirement is a **per-request peer check, not a bind** (§9.5 already records that pinning an address is what breaks on DHCP retail hardware), and `X-Forwarded-For` is deliberately *ignored* here because nothing is configured yet and any header is an attacker's |
-| 14 | §9.4 appliance control panel + diagnostics | 12 | row 50 (`tests/support_bundle.rs`, 13 tests); rows 49/51 need a unit | **partly done 2026-09-29** — §9.4's **Support** section is the whole value of the panel and it is done and gated. The **Data/Network/Firmware** sections are not built: they are thin wrappers over `backup`/`restore` and a `sysupgrade` call, and building them well needs a unit to test against. The diagnostics bundle is reachable as a procd action, writing to tmpfs |
+| 14 | §9.4 appliance control panel + diagnostics | 12 | row 50 (`tests/support_bundle.rs`, 13 tests); rows 49/51 need a unit | **partly done 2026-09-29** — §9.4's **Support** section is the whole value of the panel and it is done and gated. The **Data/Network/Firmware** sections are not built. **Worked up in `NEXT_AGENT_PLAN.md`**, which corrects the note here: only the `sysupgrade` call needs a unit — `backup`/`restore` already run anywhere (§18.5) and the Network and Firmware sections are read-only, so three of the four pieces are testable on this machine. The `sysupgrade` call is to become injectable the way item 13's `trait SetupRestart` (`src/setup_mode.rs:231`) already made its restart testable. Do not mark rows 49/51 green without hardware |
 | 15 | §7.1 hosted artefacts + Docker image | 3, 8 | builds; `/ping` | not started (W4) |
 | 16 | §7.3 edge config + `trusted_proxies` fix | 15 | rows 34-36 | **DONE 2026-09-29, PARTIALLY** (`c26a3947`) — the security half is complete and row 34 passes in both directions over a real socket. `X-Forwarded-For` was read unconditionally by **four** rate limiters (registration, *both* password-reset POSTs, admin login) and took its first hop, which is attacker-chosen; it is now honoured only from a listed peer, and only up to the rightmost hop that is not one of ours. Fail-closed by default, malformed entries are a startup refusal, and the peer is plumbed to handlers. **Row 35 is done for the application half**, gated through a real byte-level reverse proxy in `tests/edge_proxy.rs`, with negative controls for both failures. **Row 36 is not testable and is not claimed**: this fork has no WebDAV-Push notification socket at all (no dependency, one DELETE route, the update receiver is dropped), so there is nothing for a proxy to preserve — implementing RFC 8525 is a new work item, and a test asserts the *absence* so the row is revisited the day one is added. §7.3's remaining six requirements (TLS termination, payload limit, timeouts, no path rewriting) are properties of a *deployment*, not of this binary, and are item 15's |
 | 17 | §6.6 admin surface + audit | 11 | rows 32-33 | **DONE 2026-09-29** (`a5ad7aa4` audit, `3838c716` credentials and the startup refusals, `6374836c` the panel) — all three phases. A control-plane router mounted **ahead of** `HostDispatch` on exactly one `admin_host`, with its own session store and a **distinct cookie name**; it answers a panel request and never forwards down, so there is no path from an admin session to a tenant's data. Config is authoritative throughout: an admin authenticates only if their name is in `platform_admins` **and** has a credential row. Three startup refusals, including a tenant claiming `admin_host` (explicit row *or* derivable, read by ownership so a suspended tenant still holds it). Metadata only, no delete, no usage, no impersonation. Rows 32, 32a-32d and 33 green. **One thing is deliberately not testable and the record says so:** the request-path `admin_host` guard is redundant with the construction guard, so mutating either alone changes nothing — both must go, and `has_admin_panel` is what makes that assertable. The k=1 ceiling is unchanged and unfixable in code: §7.2's `N..k` needs a shared control plane and shared sessions, so the acknowledgement is the operator's |
@@ -3625,6 +3625,95 @@ deferral: **the cold tenant costs ~102 ms, that is fine, and the machinery to
 avoid it does not exist because it does not help.** `mmap_size` is kept — unlike
 the readahead primitive, it measured.
 
+### 18.29 The maintenance window was run, and two gates nearly lied (2026-09-30)
+
+§5.2 item 1 stopped being deferred. **Part 1 is done and verified; Part 2 is half
+done and the other half is waiting on a human who can reach nine other people.**
+
+#### Part 1 — the Let's Encrypt key. Done.
+
+| | before | after |
+|---|---|---|
+| serial | `06FD83DB0F39B1AF4EC8D781C13A7477ECCF` | `059C0280B918EFD6AB2E1F04C45A49BB8AA6` |
+| key md5 | `f6eaefb0…` (the leaked one) | `addf644b…` |
+| expires | Dec 3 2026 | Dec 29 2026 |
+
+Verified from outside with no `-k`: `Verify return code: 0`,
+`ssl_verify_result=0`, DAV answering `303`, hostname and chain both OK. Issued
+via `acme.sh` + `dns_duckdns`, matching the live `Le_Webroot`.
+
+**`acme.sh --force` re-issued the certificate for the *same* private key.** The
+new serial was different, the deployment was clean, and the warning that this
+command is written to print never fired — because the key had not changed. It was
+caught only by comparing key hashes. `acme.sh` reuses a cached **`.csr`**, and
+the CSR carries the public key, so `--force` re-issues against the *old* key. The
+fix was to move `.key`, `.csr` and `.csr.conf` aside together; moving only the key
+silently produces the same no-op with a *missing* key file.
+
+**That is the near-miss worth remembering:** a rotation that renames the
+credential without changing it looks exactly like a rotation, and would have let
+§5.2's Critical finding be marked closed with the leak fully live.
+
+#### The revocation gate is reported, not independently verified
+
+`acme.sh` returned `Successfully revoked` from Let's Encrypt's authenticated
+ACME API. The runbook's literal gate — *"the old serial is gone from the CA's
+revocation list"* — **could not be checked independently**: LE embeds no OCSP URI
+in this chain, the partitioned CRLs under `ye*.c.lencr.org` returned 404, and
+`/acme/cert/` requires an authenticated POST-as-GET (it answers 404 for a
+certificate that is definitely valid, which is how that dead end was identified).
+Recorded as **revoked per the CA's API, unconfirmed by a second source** rather
+than as a passed gate.
+
+#### Part 2 — app tokens. Half done, deliberately.
+
+19 **guest** tokens were revoked (the runbook sanctions this: no owner to
+re-provision). Verified against production: `app_tokens 69 → 50`.
+
+The other **50 tokens across 11 named accounts were left alone.** They belong to
+Lyns Carlton, Cece, Chris Carlton, two `carltonaudio.com` and three
+`novo-ordo.com` addresses and `nicholas@hawksnestsoftware.com` — **nine people
+other than the operator**, each on Apple clients, DAVx5, Thunderbird and
+vdirsyncer. The runbook's own precondition is *"sequence the work so people are
+told before they are cut off, and prefer a window where the affected people are
+reachable."* That cannot be satisfied from a terminal, and the step is
+irreversible. It is the one part of this window that needs a human.
+
+#### Data retention: verified against production
+
+Every table except `app_tokens` is **byte-identical in row count**, and
+`integrity_check: ok`. Live: 31 principals, 34 calendars, 216 events/tasks, 12
+address books, 209 contacts, 42 scheduling-inbox objects, 19 collection shares,
+15 invites, 10 subscriptions, 9 memberships, 9 group members.
+
+#### Three more ways a green check meant nothing
+
+All three on this run, all three found only by checking a number against
+something outside the tool:
+
+1. **A stale manifest.** Rehearsing the drill had left an archive in
+   `rotation-drills/before/`; the live "before" fingerprint was written beside it
+   and `find | head -1` extracted the *rehearsal* one — reporting 3 principals
+   and 4 events for a database with 31 and 216. `snapshot` now refuses a
+   directory that already holds a backup.
+2. **An un-checkpointed WAL.** The database is in WAL mode and the revocation left
+   **177,192 bytes** unwritten to the main file. Copying `db.sqlite3` alone
+   fingerprinted the *pre-revocation* database, and the manifest could not reveal
+   it: consistent, just old.
+3. **A gate that narrated both outcomes.** `verify` printed *"nothing moved at
+   all — the rotation revoked nothing"* and *"Only app_tokens moved (69 -> 69),
+   which is the revocation working"* — **and exited 0.** Those two lines are the
+   only reason (2) was caught. It now refuses to describe the credential table
+   as rotated unless it moved, and a no-op says so out loud.
+
+Plus three vacuous comparisons in a row on the TLS side, all of which "passed":
+the deployed cert/key **matched** because both `openssl` calls had failed and
+both variables were empty; the new key **differed** because the file did not
+exist; two snapshots were **identical** because the WAL had not been copied.
+`cmp -s` and friends return success when a file is missing. **Compare keys by
+raw public point on OpenWrt, and never trust a check whose inputs you have not
+confirmed are non-empty.**
+
 ### 18.28 Row counts cannot see a dropped column (2026-09-30)
 
 Item 21 (`rustical upgrade --rollback`) shipped with an after-report that prints
@@ -4246,8 +4335,10 @@ makes the item's design decidable.
 
 *End of plan. **Where this actually stands, 2026-09-29.***
 
-*§5 is done except the deferred rotation (item 1 — user decision; the runbook
-is written and the old key and 15 app tokens are still live). **§6 items 2-11 and
+*§5 is done. The rotation (item 1) was **run on 2026-09-30** — the TLS key is
+rotated and revoked, 19 guest tokens are revoked, and **50 app tokens across 11
+named accounts remain live** because nine of those accounts belong to other
+people and the runbook requires telling them first (§18.29). **§6 items 2-11 and
 17 are shipped and W3 is complete.** The admin surface exists: audit trail,
 credential store, and the panel on its own host. **§7.3.4 is closed** — the
 `X-Forwarded-For` bypass is gone, fail-closed, and gated in both directions over
@@ -4292,6 +4383,13 @@ all, so implementing one is a feature rather than an edge configuration task.*
 for pool construction** (§18.25). It is the only remaining latency cost the plan
 has measured and has no agreed target for, and whether it is worth optimising is a
 decision this plan deliberately does not make for itself.*
+
+*On the remaining work: **the two items still open are written up in
+`NEXT_AGENT_PLAN.md`** — item 14's Data/Network/Firmware sections and RFC 8525
+WebDAV-Push (row 36). That file exists because both were mis-scoped once already
+and the mis-scoping read as a decision; it records the traps, and in particular
+that `tests/trusted_proxies.rs` asserts the *absence* of a WebSocket dependency
+on purpose, so adding one fails that test **by design**.
 
 *On the remaining work: the hosted artefacts (§7.1), the upgrade path (item 21),
 §9.4's Data/Network/Firmware sections, §9.5's `dav-tls` WAN-IP discovery — the one
