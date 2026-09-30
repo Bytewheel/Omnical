@@ -1701,7 +1701,7 @@ credential-disclosure incident, not a mess to tidy later.
 
 | # | Work item | Depends on | Gate | Status |
 |---|---|---|---|---|
-| 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401 | **DEFERRED** by user decision; runbook written |
+| 1 | §5.2 H1-H2 rotation + revoke | — | old key revoked, old tokens 401, **and `drill verify` exits 0** | **runbook written; retention gate built and rehearsed on real data (§18.27)**. Live rotation still needs the router + ACME/DNS + token inventory, so it is **NOT executed** — what changed is that it can now fail |
 | 2 | §5.2.3-4 `.gitignore` + `.gitmodules` | — | **clone smoke test green** | **DONE** — both green |
 | 3 | §5.4 CI | 2 | all green on push | **WRITTEN (3 of 5)**, and the first push proved they are wired — all three ran, all three red, all three on the same missing-repository cause (§18.9). `hygiene`/`build`/`test`; `docker`/`release` deferred to Wave 4/5. Plus `submodule-url-exists`, added 2026-09-28 so the next occurrence of that failure is legible |
 | 4 | §8.4 `rustical backup` / `restore` | 2 | restore drill (§12 row 43) | **DONE 2026-09-28** — both commands shipped, 15-test restore drill green and wired into `test.yml`; see §18.5. `rustical upgrade` (row 42) is **not** part of this item and is **not started** |
@@ -3525,9 +3525,13 @@ something plausible rather than something asked.
   admin's session dies whenever the load balancer routes them elsewhere, and
   §6.6.4's answer to that is an operator acknowledgement rather than a fix. It
   arrives with item 15's multi-instance story.
-- The portal's missing CSRF on `POST /register` — recorded, not fixed here, and
-  not copied by the panel. Still open; it is a pre-existing gap in the portal,
-  not something this item introduced or inherited.
+- ~~The portal's missing CSRF on `POST /register`~~ — **never was missing, and
+  this was the plan's own error** (corrected 2026-09-30). `src/register.rs:370`
+  validates a CSRF token on `POST` and `:1506` tests that a missing or stale one
+  is rejected; it was found by reading the handler, not by assuming. No second
+  token was added. Kept here because the claim sat in this list long enough to
+  look like a backlog item, and a plan that lists a fixed thing as open is a plan
+  nobody trusts.
 - **RFC 8525 WebDAV-Push notification** — found 2026-09-29 while implementing
   item 16, and **no item owns it**. Row 36 cannot be tested because this fork has
   no notification socket at all (§7.3.2), so implementing one is a feature with
@@ -3601,10 +3605,88 @@ gets muted, which is worse than a loose gate that names its own limit. **Resolvi
 #### What is left
 
 The cold-tenant cost stands at ~102 ms and is **I/O this box cannot pre-empt
-without flooding its own page cache**. Making it cheap is not a refactor; it is
-either a bounded readahead queue (whose benefit is unproven), or a decision that a
-tenant idle for an hour may take 100 ms to serve its first request. **§7.2 has no
-budget for that and should have one.**
+without flooding its own page cache**. §18.26 originally left this open as "the
+plan has no budget and should have one".
+
+**It has one now (2026-09-30).** The user accepted the cold-tenant budget, which
+closes the only thing §18.26 was actually waiting on. That retires both options
+it named:
+
+* a **bounded readahead queue** — **not built, and recorded as not worth
+  building**. A `posix_fadvise` prototype was implemented and measured; it
+  changed the cold p99 by nothing outside the noise floor, so it was reverted
+  rather than kept on the strength of "bounded" sounding prudent. A queue buys
+  nothing when the bottleneck is the first page's own read;
+* **§7.2's budget for a cold tenant** — **~102 ms, accepted.** Written down
+  rather than inferred, which is what §18.26 asked for.
+
+So the third time this has been asked, the answer is now a decision rather than a
+deferral: **the cold tenant costs ~102 ms, that is fine, and the machinery to
+avoid it does not exist because it does not help.** `mmap_size` is kept — unlike
+the readahead primitive, it measured.
+
+### 18.27 The retention requirement was unfalsifiable (2026-09-30)
+
+§5.2 item 1 has sat as *"deferred by user decision"* with a 222-line runbook and
+no live rotation. The user asked for the maintenance window to be handled, and
+attached the condition that **every calendar, event, task, contact and everything
+else is retained**. That condition is what this section is about, because it was
+the part nobody could actually check.
+
+`docs/operations/credential-rotation.md` verifies that the **credentials** turned
+over — the new cert validates, the old token 401s. Neither gate looks at a row.
+Part 2 is a loop of `app-token remove` against a live production database, run by
+a human under time pressure, ending in real family and work accounts
+(`lynscarlton@gmail.com`, six tokens; `nicholas@carltonaudio.com`, five), and
+**both its gates can go green on a database that has lost somebody's calendar.**
+
+So `scripts/credential-rotation-drill.sh` fingerprints the database before and
+after and fails unless every user table but one is unchanged:
+
+    rotation-drills/before → rotate → rotation-drills/after → verify
+
+`app_tokens` is the single exception, and deliberately: deleting those rows **is**
+the revocation, so counting it as drift would make the check fail on success.
+Every other movement — a calendar, an event, a contact, a principal, a table
+appearing or vanishing — fails with `CUSTOMER DATA CHANGED`. A table *appearing*
+is called out on its own, because a schema migration inside a credential window
+is a much larger change than a credential rotation and should be noticed, not
+absorbed. The fingerprint is the `row_counts` map already in `rustical backup`'s
+manifest, so the drill and the backup cannot disagree about what is in the
+database, and `snapshot` refuses to run against a database failing
+`PRAGMA integrity_check` — *"do not open the window"*, rather than proceed.
+
+**Rehearsed against a real migrated database, not only fixtures, and that is what
+made it worth building.** Both of these were invisible to the fixtures:
+
+* the protected-table list had been written from memory and contained
+  `addressbook_objects`, `davpush_vapid` and `group_ownership` — **none of which
+  exist**. The real names are `addressobjects`, `davpush_vapid_key` and
+  `group_owners`. It is now the 20 tables from `sqlite_master`. The list is what
+  the drill trusts, so guessing it was worse than useless;
+* `verify` read a file that only `selftest` ever wrote, so **the selftest passed
+  and the real run crashed.** A gate testing itself instead of what it gates. The
+  list now travels in the environment. (And `selftest`'s `EXIT` trap closed over
+  a `local` that `set -u` turned into exit 1 *after* all six cases printed green.)
+
+Both would have shipped a *"retention verified"* claim that never ran.
+
+Against real data — 3 calendars, 4 events/tasks, 2 address books, 2 contacts, 3
+principals, 4 tokens — a clean revocation passes with `app_tokens 4 -> 0` as the
+only movement, and deleting one event out of four fails with
+`calendarobjects 4 -> 3 <- CUSTOMER DATA CHANGED`. `selftest` covers the same
+cases plus a no-op rotation that reports the revocation did nothing, and is wired
+into CI.
+
+The drill writes `rustical backup` archives into `rotation-drills/` — **a copy of
+the production database, in the working tree, at the moment someone is handling
+live customer data.** Untracked is not enough; one `git add -A` mid-window would
+publish it. Ignored, and asserted untracked by the existing `tracked-files`
+policy next to the H1/H2 rules.
+
+**The live rotation is still not executed.** It needs the router, the ACME/DNS
+credentials and the token inventory, none of which exist here. **What changed is
+that the window now has a pass condition that can come back false.**
 
 ### 18.25 The §7.2 "finding" was the harness's own bug (2026-09-29)
 
