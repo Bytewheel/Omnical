@@ -1442,7 +1442,7 @@ Run in order; each row is a gate.
 | **Workstream C** ||||
 | 40 | Compose path | `docker compose up` on a clean host, **or** the wizard answers it is given run against the release binary | **DONE 2026-09-28** (§18.7). `/ping` answers, a user registers through the invite flow, and a client syncs — all **green on this host** against the release binary, using the same `rustical setup --unattended` answers the container gets, plus every assertion that does not need a container runtime: the `OMNICAL_SETUP_*` sets match in both directions, the `data-dir`/`db-url` pairing agrees, and the two services are ordered so the server waits for the wizard. **Executing the container runtime is a stretch goal, not part of this row** (user decision, 2026-09-28) — the channel's substance is a working unattended install, and `install.sh` reaches the identical end state with no container at all |
 | 41 | Native path | tarball + `install.sh` on a bare VM | same end state as row 40 — **green 2026-09-28**: `scripts/selfhost-gate.sh` installs with `packaging/native/install.sh` on a clean prefix, runs the wizard, boots the server on the generated config, round-trips a real CalDAV write/read, registers a user through the invite flow, syncs as that user, and re-runs the installer over the live install without losing anything. 60 checks, wired into `.github/workflows/build.yml` as the `selfhost` job |
-| 42 | Upgrade N → N+1 | upgrade, then compare row counts | data intact; `restore` from the pre-upgrade backup works | **not started — item 21, created 2026-09-29.** It previously had no owner, which is why it sat here for six waves. `rustical upgrade`
+| 42 | Upgrade N → N+1 | upgrade, then compare row counts | data intact; `restore` from the pre-upgrade backup works | **DONE 2026-09-30** (item 21, `35049a53`). Rehearsed on a real migrated DB: `20260922120000 → 20260915120000` drops `password_resets` with 3 calendars / 3 events / 3 principals intact, and `--to` below `add_calendar_uid` drops the `uid` column **while every event row survives** — see §18.28. **previous** entry said **not started — item 21, created 2026-09-29.** It previously had no owner, which is why it sat here for six waves. `rustical upgrade`
 | 43 | Backup/restore | `rustical backup` → `rustical restore` on **another** machine | DB opens; expected counts (the §14 row-18 drill, in CI) — **DONE 2026-09-28**; 15 tests in `tests/backup_restore.rs`, run as its own `test.yml` step; see §18.5 |
 | 44 | Wizard idempotence | `rustical setup` twice | second run edits, preserves DB + admin — **DONE 2026-09-28**; 12 tests in `tests/setup_wizard.rs`, run as its own `test.yml` step; the password hash is asserted byte-identical across the re-run. See §18.6 |
 | 45 | Config round-trip | a wizard config loads under the production binary, and vice versa | no `deny_unknown_fields` error either way — **DONE 2026-09-28**: both paths build `Config::default_config()`, so this is structural; asserted in both directions in `tests/setup_wizard.rs`, and the wizard's config was booted with the release binary (`/ping` 200, `/.well-known/caldav` 308, admin login 303) |
@@ -1721,7 +1721,7 @@ credential-disclosure incident, not a mess to tidy later.
 | 18 | §7.4 ops: per-tenant backup jobs, `/readyz`, OTel | 17 | `tests/readiness.rs` (6), `tests/backup_all.rs` (7), `tests/tenant_telemetry.rs` (12) | **DONE 2026-09-29** — `/readyz` is a **separate** endpoint from `/healthz` and must stay one, because the two have opposite dependency rules. `backup --all-tenants` is C7's payoff, and partial success is a non-zero exit. Per-tenant span tagging, with the trap that `Span::record` is a silent no-op on a span that did not declare the field. §18.23 |
 | 19 | §10 source offer page + CI check | 15 | row 39; `scripts/source-offer-gate.sh` in CI | **DONE 2026-09-29** — `/frontend/source`, unauthenticated on every host **including the single-tenant path**, because §10.2.4 makes the appliance AGPL-licensed too and a page that 404s on the model we ship hardware on is a page that is not there. The commit is baked in at build time, and the page **refuses to offer a tarball it cannot match to a commit**: no commit, or a dirty tree, means the link is withheld and the page says that is not acceptable under §13 |
 | 20 | §7.5 quotas + usage snapshots, §7.2 load measurement | 17 | row 37; **rows 37a-37b**; the §7.2 number is recorded | **not started (W6), and it now owns the `rustical tenant usage` job** — which §6.6.6 promised would be "a follow-up item with its own gate" and never named. Three parts, in this order. **(a) `rustical tenant usage`**, writing a usage snapshot per tenant into the control plane. This is the **first thing in the whole design to read across the tenant boundary**: §6.6.6's panel never opens a tenant's database, and this job is where that boundary is deliberately crossed, so the property to preserve is that **the panel does not change** — it reads the snapshot, never the store. Rows 37a-37b. **(b) quota *enforcement*** in the write path, which §7.5 calls wave 3 and is the only part of quotas with real blast radius: it is the first change that makes a write *fail* because of a customer's plan, and the error has to be the customer's own limit and not a 500. **(c) the §7.2 load number** (row 37), which needs (a) to be meaningful — p99 against 200 tenants says nothing about per-tenant caches you have not measured. |
-| 21 | `rustical upgrade --rollback` | 4, 18 | row 42 | **CREATED 2026-09-29, not started** — the item that had **no owner**: §12 row 42 (upgrade N→N+1) said so in its own status cell, and §14's `.down.sql` audit was a mitigation with nothing behind it. Both now live here. The design question is settled by §18.21 (the schema rollback works; the data loss and the UID rewrite do not go away), so the item is *decidable* rather than open-ended. `backup`/`restore` already shipped (item 4); what is missing is the binary swap, and `rustical restore` is the only lossless option it has to fall back to |
+| 21 | `rustical upgrade --rollback` | 4, 18 | row 42 | **DONE 2026-09-30** (`35049a53`). `MIGRATOR`/`CONTROL_MIGRATOR` were `migrate!()` inline in `create_db_pool` and unreachable, so nothing could ask "is this reversible?"; both are now `pub static`. A verified backup is a *precondition* (`--no-backup` is refused with an explanation), row counts are captured before/after and printed as `LOST ROWS`, the 4 base migrations are named as the floor, and `add_calendar_uid` is warned about before it runs. Six tests; rehearsed on a real DB. The **previous** entry said **CREATED 2026-09-29, not started** — the item that had **no owner**: §12 row 42 (upgrade N→N+1) said so in its own status cell, and §14's `.down.sql` audit was a mitigation with nothing behind it. Both now live here. The design question is settled by §18.21 (the schema rollback works; the data loss and the UID rewrite do not go away), so the item is *decidable* rather than open-ended. `backup`/`restore` already shipped (item 4); what is missing is the binary swap, and `rustical restore` is the only lossless option it has to fall back to |
 
 **Items 1-3 before 4-20. Item 9 before any hosted traffic, always.**
 
@@ -3624,6 +3624,52 @@ So the third time this has been asked, the answer is now a decision rather than 
 deferral: **the cold tenant costs ~102 ms, that is fine, and the machinery to
 avoid it does not exist because it does not help.** `mmap_size` is kept — unlike
 the readahead primitive, it measured.
+
+### 18.28 Row counts cannot see a dropped column (2026-09-30)
+
+Item 21 (`rustical upgrade --rollback`) shipped with an after-report that prints
+every table whose row count fell, under a banner reading *"This is what
+`DROP COLUMN` means. The backup above is the only copy."* Rehearsing it against a
+real database instead of only fixtures found the instrument's limit:
+
+    rolled back 20260922120000 -> 20250725225640
+      1 table(s) LOST ROWS:
+        davpush_vapid_key   1 -> 0  (  1 rows gone)
+
+`calendarobjects` reported **3 rows before and 3 after** — every event survived,
+which is true — while the **`uid` column those identifiers lived in was gone and
+unreported**, because no *table* shrank. Every `uid` is lost and the green
+after-report never says so.
+
+So a green after-report does not mean the rollback was harmless. It means **no
+table lost rows**, which is a strictly weaker claim than the one the banner
+implies, and on the one migration where it matters it is the difference between
+"your data is fine" and "your events are fine and every identifier they had is
+gone". Row counts are the wrong instrument for a dropped column.
+
+Two consequences, both in the code rather than the prose:
+
+* **`CONTENT_MUTATING_DOWNS` is a hand-maintained list.** The check cannot find
+  these migrations, so a human has to name them, and the warning fires before the
+  target runs rather than being reported afterwards.
+* **The first version of that list pinned `20260701120000` — a version that does
+  not exist.** The UID warning therefore never fired for the one migration it
+  exists to warn about, and every test passed. `content_mutating_downs_are_real`
+  now pins the constant against the real migration set, so that class of mistake
+  fails instead of passing quietly. Same shape as §18.27's drill finding its
+  three non-existent table names: **hand-maintained lists of facts about a
+  codebase need a test that checks them against the codebase.**
+
+Two more bugs from the same rehearsal, both the same root cause — a rollback
+report that did not distinguish intended change from damage:
+
+* `losses()` reported the **intended** app-token revocation as `LOST ROWS` under
+  the `DROP COLUMN` banner, i.e. how a deliberate revocation gets printed as
+  collateral damage. Split into `losses()` and `expected_shrink()`, which is the
+  same rule `scripts/credential-rotation-drill.sh` uses for the same reason.
+* `--to` was declared `conflicts_with` `--rollback`, so clap rejected the
+  natural form `upgrade --rollback --to X` outright. `--to` alone is still
+  refused, in code, where the message can explain why.
 
 ### 18.27 The retention requirement was unfalsifiable (2026-09-30)
 
