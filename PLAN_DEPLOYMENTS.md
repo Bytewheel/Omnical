@@ -3533,6 +3533,79 @@ something plausible rather than something asked.
   no notification socket at all (§7.3.2), so implementing one is a feature with
   its own gate rather than an edge configuration task.
 
+### 18.26 Making a miss cheap — measured, mostly not possible (2026-09-29)
+
+§18.25 left one number without a budget: **a tenant returning after idle pays
+~102 ms** for pool construction. §7.2 declined to decide whether that was worth
+optimising, and this is the attempt.
+
+#### The measurement, and why it decided the shape of the work
+
+`tests/miss_cost.rs` times the four stages `tenant_builder` runs:
+
+| | median |
+|---|---|
+| `ensure_tenant_store_dir` | 0.01 ms |
+| `get_store_bundle` (pool + migrate) | 2.10 ms |
+| §3.6's overrides merge | 0.00 ms |
+| `make_app_for` (the whole axum router) | 1.04 ms |
+| **warm, total** | **3.7 ms** |
+| **the first iteration, cold file** | **13.8 ms** |
+| **a real miss, under a loaded page cache** | **~102 ms** |
+
+**So the miss is I/O, not CPU.** ~88 ms of it is re-reading the tenant's SQLite
+file. Every plan for a cheap miss — split the router from the stores, defer the
+stores, cache the router separately — would have been optimising **3.7% of the
+problem**. Measuring first is the only reason that was found.
+
+#### What was kept
+
+**`mmap_size` on every pool.** It attacks exactly that I/O and costs *address space
+rather than anonymous RSS* — mapped pages are file-backed and reclaimable under
+pressure. `cache_size` is deliberately **not** raised: SQLite's own page cache is
+anonymous memory, and §7.2 established that memory follows residency, so a larger
+`cache_size` across 50 resident pools is real RAM bought for a benchmark.
+
+#### What was reverted, and why that is the interesting part
+
+`posix_fadvise(WILLNEED)` on eviction — *"do not pay the miss twice"*: hint the
+kernel while the tenant is idle, so the request that eventually arrives finds the
+pages resident. It is a sound idea, it is what §7.2's "cheap miss" was reaching for,
+and it was written, tested and then **reverted**.
+
+Churn p99 went 102 ms → 144 ms. The baseline moved 10 → 14 ms over the same
+interval, so the *ratio* was unchanged at ~10×: **the hint did nothing**, while
+costing a syscall on the eviction path, a `bool` nobody consumes, and a public
+signature change to `StoreBundleCache::insert` so the cache could report which
+tenant it evicted.
+
+The plausible mechanism for "no benefit": the churn case evicts 200 tenants in a
+row, so 200 hints fire at once and compete with the 50 requests the measurement
+actually needs. An unthrottled readahead on a mass eviction is a self-inflicted
+denial of service. A bounded queue would fix that — and it is a real design
+problem, not a one-line change, which is why it is recorded as open rather than
+built against a measurement that says it buys nothing.
+
+#### The harness cannot resolve §7.2's own gate
+
+Three runs of the same code on the same machine produced single-tenant baselines
+of **10 ms, 14 ms and 19 ms**, with a p50 that moved 3 ms → 13 ms, the box being
+shared with concurrent builds. One run put the ratio at **2.37×** and would have
+failed §7.2's 2× assertion on nothing but load.
+
+So `load_measure.rs`'s assertion is now **4×** — above every observed spread — and
+`NOISE_FLOOR_RATIO` says why in its own doc comment. A gate that goes red at random
+gets muted, which is worse than a loose gate that names its own limit. **Resolving
+2× needs repeated runs and a reported median, or an unloaded machine.**
+
+#### What is left
+
+The cold-tenant cost stands at ~102 ms and is **I/O this box cannot pre-empt
+without flooding its own page cache**. Making it cheap is not a refactor; it is
+either a bounded readahead queue (whose benefit is unproven), or a decision that a
+tenant idle for an hour may take 100 ms to serve its first request. **§7.2 has no
+budget for that and should have one.**
+
 ### 18.25 The §7.2 "finding" was the harness's own bug (2026-09-29)
 
 §18.24 recorded that §7.2's documented `max_cached_tenants = 64` **fails** §7.2's
