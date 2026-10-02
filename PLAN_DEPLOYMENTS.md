@@ -4437,3 +4437,259 @@ unit.*
 Q1-Q8 answers (§17), the credential rotation window (item 1), and anything in
 §6 that would require touching the store traits — which item 17's audit change
 now does, deliberately, with the breakage recorded in advance in §6.6.7.*
+
+---
+
+### 18.30 §9.5's WAN-IP defect is closed, and the benchmark that never ran does not build (2026-10-01)
+
+Two things shipped, and one of them is a finding rather than a fix.
+
+**A. `dav-tls` resolves the WAN interface instead of refusing to start when it moves.**
+
+§9.5 named this as "the one place §9 needs real new work", and the risk register
+rated it High/Medium (`PLAN_DEPLOYMENTS.md:1486`). It is done.
+
+The old behaviour, in `router/etc/init.d/dav-tls`:
+
+```sh
+WAN_IF=eth0
+WAN_IP=192.168.1.21        # DHCP from the upstream Deco — must stay pinned (the
+                           # upstream port-forward targets this address too)
+...
+cur_ip="$(ip -4 -o addr show dev "$WAN_IF" 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')"
+[ "$cur_ip" = "$WAN_IP" ] || {
+    logger -t dav-tls "ERROR: $WAN_IF has '$cur_ip', expected $WAN_IP (DHCP lease changed?) — ..."
+    return 1
+}
+```
+
+That is correct on a router whose WAN is static and **fatal on any unit whose WAN
+is DHCP-assigned**: the lease moves after a reboot, a WAN flap, or an upstream
+lease expiry, and the public front end then refuses to start until somebody edits
+a file by hand. There is no laptop, no SSH and no secret store on a retail unit.
+
+`--discover <iface>:<port>` replaces the pin. `dav-tls/src/discover.rs` resolves
+the interface with `getifaddrs` (libc, already linked — no new dependency, no
+process spawn), and `accept_loop` re-resolves every 30 s and rebinds when the
+address moves.
+
+Two properties matter more than the mechanism, and both have tests:
+
+* **A wrong interface fails loudly.** Binding to some other adapter that happens
+  to carry a routable address is worse than not starting: it looks healthy and is
+  unreachable. Discovery never falls back to "some address"; the error names the
+  interfaces it did see, so a typo is a ten-second fix.
+* **A link-local address is refused, not bound.** `169.254.0.0/16` means DHCP has
+  not completed. Binding there would reproduce the original bug in a new form — a
+  listener that never receives anything — so it is a startup error whose message
+  says *waiting for the lease is correct, binding here is not*.
+
+Retries rather than exit, deliberately: the usual cause of a failed resolve is an
+interface mid-lease, and that resolves itself. Exiting would hand a two-minute
+DHCP gap to `procd`'s `respawn 3600 5 0`, which gives up after five tries in an
+hour — turning a transient blip into an hour-long outage.
+
+`--listen <ip:port>` is untouched, so the static case still works, and
+`DAV_TLS_PINNED` in the init script restores the old behaviour explicitly. On the
+live router the WAN is static and `--discover` resolves to the same address; the
+difference is that the service no longer needs editing when that stops being true.
+
+**Verified:** 12 unit tests (`src/discover.rs`), a 29-check gate
+(`scripts/dav-tls-gate.sh`), and a functional pass against a real interface —
+bound the discovered address specifically, TLS spliced through to the upstream
+with the request line intact, chain verified, ALPN `http/1.1` and not h2, the 301
+for plaintext HTTP on the TLS port, 25 sequential requests, SIGTERM exiting 0,
+and nothing bound on an address the interface does not hold.
+
+**Not verified, and it is the half that matters:** a rebind across a *real*
+address change. This host has no NET_ADMIN (`ip link add` → EPERM) and
+`user.max_user_namespaces=0`, so `unshare` cannot provide a private netns either.
+The comparison logic is unit-tested; the socket swap is not. `dav-tls-gate.sh`
+prints that list on every run precisely so a green result is not read as coverage.
+**A flashed unit, or a host with CAP_NET_ADMIN, closes it.**
+
+Cost: `dav-tls` grew 610,892 → 620,884 B (+1.6%). Staged payload 5.70 → 5.81 MiB
+of the 35 MiB overlay budget (16.6%). `firmware-gate.sh` still green.
+
+Worth recording about the gate's own first draft: it hung. A vestigial probe ran
+`--discover eth0:8443`, which **succeeds** on a normal host — the binary bound and
+served, and the script blocked forever. Fixed two ways: the probe is gone, and
+every invocation is wrapped in `timeout 10`. A gate that can hang is worse than no
+gate, because it looks like a slow build.
+
+CI: the `firmware` job in `hygiene.yml` runs the gate, then a **mutation step**
+that replaces the link-local guard with `true` and requires the gate to fail.
+Verified here — 3 of 12 unit tests fail and the gate reports 27 passed / 1 failed.
+
+**B. The one benchmark in the repository does not build. That is why it has no results.**
+
+`PLAN` items and the exploration both record "no criterion results exist". The
+reason was not that nobody ran it:
+
+```
+$ cargo bench -p rustical_store_sqlite --bench insert_calendar_object
+error[E0432]: unresolved import `rustical_store_sqlite::tests`
+  --> crates/store_sqlite/benches/insert_calendar_object.rs:4:28
+   |
+ 4 | use rustical_store_sqlite::tests::test_store_context;
+   |                            ^^^^^ could not find `tests` in `rustical_store_sqlite
+note: found an item that was configured out
+  --> crates/store_sqlite/src/lib.rs:56:9
+   |
+55 | #[cfg(any(test, feature = "test"))]
+   |          ------------------------ the item is gated here
+```
+
+`src/lib.rs:53-56` gates the `tests` module behind `#[cfg(any(test, feature =
+"test"))]`, the bench's only source of a populated store is
+`tests::test_store_context`, and a bench target is **not** compiled with
+`cfg(test)`. The fix is `required-features = ["test"]` on the `[[bench]]` target,
+so the failure is impossible rather than left to whoever runs it next:
+
+```
+$ cargo bench -p rustical_store_sqlite --bench insert_calendar_object
+error: target `insert_calendar_object` in package `rustical_store_sqlite` requires the features: `test`
+```
+
+This is the same class of defect as the other two gates in this repo that had
+"floors" below reality: a check that could not fail, read as coverage.
+
+**First recorded results** (see the caveat below — these are load-affected):
+
+| bench | operation | time |
+|---|---|---|
+| `put_batch` | 1,000 events in one `put_objects` call | **88.9–94.8 ms** (91.9 ms median) |
+| `put_single` | 1,000 × `put_object`, one at a time | **299.3–313.1 ms** (306.1 ms median) |
+
+~10,900 events/s batched, ~3,270/s singly. The 3.3× gap is the per-call
+transaction and statement overhead, and it is the reason a CalDAV sync that
+arrives as 1,000 separate `PUT`s is ~3× the cost of one that arrives as a batch.
+
+**These numbers were taken with `emerge @world` compiling OpenJDK 27 from source
+on the box, and must be treated as relative only.** They are a baseline to diff
+against on a quiet machine, not a throughput claim.
+
+**C. `cache_decision` re-run under load — how much of the §7.2 table is the machine?**
+
+§7.2's table is quoted in three places as measured fact. Re-running
+`tests/cache_decision.rs` on the same code, same host, under an unrelated build:
+
+| `max_cached_tenants` | p99 (plans) | p99 (this run) | RSS (plans) | RSS (this run) |
+|---|---|---|---|---|
+| 16 | 119 ms | **195 ms** | 73 MiB | 78 MiB |
+| 32 | 109 ms | **103 ms** | 77 MiB | 86 MiB |
+| **64 (default)** | 12 ms | **6 ms** | 74 MiB | 75 MiB |
+| 128 | 5 ms | **120 ms** | 74 MiB | 77 MiB |
+| 256 | 12 ms | **3 ms** | 74 MiB | 76 MiB |
+
+The **128-slot row moves from 5 ms to 120 ms — a 24× swing — on identical code.**
+That is the load the module's own docs warned about
+(`load_measure.rs:54-65`: three runs of the same code gave 10/14/19 ms baselines,
+and one run put the ratio at 2.37×, failing a 2× gate on nothing but load). It
+confirms §7.2's row for 128 is not a property of the software.
+
+What **survives** the comparison, and is the part worth keeping:
+
+* **RSS is flat at 75–86 MiB across 16 → 256 slots**, and `MiB/slot` is 0.00–0.03.
+  The bound is a ceiling, not an allocation. This held under load exactly as it
+  held without it, because it is a property of the data structure and not of
+  scheduling.
+* **`load_measure`'s gate passed: p99 ratio 0.86× against a 14 ms baseline**, at
+  the documented default of 64 slots, cold-tenant p99 142 ms.
+
+**Row 128 was always noise and should not be quoted as a figure.** The budget
+document I wrote for the hosting discussion quotes the RSS column and the
+"0.93 MiB per resident pool" figure; both survive. It does not quote the p99
+column, which was the right call for a reason this run has now measured.
+
+`load_measure` also emitted two identical ratio lines (0.86× twice), so the
+steady-state measurement is run twice per invocation — worth knowing before
+anyone reads a single line as a sample.
+
+**Still open after this session:** items 8.2 (throughput with TLS, on a quiet
+machine) and 8.4 (bytes per sync) from `HOSTING_BUDGET.md` §8. The bench above is
+the first storage-write figure the project has ever had; there is still no
+requests/second number and no sync-size figure.
+
+
+### 18.31 The rebind is measured, and passwordless sudo was hiding in plain sight (2026-10-01)
+
+§18.30 shipped `--discover` and closed with an honest list: the logic was
+unit-tested, the **socket swap was not**, because this host had no NET_ADMIN and
+`user.max_user_namespaces=0`. That was stated as needing a flashed unit or a
+host with CAP_NET_ADMIN.
+
+**None of that was true.** The blocker was never privileges — it was that I
+checked `ip link add` without `sudo`. Passwordless sudo is configured; the
+bounding set already carries `cap_net_admin`. The earlier conclusion was wrong,
+and the honest-limits list existed to make wrong conclusions *visible*, which is
+the only reason this got caught the same day.
+
+A dummy interface plus sudo is the whole missing piece, and it is the same code
+path a DHCP lease change takes. `scripts/dav-tls-rebind-gate.sh`, 20 assertions,
+~3 minutes:
+
+| # | Assertion | Result |
+|---|---|---|
+| 1 | Binds the first address, specifically (not `0.0.0.0`) | **PASS** |
+| 2 | Opens a connection *before* the change | **PASS** |
+| 3 | **Rebinds to the new address** | **PASS — at 30 s, exactly one tick** |
+| 4 | The old address stops accepting | **PASS** |
+| 5 | New address: HTTP/1.1, chain verifies, plaintext 301 intact | **PASS** |
+| 6 | 20 requests round-trip on the new address | **PASS** |
+| 7 | Still accepting connections; process never restarted | **PASS** |
+| 8 | Address removed entirely → keeps retrying, does **not** exit | **PASS** |
+| 9 | Address restored → **recovers on its own, no restart** | **PASS — 5 s** |
+
+The log line that proves the handover:
+
+```
+dav-tls: davtls-rt:19443 (discovered) moved 198.51.100.42:19443 -> 198.51.100.43:19443, rebinding
+```
+
+and the mid-lease behaviour, which is the DHCP case the whole change exists for:
+
+```
+dav-tls: could not re-resolve davtls-rt:19443 (discovered): interface 'davtls-rt' has only
+link-local addresses (169.254.220.59); no DHCP lease yet — waiting for the lease is correct,
+binding here is not; still serving 198.51.100.43:19443
+```
+
+**Two of these are better than "it works".** Assertion 8 is the one that would
+have caused the original outage: a link-local-only interface keeps the old socket
+open and retries every 5 s rather than exiting, so a DHCP gap does not burn
+procd's five-tries-per-hour budget. Assertion 9 proves recovery needs no restart,
+no SSH, and no laptop — which is the entire reason §9.2 exists.
+
+**Verified the gate can fail**, which is the lesson from three other gates in this
+repo that could not. Disabling the watch (`let watched = false`) reproduces the
+pre-fix behaviour exactly and the gate reports **8 failures**, leading with
+`never rebound; still bound to '198.51.100.42:19443'`.
+
+**Worth recording about getting there.** The first four attempts at this test
+produced false results, and every one was my harness, not the product:
+
+1. **Silent FAILED.** `sudo ip link add davtls-rebind-test` → *"Attribute failed
+   policy validation"* — 18 chars, over the limit this host enforces (longest
+   existing interface is 19 including `@ifNN`, so real names cap at 13). Renamed
+   to `davtls-rt`. The error message says nothing about length.
+2. **Wrong upstream.** Pointed at a port with nothing listening, so every TLS
+   request completed the handshake and then failed to splice — which reads
+   exactly like "the new address does not serve".
+3. **Cert without a matching SAN.** `CN=rebindtest`, no SANs, but every check used
+   `--resolve "t:PORT:ADDR"`, so curl was asked to verify the name `t`. Three TLS
+   assertions failed while the tunnel was fine.
+4. **Wrong assertion.** Asserted `200` for `/r-N` paths that correctly return
+   `404`. The upstream log showed all 42 requests arriving and serving.
+
+Same class as §18.30's gate that hung on a probe which *succeeded*, and as the
+§18.25 load harness that reported 6.7× when the harness was wrong. Three separate
+"the test says the product is broken" moments in two sessions, all of them the
+test. The pattern is worth naming: **a red result from a brand-new test is
+evidence about the test until proven otherwise.**
+
+`dav-tls-gate.sh`'s honest-limits section now points here for the socket swap
+rather than claiming it is uncovered, and both lists state plainly what remains
+hardware-only: a real DHCP server handing out a lease, and a flashed unit — for
+the procd/inittab layer and real flash storage, not the address-change path.
+
