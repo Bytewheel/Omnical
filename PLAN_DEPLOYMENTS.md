@@ -4744,3 +4744,16 @@ twice (the second push carried the email wording); binary size-match
 confirmed, `/register` 200 through dav-tls on the public hostname. Workspace
 tests, fmt and clippy green. Commits: `738468f7` (rustical),
 `3c726ff` (submodule bump + render script).
+
+**Follow-up (same day):** l.mari.222 redeemed `iPTkkqJP987g` at 19:12 server
+time — four hours *before* the rework's first deploy, so she saw the old
+credential card and its five auto-minted tokens. To make the introduction
+reach her anyway, the profile intro now **opens itself** on first sight per
+browser and is dismissed by collapsing it (localStorage, no server state;
+the element still ships closed in the HTML so storage-blocked browsers get
+the collapsed summary). Any browser that has never collapsed it — hers, and
+every future user's new device — sees the full introduction on the next
+login. Her five stale tokens were deleted after confirming zero object
+writes since her registration (no device configured); the intro walks her
+through minting a fresh one. `e81bc4d6` / `2004fe6`, third deploy of the day,
+binary 5470344 bytes, healthy.
