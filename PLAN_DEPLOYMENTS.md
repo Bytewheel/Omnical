@@ -4693,3 +4693,54 @@ rather than claiming it is uncovered, and both lists state plainly what remains
 hardware-only: a real DHCP server handing out a lease, and a flashed unit — for
 the procd/inittab layer and real flash storage, not the address-change path.
 
+
+### 18.32 The invite that wasn't expired, and the onboarding rewrite it triggered (2026-10-06)
+
+**The report:** a platform invite sent to `l.mari.222@gmail.com` (code
+`s9fuYee2bZpK`, minted 2026-10-01 13:05) came back as "Invalid or expired
+invitation code" at sign-up. The invite was neither expired nor used — it was
+in the wrong file. It was minted on Oct 1, one day *before* `9d209aa0` fixed
+the CLI's platform-vs-tenant store, so it landed in `db.sqlite3` (the stale
+single-tenant copy — the rollback file) while the server serves
+`tenants/ff77b536-…/db.sqlite3`. Unknown, used and expired deliberately share
+one anti-oracle body, so "expired" was the least honest thing the page could
+say, and the only one it was allowed to.
+
+A second row from the same minute shared the bug (`TopoDmgdJGmL`,
+cmichaeltodd@me.com). Chosen remedy: reissue fresh invites with the fixed
+binary (`iPTkkqJP987g` for l.mari.222, `LRcwucBMLXBm` for cmichaeltodd — both
+confirmed present in the tenant DB, emails sent), then delete the zombie rows
+from the platform DB along with `35ZDRJzzs5wB`, an older still-valid unused
+invite for l.mari.222, revoked from the tenant DB **and** removed from the
+platform copy so it cannot resurrect on a rollback to that file. The other
+long-lived unredeemed invites (Sep 14–22, mostly unbound) were left alone —
+they look like outstanding codes for the users_who_said_yes list and still
+work.
+
+**The rewrite the feedback asked for:** invited users expected a calendar
+frontend on the website, were unsure how to use Omnical at all, and the
+success card's one-time table of six app tokens read as urgent homework for
+apps they had not connected. Registration no longer mints app tokens —
+`[registration] auto_app_tokens` is gone from the config (field, default,
+minting loop, token table; deny_unknown_fields makes an old config fail fast
+against the new binary, so `render-router-config.sh` dropped the key in the
+same push). Tokens now have exactly one mint point: the profile page, next to
+the per-client instructions, where the value is shown once at the moment it
+is actually pasteable into a device. The password/token distinction — website
+password vs app token, DAV Basic auth only accepts tokens — is now stated in
+three places: the invitation email (a "what to expect: a calendar server, not
+a calendar website" paragraph before the link), the onboarding page that
+replaced the success card ("There is no calendar on this website" + a
+three-step connect flow), and a persistent collapsible "New here? What is
+Omnical…" block on the profile page, which is the landing page of every
+signed-in session.
+
+Verified live on the router: a throwaway invite, full registration through
+the public form — zero app tokens in the tenant DB, seeded personal/tasks
+collections and two share feeds, every onboarding marker present, profile
+intro present — then the test principal and all its rows deleted back to
+baseline (32 principals, 16 invites, exactly the pre-test counts). Deployed
+twice (the second push carried the email wording); binary size-match
+confirmed, `/register` 200 through dav-tls on the public hostname. Workspace
+tests, fmt and clippy green. Commits: `738468f7` (rustical),
+`3c726ff` (submodule bump + render script).
