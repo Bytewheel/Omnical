@@ -5349,3 +5349,65 @@ Church Sunday 09:00, Recycling Thursday 19:00, St Luke all-day Oct 18 —
 each on its own day, 90 days per import. If aphy's import appends rather
 than upserts by UID, delete the aphy copy of the calendar before
 re-importing.
+
+### 18.40 One download, and the aphy-native TZID shape — the phone works, the web grid did not (2026-10-12 evening, continued again)
+
+**Where §18.39 left it:** the phone pipeline works — the 15:29 download
+(`PRODID:RustiCal Export (DailyView)`) is the shaped export, §18.39
+materialized `DTEND`s included, and the imported events **show in
+DailyView** (aphy stores them; the phone's 4-day window files the concrete
+instances on their own days). The aphy **web** UI, though, still showed the
+imported events on the **monthly** view only — never daily or weekly.
+
+**Ground truth on the file:** the shaped instances were textbook ICS —
+`DTSTART:20261012T230000Z` + `DTEND:20261012T230100Z`, suffixed UIDs,
+`SEQUENCE`, `DTSTAMP`, no recurrence, no `VALARM` — and aphy's own CalDAV
+time-range matched them (the phone's sync is exactly that query). So the
+web grid's miss was a **frontend rendering** issue, and the one structural
+difference left between my instances and aphy-native events was the form:
+aphy writes `TZID`-qualified **local** times
+(`DTSTART;TZID=America/New_York:20261011T090000`); the expansion's
+instances were UTC `Z` instants. A frontend that lays out its day/week
+grids off the local-tz calendar assumptions (or that mis-buckets `Z`
+lines) shows the month chip and drops the timed grid row — the exact
+symptom.
+
+**The changes:**
+
+1. **One download.** The tile's two buttons collapse to one **Download**
+   (the shaped export — the plain canonical form demonstrably cannot serve
+   this pipeline, and the second button was trip-wire UI). The route keeps
+   both behaviors: `?dailyview=1` shaped (what the button sends), paramless
+   canonical (API parity with the token share routes, which stay canonical
+   by their own promise).
+2. **The aphy-native shape (§18.40).** `flattened_instance` now serves
+   each timed instance in the deployment's own zone —
+   `DTSTART;TZID=America/New_York:20261012T190000` and the materialized
+   `DTEND;TZID=America/New_York:20261012T190100` — instead of the
+   expansion's UTC `Z` instants. The phone's `getTimestamp` TZID branch is
+   its native path (every aphy event it has ever synced is that form), and
+   a consumer that mishandles `Z` gets the shape it expects. DATE-valued
+   (all-day) instances keep their day shape; the §18.36 pass still gives
+   those lines the local-midnight frame. No `DURATION` lines are exported.
+
+**Gates:** fmt clean; `cargo clippy --workspace --all-targets -- -D
+warnings` zero; caldav lib **73/73** (the weekly-flattening test now pins
+the TZID-local pair and the absence of `DTSTART:2026…Z` lines); integration
+**121/121** (names unchanged — test.yml's pin at 121 /
+`c8bb7123…` still matches).
+
+**The flow from here:** commit + push; rebuild `out/rustical` (the 15:04
+router binary predates the TZID form and the one-button UI); `deploy.sh`;
+**delete the aphy calendar's imported copy first** (the suffixed UIDs are
+built to upsert, but if aphy's import appends, stale Z-form duplicates
+will shadow the test); re-download via the single Download button; import;
+check aphy's **week** view (Trash 19:00 Mon Oct 12, Church 09:00 Sun Oct
+18) and the phone again.
+
+**Diagnostic held in reserve:** if the week view *still* drops the
+re-imported events, the next question is whether aphy-**native** events
+(those that were already in that calendar) show in its week/day views —
+if native shows and import does not, it is their import-to-render path,
+not the file; if neither shows, it is their grid, not ours. Not ours to fix
+either way, but it decides whether any further shaping here is even
+theoretical.
