@@ -5217,3 +5217,135 @@ superseded here (its GET shim never fired). Code uncommitted on
 `omnical-scheduling` (rustical: `dailyview.rs` + 6 wiring files +
 `calendar_dailyview.rs`; plus the rewritten `[caldav]` comment in
 `router/etc/rustical/config.toml`).
+
+### 18.38 The phone talks to aphy, not omnical — the fix is the export, and CI had three real failures (2026-10-12 evening)
+
+**The corrections:** the stock MP02's DailyView is hardwired to
+`dav.aphy.app` and the device is locked (no `dailyview-mod` install path),
+so the phone **never speaks to omnical** — §18.36/§18.37's User-Agent wire
+rewrites are inert insurance for this deployment (kept: they are
+UA-scoped, tested, and correct for any client that ever does sync omnical
+directly). The phone's actual ingest is the **manual pipeline**: download
+the personal calendar's `.ics` export from the omnical UI, import it into
+aphy.io, and the phone syncs aphy. aphy relays what it stores verbatim, and
+the phone files every fetched body at its master's `DTSTART` with no
+recurrence expansion — so the canonical export (September masters beside
+`FREQ=WEEKLY`, `VALUE=DATE` lines) shows Trash on no day at all, and
+re-importing it can never fix that.
+
+**The export (`?dailyview=1`, §18.38):** the owner export route
+(`caldav/calendar/methods/get.rs::route_get`, the `Download` button's form)
+grows a `?dailyview=1` variant — armed by the same `[caldav]
+dailyview_timezone` key — that serves
+`dailyview::build_export_ics_dailyview`: the canonical envelope
+(`VERSION`/`PRODID:RustiCal Export (DailyView)`/`CALSCALE` + `X-WR-*`) plus
+a `VTIMEZONE` block for the deployment's zone, with every recurring event
+flattened to its concrete occurrences over a **90-day horizon**
+(`DAILYVIEW_EXPORT_HORIZON_DAYS`: the phone's window is 4 days, but its
+ingest is a one-shot manual import — one import shows correct Mondays for a
+quarter). Each instance is a standalone plain event: the master's UID
+suffixed by the occurrence's own stamp (`{uid}-{YYYYMMDDTHHMMSSZ}` or
+`-{YYYYMMDD}` for DATE-valued — deterministic, so a re-import upserts
+instead of colliding on aphy or the phone's `cal_info` table, whose UID is
+UNIQUE), `RECURRENCE-ID` dropped (a lone override line is not an event a
+real server should keep), the occurrence's `DTSTART` as a true UTC
+DATE-TIME, the master's `DURATION` riding along, alarms stripped by the
+expansion. Non-recurring events, `VTODO`s and `VJOURNAL`s stay canonical
+apart from the §18.36 all-day pass, now applied un-gated to the assembled
+text (`rewrite_date_valued_lines`, extracted from the UA-gated wrapper).
+The UI gains a second button — **Download (Punkt MP02)** — on each calendar
+tile, a hidden-input form onto the same route. The public `/export/{token}`
+share routes stay canonical-only (their parity promise is per identical
+request; the phone never touches them).
+
+**The CI failures (all real, none delayed email):** (1) the Omnical-Code
+`test` workflow's baseline gate pins **exactly 116** integration tests plus
+a name digest — §18.37's +2 shipped without updating the pin (the
+workflow header's own rule: same commit), so the 17:51/17:52Z runs failed;
+(2) its AGPL source-offer job's pack step could **never** have passed:
+`git submodule absorbgitdirs` is the *opposite* of what the step assumed —
+it absorbs a *foreign* gitdir *into* `$GIT_DIR/modules`, while
+`actions/checkout` already leaves that exact absorbed state, so it silently
+no-ops (rc 0) and the following `test -d rustical/.git` exits 1 with no
+message (the whole 370ms-silent signature, reproduced locally); fixed by
+moving the gitdir into `rustical/.git` by hand and repairing `core.worktree`
+via `--file` (a `git -C` config call resolves the stale worktree first and
+dies), proven locally by unpacking the tarball and rev-parsing the commit;
+(3) the Omnical-Server CICD `Lints` job failed on clippy 1.97's
+`doc_markdown` over a bare "SQLite" in `dailyview.rs:13` — my local 1.98
+clippy does not flag that word, so the clean local gate had version skew;
+backticked. The CICD's other jobs (Test Suite, Check, Coverage) were green
+throughout — the run simply takes ~33 minutes.
+
+**Gates:** `cargo fmt` clean; `cargo clippy --workspace --all-targets --
+-D warnings` zero; `SQLX_OFFLINE=true cargo check --workspace
+--all-targets` green; caldav lib **73/73** (5 new export tests: weekly
+flattening with suffixed UIDs and 13 Mondays, yearly all-day flattening,
+non-recurring keeps the all-day pass, VTODO canonical, unparsable timezone
+falls back to canonical bytes); integration **121/121** (3 new:
+`test_export_dailyview_flattens` — param vs plain on one app —
+`test_export_dailyview_unarmed_ignores_param`,
+`test_export_dailyview_all_day_pass`); test.yml baseline re-derived
+116→118→121 with digests to match (the digest pipeline:
+`--list | grep -oE '^integration_tests::.*: test$' | LC_ALL=C sort |
+sha256sum`).
+
+**Deploy + user flow (pending):** commit/push both repos (the user pushes),
+rebuild `out/rustical` (the router binary predates the export route), run
+`deploy.sh`, then: omnical UI → the **Download (Punkt MP02)** button on the
+personal calendar → import the downloaded file into aphy.io → the phone's
+manual "Sync calendar" → Trash lists today at 19:00 (its own occurrence),
+Church on Sunday 09:00, Recycling Thursday 19:00, St Luke all-day Oct 18 —
+each on its own day, for 90 days per import.
+
+**Still open:** whether aphy.io's import is UID-idempotent (the suffixed
+UIDs are designed for upsert; if aphy treats re-imports as appends, the
+user should delete the calendar there first on re-import), and the
+§18.36/§18.37 on-device expectations remain superseded — the phone never
+syncs omnical, so those checks are permanently moot for this deployment.
+
+### 18.39 The aphy import was the canonical export — the new button was never served (2026-10-12 evening, continued)
+
+**The report:** re-imported into aphy and "still nothing" — Trash shows on
+aphy's **monthly** view only, never daily/weekly, and nothing shows in
+DailyView. Ground truth, three facts: (1) the downloaded file (15:05) is the
+**canonical** export — `PRODID:RustiCal Export`, September masters beside
+`FREQ=WEEKLY`, no flattening; (2) the §18.38 route *is* deployed (router sha
+== the 15:04 `out/rustical`, commit `096bf983` carries it); (3) therefore the
+**plain "Download" button was used**, not the new "Download (Punkt MP02)" —
+§18.38's UI change shipped one commit after the binary the user rebuilt
+from, and the new button was easy to miss beside the old one. The aphy
+symptoms confirm the file: the month grid expands `RRULE`s (September
+masters render), while the daily/week views match on the master's stored
+`DTSTART` — September, out of every visible window — exactly what the
+canonical import predicts.
+
+**Hardening while here (§18.39, one more shape fix in the export):** the
+§18.38 flattened instances carried the master's length as `DURATION` only
+(caldata's expansion computes a typed `DTEND` but never emits it into the
+content lines) — a `DURATION`-only event is legal but the `DTSTART`+`DTEND`
+pair is the one shape every renderer lays out, and aphy's day/week views
+were exactly the consumers at risk. `flattened_instance` now materializes
+the `DTEND` at the expansion's own computed end and drops the `DURATION`
+line; a DATE-valued instance keeps its day shape (the typed end arrives as
+`20260410T000000Z` UTC — mixed frames, a 20h bar under DST — so it is
+materialized as the next calendar day(s) `DTEND;VALUE=DATE:20260410`,
+which the §18.36 pass then rewrites into the same local-midnight frame as
+its `DTSTART`). Tests: the weekly case asserts a concrete
+`DTEND:20261012T230100Z` and no `DURATION:` lines; the yearly case asserts
+`DTEND;TZID=America/New_York:20260410T000000`.
+
+**Gates:** fmt clean; `cargo clippy --workspace --all-targets -- -D
+warnings` zero (one `ContentLineParams::default()` pedantic fix); caldav lib
+**73/73**; integration **121/121** (names unchanged, so no test.yml
+digest churn). PLAN-side: §18.38's "Deploy + user flow" is still the
+pending step, and the actual button matters: **Download (Punkt MP02)**,
+not Download.
+
+**The user flow, restated:** rebuild `out/rustical`, `deploy.sh`, then
+omical UI → the personal calendar tile → **Download (Punkt MP02)** →
+import that file into aphy → phone "Sync calendar" → Trash today 19:00,
+Church Sunday 09:00, Recycling Thursday 19:00, St Luke all-day Oct 18 —
+each on its own day, 90 days per import. If aphy's import appends rather
+than upserts by UID, delete the aphy copy of the calendar before
+re-importing.
