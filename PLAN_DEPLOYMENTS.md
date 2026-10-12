@@ -4757,3 +4757,78 @@ login. Her five stale tokens were deleted after confirming zero object
 writes since her registration (no device configured); the intro walks her
 through minting a fresh one. `e81bc4d6` / `2004fe6`, third deploy of the day,
 binary 5470344 bytes, healthy.
+
+### 18.33 The coverage job's lost wakeup, the profile-collapse release, and the APK that left the flash (2026-10-11)
+
+**The gate that would not go green:** tarpaulin's Test Coverage job had
+failed on *every* CICD run since ≈2026-09-30 while every other job stayed
+green. The owner's "CI failed" email turned out to be the older run
+(38178466941, `9aa82200`, pushed before this effort's fixes). That run's log
+named the actual defect: 4 of the 6 server-spawning tests in
+`tests/http_integration.rs` panicked at the readiness wait (`Elapsed`). The
+server's startup signal was `Notify::notify_waiters()`, which wakes only
+listeners already parked at the signal instant and stores **no permit** — on
+a crowded runner under ptrace the server thread could finish binding before
+the test thread polled `.notified()`, losing the wakeup forever.
+`c99ef966` switched both readiness sites in `src/lib.rs` to `notify_one()`,
+which stores the permit so a late waiter wakes immediately; the startup
+budget widened 2s→30s as belt-and-suspenders for ptrace-slowed starts.
+Not reproducible locally (tarpaulin's ptrace is EPERM in the sandbox) — the
+CI run was the instrument. Run 38184346444 went green on all four jobs,
+Check/Test Suite/Lints/Coverage, the first green coverage job since the
+streak began (~34 minutes, vs ~29.5 for the failures that died mid-suite).
+
+**What shipped with it** (`347ccbea`): the Calendars/Addressbooks/Groups/
+Linked-platforms tab pages collapsed into `<details>` sections of the
+profile page (App tokens likewise, in that vertical order); the old URLs
+are deep links that pre-expand their section; one-time banners expand
+their section; the nav is Profile/Calendar/Tasks/Contacts; and a new
+aggregate Contacts page (list + addressbook-picker form + create), pinned
+by `tests/http_integration.rs::test_portal_profile_sections_and_contacts`.
+
+**The deploy** (deploy repo `9b4dc39`): the profile-collapse + coverage-fix
+binary (5,525,920 B, UPX'd) went out by the usual fence-then-swap flow;
+dav-tls was sha-identical, so it never restarted. The HawkBook APK moved
+off the flash: the 17.6 MB `/usr/local/share/rustical/downloads/hawkbook.apk`
+is retired — the init script now fetches it from the build host's one-file
+static server (`scripts/serve-hawkbook-apk.py`, :8123, crontab `@reboot`,
+DHCP-reserved 192.168.10.241) into tmpfs right before start, skips if
+already staged, and rustical serves it from process memory. deploy.sh
+stages the APK itself as the belt to that suspender. Overlay: **95% →
+78%** (22.2 MB free). The static server serves exactly one file because
+`out/` holds the live TLS key and must never go over HTTP.
+
+**The live gate:** a mechanics dry-run against the pre-deploy binary first
+(MODE=old, 8/8 — CLI principal, app-token Basic auth, old tab shape,
+cleanup), then the real gate post-deploy (MODE=new, **28/28**): five
+collapsed sections present, the old tabs gone from the nav, the calendars
+deep-link expanding only its own section, the full Contacts flow (CardDAV
+MKCOL with the app token → picker → aggregate create 303 → listed with its
+addressbook label), unauthenticated requests rejected, the HawkBook
+download byte-identical (sha `1e27718f…`) to the staged APK, `citest`
+removed again, and the tenant DB `PRAGMA integrity_check` still ok.
+
+**Two live-test script fixes** (both expectation gaps — the product matches
+the pinned tests exactly): the "New contact" button is gated by
+`can_create` (= has an editable addressbook,
+`crates/frontend/src/routes/addressbook.rs`), so the script now asserts it
+*absent* for a bookless principal and *present* after the MKCOL — the
+integration test had that order right all along. And cleanup:
+`principals remove` is a bare `DELETE FROM principals` (no cascade) while
+`addressbooks` references principals ON DELETE RESTRICT, so a principal
+that owns collections refuses removal with a raw `FOREIGN KEY constraint
+failed`. The script now hard-deletes the test addressbook first (CardDAV
+`DELETE` + `X-No-Trashbin: 1`, the DAV layer's hard-delete switch in
+`dav/src/resource/methods/delete.rs`; contained cards cascade away).
+**Still open, worth a server commit someday:** the CLI remove should
+either cascade its collections or name the blocker instead of the raw FK
+error — deliberately not fixed here; it would have cost another CI cycle
+on an already-green run.
+
+Commits: rustical `347ccbea` + `c99ef966` (branch `omnical-scheduling`,
+pushed); deploy repo `9b4dc39` (`main`, submodule carried, pushed). CI:
+https://github.com/Bytewheel/Omnical-Server/actions/runs/38184346444.
+The live-test script lives at `/tmp/opencode/live-test-portal.sh` (both
+fixes applied); `/tmp/opencode/cleanup-citest.sh` was the one-off that
+un-stuck the first run's principal.
+

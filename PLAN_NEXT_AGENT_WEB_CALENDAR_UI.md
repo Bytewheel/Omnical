@@ -212,6 +212,31 @@ Manually smoke against the host build
 
 ---
 
+## 6b. Full CRUD on addressbooks (added 2026-10-11, §17.12.1) — implemented + live-tested
+
+"Grant full CRUD on an addressbook" = mint full-access `CardDAV` credentials, the
+addressbook counterpart of the calendar "Generate credentials":
+
+- **Store** (`crates/store_sqlite/src/addressbook_store/mod.rs`): share
+  resolution mirroring the calendar store — `resolve_owner` / `effective_owner` /
+  `resolve_shared_addressbooks` on `collection_shares` rows of
+  `kind = 'addressbook'`, wired into `get_addressbook(s)`, `get/deleted`
+  objects, `sync_changes`, `addressbook_metadata`, `update/delete_addressbook`,
+  `put/delete/restore_object` (everything rewritten to the physical owner).
+- **Portal**: `route_addressbook_credentials` (`POST /{user}/addressbook/credentials`,
+  owner/group-admin gate, mints `guest-{uuid}` + app token + admin share, optional
+  email) and `.../{id}/revoke`; `AddressbooksSection` gains the one-time banner,
+  per-tile "Generate credentials" + per-credential Revoke.
+- **Tests**: `test_addressbook_credentials_grant_full_crud` — mint → guest
+  PROPFIND/PUT/GET/DELETE over CardDAV → owner sees the write → revoke → 404.
+- **Live (router, 2026-10-11)**: deployed via `deploy.sh` (healthy, 5 MiB binary
+  within the 35 MiB budget) and smoke-tested end-to-end as
+  `nicholas@carltonaudio.com` — month grid + calendar-zone fallback, event
+  create/edit/delete, task create/complete/delete, contact create/edit/delete,
+  and the full credential cycle (mint → guest CRUD → revoke → lockout). All diag
+  tokens/principals/rows cleaned up afterwards; the revoked share row stays for
+  audit by design.
+
 ## 6. Remaining risks / follow-ups (recorded, not blocking)
 
 > Resolved 2026-10-11 (implemented, still worth an owner look at #1):
