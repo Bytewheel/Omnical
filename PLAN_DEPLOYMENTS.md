@@ -5110,3 +5110,110 @@ new — `crates/caldav/src/dailyview.rs`,
 caldav `lib.rs`, `calendar_object/methods.rs`, `src/main.rs`, the two
 test-harness modules; plus the `[caldav]` section in
 `router/etc/rustical/config.toml`).
+
+### 18.37 The exports that wouldn't show — the GET shim was inert, and the phone never expands a recurrence (2026-10-12)
+
+**The report:** the events of the personal calendar (the
+`nfcalaway@novo-ordo.com_personal_personal.ics` export: six timed
+`TZID`'d events, five of them weekly `RRULE`s) do not appear on the MP02's
+DailyView. The user's belief — that §18.36's fix was scoped to the
+Liturgy calendar and needed generalizing — was half right: the shim was
+per-User-Agent, not per-calendar, but it was per-*path*, and it was the
+wrong path.
+
+**Bug one — §18.36's shim never fires on-device.** The §18.36 diagnosis
+said the app "re-GETs each body anyway, ignoring the `<C:calendar-data/>`
+it asked for" — the first half is wrong: `CaldavFacade.getEvent` (the
+body fetch, `CalendarEvent.fetchBody`) is a **`calendar-multiget`
+REPORT**, and `setICSasMultiStatus` consumes exactly its
+`<C:calendar-data/>` (`prop.calendardata` → `stringIcs`). The
+`calendar-query` time-range REPORT that precedes it is the one consumed
+for `<D:getetag/>` + `<D:href/>` only. The phone never issues a plain GET
+for an event — so the deployed GET-only rewrite was inert, and §18.36's
+pending on-device window check would have failed. (The `SyncAdapter` with
+its CTag/ETag gating is dead code in this build — `onPerformSync` starts
+`if (true) return;` — the real path is `AuthenticatorActivity`'s manual
+"Sync calendar": query REPORT → per-href multiget →
+`UserDBHelper.deleteAll` + reinsert → UI query.)
+
+**Bug two — recurrence is never expanded.** Every fetched body is filed
+at its **master's DTSTART** (`CalendarEvent.getTimestamp`, TZID handled
+by hand: UTC millis minus `getRawOffset` minus `getDSTSavings`) with the
+raw RRULE string beside it, into one flat SQLite table
+(`calprovider.db:cal_info`, UID-unique, wiped and reinserted every sync);
+the 4-day list is a plain SQL window on that column —
+`DtStart between getTodayStamp() and getFourDaysStamp()`, local midnight
+to local midnight. Nothing on the phone ever computes an occurrence, so a
+timed recurring event with a past master is invisible **forever** — in
+the export: Trash (master Sep 28, Mondays 19:00), Church (Oct 11, Sundays
+09:00), Recycling (Oct 1, Thursdays 19:00), plus three one-shots in the
+past. The server's REPORT filter is recurrence-aware (§17.11's
+over-match, `get_first/last_occurence`), so the masters *are* returned
+and fetched — then filed out-of-window. The Liturgy set showed nothing
+(among other reasons) because it is all-day and *non*-recurring; the
+personal set shows nothing because it is *recurring*.
+
+**The fix — the shim moves to where the phone reads, and grows a second
+rewrite.** `crates/caldav/src/dailyview.rs` gains `DailyviewContext`
+(per-request: UA, `[caldav] dailyview_timezone`, now) and
+`rewrite_for_dailyview(&CalendarObject, ctx)`:
+
+1. **All-day pass** (§18.36, unchanged): DATE-valued `DTSTART`/`DTEND` →
+   TZID'd local-midnight DATE-TIMEs.
+2. **Recurrence flattening (new)**: a recurring VEVENT
+   (`has_rruleset`: RRULE/RDATE/EXRULE/EXDATE) is served as its **first
+   occurrence inside the phone's own window** `[today local midnight,
+   +4d)` — caldata's event-level `expand_recurrence` (no
+   `events.remove(0)` panic path, ±1-day slack bounds, exact filter:
+   DATE-valued instances compared as local dates, DATE-TIME as UTC
+   instants), single-instance envelope (`VERSION:2.0`, fixed PRODID),
+   recurrence properties stripped, alarms dropped (the phone's list never
+   rendered them). The master's length rides along as `DURATION` —
+   exactly what `getEndTime`'s DURATION branch wants; serving no DTEND
+   at all.
+
+Wire paths: `get_prop`'s `CalendarData` arm (the REPORT calendar-data —
+**the path the phone consumes**), `get_event`'s GET (kept, now via the
+same entry), both armed from the routes (`route_report_calendar` gains
+`HeaderMap`; `handle_sync_collection` threads it too); PROPFIND paths
+(`calendar/service.rs`, `calendar_object/service.rs`) construct a `None`
+context — canonical by construction. `CALDAV:expand` REPORTs keep RFC
+4791 §10.6 semantics untouched. Every fall-through serves canonical bytes:
+no in-window occurrence (nothing to show — the phone's own correct
+nothing), `VTODO`/`VJOURNAL`, an unparsable config timezone (the shim is
+off, not half-off), or any other User-Agent. Bonus: multi-VEVENT bodies
+(master + RECURRENCE-ID overrides) — the phone's `parseIcs` takes only
+the *first* VEVENT of a stored body — are served as the one instance that
+applies.
+
+**Gates:** `cargo fmt` clean; clippy (all+pedantic+nursery) zero
+warnings on `rustical_caldav` (three `too_many_arguments` allows, house
+style, for the grown `objects_response`/`route_report_calendar`/
+`handle_sync_collection` signatures);
+`SQLX_OFFLINE=true cargo check --workspace --all-targets` green.
+Tests: caldav lib **68/68** (9 new: in-window timed flattening, per-day
+occurrence pick, no-occurrence canonical, all-day yearly flattening,
+non-recurring keeps the §18.36 pass, other-client/disable/unparsable-tz/
+VTODO canonical); integration **118/118** (2 new:
+`test_report_dailyview_rewrites_all_day` and
+`test_report_dailyview_flattens_recurrence` — the *multiget* REPORT, the
+path the phone actually parses, DailyView's UA vs vdirsyncer's — via a
+refactored `app_with_event` helper; the §18.36 GET tests and the
+114-baseline untouched).
+
+**On-device expectations (post-deploy):** manual "Sync calendar" →
+Trash lists Mon Oct 12 at 19:00 on its own day (its first in-window
+occurrence; its Mondays keep shifting in as the calendar rolls),
+Recycling on Thu Oct 15 19:00, St Luke all-day on Oct 18 once in-window;
+khal/vdirsyncer byte traces unchanged. Known limit, documented: the
+phone's *REPORT* window `[today 00:00Z, +4d)` ends four hours before its
+*UI* window's local close west of UTC, so day-4 evening events
+(20:00–midnight local) are never fetched — a client-side window mismatch
+no GET-layer rewrite can reach.
+
+**Still open:** build + deploy (§18.36's binary predates this), then the
+phone's manual sync and first in-window look; §18.36's on-device check is
+superseded here (its GET shim never fired). Code uncommitted on
+`omnical-scheduling` (rustical: `dailyview.rs` + 6 wiring files +
+`calendar_dailyview.rs`; plus the rewritten `[caldav]` comment in
+`router/etc/rustical/config.toml`).
