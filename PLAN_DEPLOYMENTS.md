@@ -4832,3 +4832,172 @@ The live-test script lives at `/tmp/opencode/live-test-portal.sh` (both
 fixes applied); `/tmp/opencode/cleanup-citest.sh` was the one-off that
 un-stuck the first run's principal.
 
+
+### 18.34 The add-holidays dropdown, and the refresh that used to eat sibling sets (2026-10-12)
+
+**What shipped** (`32c6c756`): the create-calendar modal gained a
+multiselect "add holidays" dropdown — a `<details>` of grouped
+checkboxes (no new dependencies, keyboard-native inside the dialog) fed
+by a public `/_holidays.json` list of the deployment's holiday sets. A
+selection merges into the freshly created calendar as a *copy*: each set
+records a `holidays://{set}` calendar source, so the existing linked-
+platforms Refresh keeps it updatable by UID when the `.ics` files are
+regenerated. Sets live on the router's flash
+(`/usr/local/share/rustical/holidays`, `[frontend] holidays_dir`,
+preserved across sysupgrade) and are read from disk at import/refresh
+time — never an HTTP self-fetch, because the linked-platform engine's
+fetch is HTTPS-only *with an SSRF guard on private ranges*, and the
+router fetching its own flash over TLS would be a certificate dance for
+bytes it already has. The list endpoint is public metadata in the same
+trust class as the timezone list. Also: Calendar-month-grid event labels
+went 1.5x (`.72em` → `1.08em`, owner ask), and the linked-platforms
+section now prints a holiday source's manifest label ("Holidays ·
+United States (federal)") instead of its URL.
+
+**The engine bug the feature exposed:** `plan_refresh` diffed the whole
+calendar's objects, so a calendar carrying several sources — exactly
+what a merged holiday calendar is — deleted every *other* set's events
+on any single source's refresh. Reachable in linked-platforms before the
+holidays feature existed (two URLs into one calendar). The fix is
+`calendar_source_objects` ownership rows: every import/refresh records
+the UIDs a source owns, and the refresh diffs within that set. Legacy
+rows (empty recorded set) keep the old whole-calendar behaviour, which
+the mass-delete abort still guards. The integration test catches it by
+refreshing `us` in a `us,judaism` calendar and asserting the sibling
+survives — the first version of the test failed exactly as the live
+router would have.
+
+**The sets** (deploy repo `630e462`, 440 KB, 1629 events, 2026-2030):
+`scripts/generate-holiday-ics.py` — pure stdlib, deterministic (fixed
+DTSTAMP, sorted, no clock reads), with a self-test that refuses to emit
+unless every published anchor it knows reproduces. US/Canada/UK civil
+rules computable; China from new-moon arithmetic (Spring Festival =
+the day of the second new moon after the December solstice — reproduced
+2026-2030) plus Qingming by solar longitude; Judaism from the *exact*
+arithmetic Hebrew calendar (the four dehiyyot pinned the hard way:
+my first drafts of GaTaRaD/BaTuTaKPaT misfired — the anchors that broke
+were mine, e.g. a "Rosh ha-Shanah Sep 11 2026" that violated lo-ADU-
+rosh; the final engine reproduces 5 Iyar 5708 = 1948-05-14, Yom Kippur
+5734 = 1973-10-06, and ten published modern RH dates, with a 160-year
+structural sweep); Islam on the **tabular** Hijri (±1 day vs local
+sightings — stated in every description; calibrated so Eid al-Adha
+1446, Arafah and 1 Muharram 1447 matched the announcements exactly);
+RC-current (seasons, Sundays, solemnities, curated majors, colours),
+RC-1962 (Septuagesima, Passiontide, ember days, the three octaves, a
+sanctorale of principal feasts with class+colour), Orthodox (Julian
+reckoning converted, New-Calendar alternative named), Anglican (BCP);
+Hindu/Buddhist/Sikh from tithi-at-sunrise approximation (±1 day,
+stated; Guru Gobind Singh kept by the Nanakshahi fixed date after the
+tithi route disagreed with the published dates by five days).
+
+**Gates, CI, deploy:** fmt/clippy-1.97/workspace green; the frozen 114
+untouched; http_integration 8/8. CI run 38192069067 green on the first
+try (Check/Test Suite/Lints/Test Coverage). Build 5,544,272 B (size
+gate ok), dav-tls sha-unchanged → no restart. Pre-deploy tenant+control
+DB backups taken. The migration applied cleanly to the live DB
+(integrity ok). Live: the portal regression gate 28/28; the new
+`/tmp/opencode/live-test-holidays.sh` 23/23 — the public list, MKCOL +
+3-set import (US+Judaism+RC-1962, 700+ events merged), idempotent
+re-import, refresh of `holidays://us` leaving the sibling sets intact
+live, the dropdown/`1.08em` labels in the served assets, full cleanup.
+The 4.3 MB test-churn WAL was checkpointed (overlay back to 78%);
+~1.2 MB of freelist pages remain in the tenant DB for the server to
+reuse — VACUUM left as the owner's call.
+
+**Still open from 18.33:** `principals remove` on a principal that owns
+collections still dies on the raw FOREIGN KEY constraint; the live-test
+scripts now hard-delete test collections first (`X-No-Trashbin: 1`,
+cards cascade), which is also the documented workaround.
+
+### 18.35 Three religions, three checkboxes — and the panchang that wasn't (2026-10-12)
+
+**The ask:** the combined `hindu-buddhist-sikh.ics` set went into the
+dropdown as one checkbox; Hinduism, Buddhism and Sikhism are three
+separate religions, so they now are three sets — `hindu.ics` (50
+events), `buddhist.ics` (15), `sikh.ics` (20) — under three manifest
+groups (13 sets / 7 groups). Vaisakhi is genuinely shared (the Vaisakha
+Sankranti and the Khalsa's founding are the same solar day), so it rides
+both the Hindu and the Sikh set with its own wording; Bandi Chhor Divas
+became a proper Sikh event on Diwali's Amavasya instead of a
+parenthetical in Diwali's description. Zero rustical changes: the
+dropdown and the import/refresh engine are manifest-driven end to end
+(the manifest is re-read per request, so no restart), and the router's
+flash directory was restaged with the stale combined `.ics` removed.
+Only one live `holidays://` source existed (`rc-1962`, untouched), so
+retiring the combined id from the manifest stranded nobody.
+
+**The split forced a re-derivation of every tithi date, and the old
+combined set turned out to be quietly wrong in three distinct ways** —
+none of which the §18.34 self-test could catch, because it anchors only
+computable calendars (Hebrew exact, Islamic tabular, Chinese arithmetic;
+the panchang arm had zero anchors — "a silently-wrong lunar calendar is
+worse than no calendar" was in the docstring all along):
+
+- **The sankrantis were tropical.** `_sun_crossing` tested the sun's
+  longitude against the *tropical* target, but sankranti entries are
+  sidereal: Makar Sankranti landed on Jan 10-11 (published: Jan 14-15)
+  and Vaisakhi on Apr 20 — or silently nowhere, in three of five years —
+  while both descriptions claimed "(solar, accurate)". Now the crossing
+  is tested minus the Lahiri ayanamsa (24.2°, one constant is ±0.05°
+  across 2026-2030) and rolled to the IST day: Jan 14-15 and Apr 13-14
+  every year.
+- **The windows were adhika-blind.** 2026 and 2029 both carry an Adhika
+  Ashwina — the leap month lands in the Navaratri season — which pushes
+  Bhadrapada/Ashvina festivals ~19 days past their usual Gregorian slots
+  while the *prior* month's moon parks itself inside the naive windows:
+  Guru Nanak Jayanti 2026 sat on Ashvina's purnima (Oct 26 — a month
+  early; published Nov 24), Holi 2027 on Magha's moon (Feb 21 vs Mar 23),
+  Vesak 2027 on Chaitra's (Apr 20 vs May 20), Janmashtami 2027/28/30
+  and Ganesh 2027 on the pre-purnima tithi, Magha Puja 2029 on
+  Phalguna's. The fix is structural, not window-nudging: Holi is the
+  purnima in March (Magha can never precede it into the window); Magha
+  Puja and Vesak are anchored *relative to Holi's moon* (one lunar month
+  before, two after — where Pausha and Chaitra cannot wander in); the
+  Navaratri tithis (Durga Ashtami, Vijayadashami) hang off the Ashvina
+  purnima itself; Guru Nanak's window is November only, because
+  Kartika's purnima is November's full moon, full stop.
+- **ksaya tithis dropped festivals silently.** A tithi that runs
+  sunrise-to-sunrise is "carried" by no civil day, so `day_with_tithi`
+  returned None and the event just vanished: Holi 2028, Magha Puja 2027,
+  Ganesh Chaturthi 2029, Durga Ashtami 2026, and Vijayadashami 2026+2029
+  were all missing from the shipped set. Purnima festivals now fall back
+  to the adjacent tithi (Holi 2028 rides the purnima day itself, Mar 11
+  — which is the published date).
+
+**Anchors:** the self-test grows nine panchang anchors (Makar Sankranti
+and Vaisakhi 2026; Holi, Magha Purnima, Vesak, Janmashtami, Ganesh
+Chaturthi, Dussehra, Diwali-at-sunrise, and Guru Nanak Jayanti 2026) —
+every one a published date the machinery must keep reproducing. The
+dates were re-derived by internal consistency: each festival chained
+from anchors I'd bet on (Diwali 2026 Nov 8, Janmashtami Sep 4, Guru
+Nanak Nov 24, Dussehra Oct 21, Holi 2029 Mar 1 / 2030 Mar 20) plus the
+±11-day annual lunar drift with +19-day jumps across the two adhikas —
+the drift arithmetic is what exposed Holi 2027 (the shipped Feb 21
+back-computed to a Phalguna purnima in Mar 23, not Feb 21) after the
+window fix initially still produced it.
+
+**Gates, deploy:** the regeneration is deterministic — the ten untouched
+sets are byte-identical (md5-verified); the 22-anchor self-test green;
+deploy repo commit `e062c33`. The formal `deploy.sh` then ran end to end
+after a pre-deploy backup (`~/backups/omnical/predeploy-18.35-2026-10-12.tar.gz`:
+control + tenant archives, integrity ok, plus config): binaries swapped
+byte-identical, dav-tls sha-unchanged → no restart, 13 sets staged through
+the canonical path, rustical healthy (scheduling + IMAP ingest up),
+fence released, overlay 79%. Live: the §18.34 holidays gate, updated for
+the split (`/tmp/opencode/live-test-holidays.sh`), **42/42** — the
+13-set/7-group manifest, the three new groups, the retired combined id
+absent from the manifest *and rejected with 400 on import*, a second
+test calendar importing `hindu,buddhist,sikh` (exactly 85 events —
+50/15/20 by UID prefix, Bandi Chhor Divas as its own event, Guru Nanak
+2026 on the fixed Nov 24), refresh of `holidays://sikh` leaving the
+Hindu and Buddhist siblings intact, plus the original us/judaism/rc-1962
+import and `holidays://us` refresh-scoping assertions, full cleanup.
+The portal regression gate 28/28. The 4.2 MB test-churn WAL was
+checkpointed to zero; no test rows remain (only the pre-existing
+`holidays://rc-1962` source).
+
+**Still open from 18.34:** the tithi convention is sunrise-at-06:00 IST
+with the ±1-day caveat stated per event; Theravada observances (Vesak,
+Magha Puja) follow the Indian amanta reckoning, which in some years sits
+a month from the Thai/UN dates (2026: Vesak May 1 vs the UN's May 31) —
+stated in descriptions, but worth revisiting if a Theravada user asks.
