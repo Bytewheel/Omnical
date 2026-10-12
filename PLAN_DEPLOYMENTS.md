@@ -5001,3 +5001,112 @@ with the ±1-day caveat stated per event; Theravada observances (Vesak,
 Magha Puja) follow the Indian amanta reckoning, which in some years sits
 a month from the Thai/UN dates (2026: Vesak May 1 vs the UN's May 31) —
 stated in descriptions, but worth revisiting if a Theravada user asks.
+
+### 18.36 The holidays that wouldn't show — a twin Liturgy, and a frozen phone that files all-day events a day early (2026-10-12)
+
+**The report:** §18.34's only live `holidays://rc-1962` import (495 events,
+the whole 1962 Missal set, merged into the carltonaudio Liturgy calendar)
+didn't appear in khal — and then didn't appear in DailyView on the MP02
+either. One symptom, two unrelated bugs, and only one of them fixable in
+software this deployment owns.
+
+**Bug one — the twin calendars (client config, fixed):** vdirsyncer matches
+a pair's `collections` names against the URL segment, not the displayname.
+The omnical UI's create-calendar modal had made Liturgy with a UUID href
+(`d47b8352-…`) plus displayname, while an older, empty collection with the
+literal href `Liturgy/` — no displayname, zero objects, provenance unknown
+but almost certainly vdirsyncer's own auto-create from years past — sat
+beside it. `collections = ["Personal", "CAS", "Liturgy"]` therefore synced
+the empty twin with perfect fidelity: `~/.calendars/omnical/Liturgy/` held
+0 files while the 495 holidays sat one UUID away. Fix: the three-element
+tuple form — `["Personal", "CAS", ["Liturgy", "Liturgy",
+"d47b8352-2279-464c-a202-d74ef3b582ea"]]` — maps the local dir (khal's
+config untouched) to the real collection; the empty twin was DELETEd from
+the server (200; the principal now lists CAS, Personal, the UUID Liturgy,
+tasks), and the orphaned `[storage omnical_calendar_local]` block that no
+pair referenced left the vdirsyncer config. The next sync pulled all 495
+events down; `khal list` over Dec 24-26 renders Christmas (Nativity of the
+Lord), the Day within the Christmas Octave, St Stephen.
+
+**Bug two — the frozen phone:** DailyView (the MP02's view-only CalDAV
+client — here the `dailyview-mod` custom-server build, the only one that
+can talk to omnical, since stock is hardwired to `dav.aphy.app`) parses
+`DTSTART;VALUE=DATE:20261018` by appending `T000000Z`: the event is filed
+at **UTC midnight** (`CalendarEvent.getTimestamp`). Its 4-day list is
+windowed with **local**-midnight stamps (`TimeUtil.getTodayStamp`), so in
+`America/New_York` a St Luke feast on Oct 18 files under Oct 17 20:00 and
+is missing entirely on its own day — every all-day event, displaced one
+day early, always. The server is blameless: replaying the app's exact
+calendar-query time-range REPORT against the UUID Liturgy returns the
+all-day St Luke event correctly, and the app re-GETs each body anyway,
+ignoring the `<C:calendar-data/>` it asked for. The app cannot be rebuilt
+onto the device it runs on, so the wire adapts instead.
+
+**The shim (`crates/caldav/src/dailyview.rs`):** GET responses whose
+User-Agent starts with `CalDAV Sync Adapter (Android)` (stock and mod
+builds share the prefix, differing only in the `Version:` suffix) are
+served DATE-valued `DTSTART`/`DTEND` rewritten to midnight DATE-TIMEs in
+the deployment's timezone — `DTSTART;TZID=America/New_York:20261018T000000`
+— the exact form the app's parser resolves to local-midnight millis, its
+window and day-bucket boundary. The stored object, the ETag, and every
+other client (khal, vdirsyncer, Thunderbird, Apple, HawkBook) keep the
+canonical all-day data; DailyView is view-only, so no PUT can write the
+shim's form back. REPORT is deliberately not rewritten — the app ignores
+its calendar-data and fetches bodies with plain GETs, the only path it
+consumes. The deployment vouches for the timezone because the client sends
+none: `[caldav] dailyview_timezone = "America/New_York"` in
+`router/etc/rustical/config.toml`; remove the key and the shim is inert.
+A household server has one timezone — a second one would make the
+per-tenant override machinery the natural extension point. Rejected along
+the way: emitting the holiday sets as timed events (degrades every
+khal/Thunderbird/Apple all-day display to serve one client — the wrong
+client to penalize), a derived phone-calendar mirror (drift by design),
+and a proxy-level rewrite (the fork owns the server, so the rewrite
+belongs in it).
+
+**Gates:** `cargo fmt` clean; clippy (all+pedantic+nursery) zero warnings
+on the touched crates; `SQLX_OFFLINE=true cargo check --workspace
+--all-targets` green. Tests: caldav lib 59/59 (7 new — the rewrite with
+CRLF preserved, inert for other agents and a missing UA, gated on the
+timezone being set, timed events untouched, malformed values untouched,
+LF-only bodies, prefix-not-full-agent matching); bin 7/7 (new figment case
+`test_config_toml_caldav_dailyview_timezone`: the key parses, the absent
+section leaves the shim off); integration 116/116 (2 new:
+`test_get_dailyview_rewrites_all_day` — DailyView's UA gets the rewrite
+while vdirsyncer's gets the canonical body and both GETs answer the same
+ETag, the rewrite being on the wire only — and
+`test_get_dailyview_shim_disabled_by_default`). Harness:
+`get_app_with_frontend_and_caldav_config` splits the existing helper so
+the 114-baseline runs unedited, per §6.1's zero-test-edits discipline;
+`CalDavConfig` grew a private `dailyview_timezone` field with a
+`with_dailyview_timezone` constructor (the private `rfc7809` means
+functional record update does not compile outside the crate) and a getter
+for the config test.
+
+**Deployed (2026-10-12 14:40):** build fits the gate — 5,545,312 B
+(+1,040 vs §18.34's 5,544,272; UPX LZMA, 35 MiB overlay budget untouched),
+dav-tls sha-unchanged so the front end kept serving through the swap,
+`rustical healthy` on pid 26421, 13 holiday sets restaged, fence released.
+The live replay, against the real carltonaudio UUID-Liturgy before and
+after: pre-deploy, DailyView's UA got the canonical
+`DTSTART;VALUE=DATE:20261018` — post-deploy the same GET gets
+`DTSTART;TZID=America/New_York:20261018T000000` (+`DTEND` to the 19th),
+while vdirsyncer's UA still gets the canonical DATE form; a full-body
+diff of the two responses is exactly those two lines and nothing else;
+and **all three ETags are the same `e61dbeb8…`** — pre-deploy, DailyView
+and vdirsyncer post-deploy — the stored object never moved, the rewrite
+is on the wire only, as designed. Regression: `vdirsyncer sync` clean on
+all three collections; khal renders St Luke all-day on the 18th
+untouched.
+
+**Still open:** the phone's own manual "Sync calendar" (it also picks up
+the Liturgy calendar, created after the phone's last verified sync), then
+the first on-device window — St Luke, Oct 18, should list at `00:00` on
+the correct day (in-window from Oct 15) instead of `20:00` the day
+before. An empty list today is correct — the `rc-1962` set has nothing
+between Oct 12-15. Code uncommitted on `omnical-scheduling` (rustical: 2
+new — `crates/caldav/src/dailyview.rs`,
+`tests/integration_tests/caldav/calendar_dailyview.rs` — and 5 touched —
+caldav `lib.rs`, `calendar_object/methods.rs`, `src/main.rs`, the two
+test-harness modules; plus the `[caldav]` section in
+`router/etc/rustical/config.toml`).
