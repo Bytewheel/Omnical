@@ -5584,3 +5584,136 @@ non-event for it — it wipes and refetches every sync).
 at 121 / `c8bb7123…` still matches, no churn as expected). Deployed:
 `scripts/build-rust.sh` + `deploy.sh`; router `/usr/sbin/rustical` sha
 `51d65763…` == `out/rustical`.
+
+### 18.42 The mirror in the profile page, and per-user timezones — the engine moves to `caldav`, the owner's zone feeds the feed (2026-10-13)
+
+**Where §18.41 left it:** the mirror ran (cron, CLI), the phone feed
+worked, the web calendar rendered — but a user watched their sync
+only through the log, and every feed was flattened in the deployment's
+`[caldav] dailyview_timezone` (UTC on the router). This section puts
+the sync in the web UI and the timezone in the *owner's* hands:
+**§18.42 = the profile page's "Sync now" button + a per-user IANA
+timezone setting.**
+
+**The load-bearing refactor first: the engine moved to
+`rustical_caldav::mirror`** (`crates/caldav/src/mirror.rs`).
+`src/mirror.rs` is deleted, because the profile page's button must run
+*exactly* the engine the cron and the CLI run — and the frontend crate
+cannot import the root crate. `caldav` owns `dailyview`, so the
+flattening and the engine live in one place. `MirrorConfig` +
+`MirrorTargetConfig` moved with it (`src/config.rs` re-exports them;
+every `crate::config::Mirror…` reference keeps resolving), and
+`src/lib.rs` re-exports the module (`pub use rustical_caldav::mirror;`)
+so `crate::mirror::sync_target` keeps resolving for the CLI and the
+loop. `crates/caldav/Cargo.toml` gained `anyhow` and `reqwest` (the
+same rustls client that ran the engine from the root). The nine engine
+tests moved with the code: `rustical --lib` 120 → **112**, `caldav` 73
+→ **82** (recorded; the plan estimated ~111/~82).
+
+**Per-run history: the `mirror_runs` table** (migration
+`20261013120000_mirror_runs`, table + `idx_mirror_runs_mirror_ran_at`).
+`sync_target` wraps `sync_target_inner` and records its own receipt —
+stats on success, the error string on failure — so **every** surface
+(loop, cron CLI, the new button) leaves the same row a UI reads later;
+a *recording* failure is a `warn!`, never a failed sync. Insert + prune
+to 20 newest per target in one transaction;
+`crates/store_sqlite/src/tests/mirror_store.rs` pins the newest-read,
+the verbatim error strings, the 20-row prune (`MIN(ran_at)`), and that
+one target's prune never touches another's rows.
+
+**Per-user timezones: the `principals.timezone` column** (migration
+`20261013130000_principal_timezone`, `TEXT NOT NULL DEFAULT ''` — empty
+string = unset, the `needs_password_change` precedent). `Principal`
+carries `timezone: String` (`#[serde(default)]`, 34 construction
+sites), `principal_from_row` and both SELECT lists read `p.timezone`,
+and the trait gains `set_timezone` (default `Err(ReadOnly)`, the
+`update_password` shape) with the sqlite `UPDATE` behind it.
+`crates/store_sqlite/src/tests/principal_store.rs` pins set/get/clear.
+
+**The cascade, and whose zone it is:** `resolve_timezone(owner,
+deployment)` — the **calendar owner's** setting, then
+`[caldav] dailyview_timezone`, then UTC. *Owner*, never the acting
+admin: a group-admin clicking "Sync now" on a member's calendar must
+not re-stamp that member's feed in the admin's zone. The loop resolves
+per **tick** (`run_mirror_target` takes the auth provider + deployment
+zone; a user changing their setting mid-uptime is picked up on the next
+tick; a missing owner row degrades to the deployment rung, never fails
+the sync) and the CLI per run (`src/commands/mirror.rs` — the
+`get_data_stores` destructure is a **13**-tuple and now names
+`auth_provider`, the 4th element).
+
+**The UI** (`crates/frontend/src/routes/mirror.rs`, `routes/user.rs`,
+`routes/calendar.rs`, `routes/mod.rs`):
+
+- `MirrorUiContext` (run store, configured targets, deployment
+  timezone, the in-flight `Mutex<HashSet<String>>`) — **not** a bare
+  `Extension<String>` (that type is the subscriptions public URL);
+  layered as `Extension<Option<Arc<…>>>`, and a missing context is a
+  **404** (the password-reset pattern). `make_app_for` builds a context
+  **only when targets are configured**: no `[mirror.targets]` ⇒ no
+  context ⇒ no mirror block, no button, no route — the page is
+  byte-for-byte the unconfigured build.
+- The calendar tile gains a **"Mirrors (copies on other servers)"**
+  block: one line per configured target (`name → host · last-path-
+  segment · kind · last sync <relative>` — chrono-humanize, so
+  tz-independent; the last run's counts or its verbatim error), plus
+  one **"Sync now"** form gated on `tile.can_generate` (owner/admin —
+  the credentials rule). Never log the target struct (`Debug` carries
+  the remote password — §18.41's own lesson); `target.name` only.
+- `POST /{user}/calendar/mirror-sync`: gates `user_id == user.id`,
+  `form.principal == user.id || user.is_admin(&form.principal)`, the
+  calendar exists (the share routes' fail-fast), and **targets come
+  from the config, never the form** — the form carries only *what* to
+  sync, not *how*. The button is **not** gated on `[mirror] enabled`
+  (that switch arms the background loop only, like the CLI). It
+  **awaits** `rustical_caldav::mirror::sync_target` per target, with
+  the owner's zone, then re-renders the profile with a one-time
+  per-target banner ("name: N put, N deleted, N unchanged" /
+  "name: failed — {err}") that opens the Calendars fold.
+- The in-flight guard — and the bug the first test run found:
+  `HashSet::insert` returns `true` when the name was **absent**
+  (freshly claimed). The first draft read it backwards, so *every
+  first click* answered "…: already syncing — try again in a minute."
+  and synced nothing. Fixed to `if !claimed` (a poisoned lock is
+  taken anyway — `PoisonError::into_inner` — a panicked run leaked its
+  claim and must not block the button forever).
+- The **Timezone section** (`id="timezone-section"`, between App
+  tokens and Calendars): a sorted `chrono_tz::TZ_VARIANTS` `<select>`
+  with an empty "Server default" option, the saved zone selected, a
+  banner that opens the fold. `POST /{user}/timezone` validates with
+  `chrono_tz::Tz::from_str` before `set_timezone` (empty ⇒ clear),
+  re-renders with the refreshed `Principal` so the `<select>` shows the
+  choice — success is an explicit `bool` set by the arm that earned it,
+  never sniffed back out of the banner string it built.
+
+**App-layer wiring:** `AppConfig` += `mirror_targets` /
+`mirror_timezone`; `AppStores` += `mirror_store`; `make_app` gained
+**+3 params** after `print_store` — `mirror_store`, then
+`smtp_accounts`, then `mirror_targets`, `mirror_timezone` (that order);
+`store_bundle.rs` populates the store; **tenancy** `app_config_for` is
+the production path (`config.mirror.targets`,
+`config.caldav.dailyview_timezone()`); `cmd_serve` passes them and the
+loop spawn now carries `principal_store.clone()`.
+
+**Migration guards:** `migration_roundtrip` 44 → **48 files / 22
+pairs / 26 applied-ups** (bare stays 4), `upgrade.rs` reversible 20 →
+**22**. `CONTENT_MUTATING_DOWNS` was **evaluated and deliberately NOT
+extended** with `20261013130000`: the list's own criterion is "destroys
+user-visible data *beyond dropping schema*" (`add_calendar_uid`'s
+down recreates the table without the cross-referenced UIDs); the
+timezone down is a plain column drop like every other unlisted one — a
+dropped user *setting*, not user *content*.
+
+**Test numbers (all green):** fmt clean; clippy `--workspace
+--all-targets -- -D warnings` zero; `rustical --lib` **112**; caldav
+**82**; store_sqlite **59**; frontend **52** (the new
+`routes/test_rig.rs` Rig — one in-memory pool, every store over it,
+`frontend_router` + sessions, HTTP-basic app-token auth; the mirror
+suite's stub CalDAV server answers PROPFIND/PUT/DELETE over a
+`Mutex<HashMap>` — the **listing is the map's keys, and PROPFIND hits
+the collection root**, which axum's `/{*path}` alone does not match:
+a second root route answers it, or `remote_listed` is forever `None`
+and every sync re-PUTs); integration **122** (baseline pin
+`d89c6bb0…` **holds** — no integration names added); `cargo test
+--workspace` clean. Deploy + live verification (the §18.41 checklist
+plus the timezone walkthrough) follows the user's confirmation.
