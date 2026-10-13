@@ -5872,3 +5872,60 @@ Omnical-Code change.)
   `25Z10RT2…` in the aphy-UID account) — still benign, **not
   "fixed"** (§18.41). Cron line untouched (`*/30 … mirror sync`), `[mirror] enabled` stays false (tenancy skips the serve-path loop;
   the cron is the cadence).
+
+**§18.43 addendum — the import button on the Contacts surfaces
+(2026-10-13 evening):** the profile's Addressbooks section was the
+only surface carrying the import form; the Contacts pages now carry
+it too.
+
+- **The aggregate Contacts tab** (`route_contacts` →
+  `contacts_section.html`): one "Import contacts" button in the
+  toolbar, whose `destinations` attribute carries **every writable
+  addressbook** (the user's own + their groups', the same `can_write`
+  gate as every other control) as a JSON list
+  (`{principal, addressbook_id, label}`) — and the dialog grows a
+  destination `<select>` when the list has more than one entry (the
+  same picker the new-contact form has). A user who may write no book
+  sees no button at all.
+- **The per-addressbook Contacts page**
+  (`route_addressbook_contacts` → `pages/contacts.html`): the same
+  button scoped to its one book (the `principal`/`addressbook_id`
+  attributes, no list) beside "New contact", gated on the same
+  `can_write`.
+- **The attribute is `destinations='{{ …|json|safe }}'`** — askama
+  0.16's `json` filter emits no `'`, `&`, `<` or `>`, which is what
+  makes the single-quoted attribute safe (the plain `|json` output
+  went through the HTML escaper and rendered `&#34;` — functional, but
+  `|json|safe` is the filter's own documented shape for this).
+- **The element** (`import-contacts-form.ts`): `destinations` (JSON)
+  wins over the `principal`/`addressbook_id` attributes whenever it
+  parses to a non-empty list — the picker's selection (or its single
+  entry) is the POST's destination; the single-book shape is
+  unchanged for the profile tiles.
+- **Also fixed en route:** `tests/setup_mode.rs`
+  `only_two_things_open_setup_mode` wrote the **machine-global**
+  `/tmp/rustical-setup-again` marker, racing every other test in the
+  binary that consults `should_enter_setup_mode` — the workspace sweep
+  duly hit `a_broken_install_is_not_setup_mode` failing (~1-in-6, 8/8
+  clean after). The same race had already been fixed once in the
+  marker test above it; this is the same fix — a pid-suffixed marker
+  through `should_enter_setup_mode_with_marker`, whose doc comment
+  exists for exactly this. Not a §18.42/43 change — a pre-existing
+  flake the gate run surfaced.
+- **Gates:** fmt clean; clippy `--workspace --all-targets -- -D
+  warnings` zero; frontend **55** (three new
+  `contacts_page_import_tests` suites: the tab's destinations list
+  (own + group, never a non-writable book), the hidden button without
+  writable books, the per-book scoped form); `cargo test --workspace`
+  **70/70** result lines, zero failures; bundle rebuilt 75.39 kB.
+  No integration names moved — test.yml pins hold untouched.
+- **Deployed + live:** router `/usr/sbin/rustical` sha
+  `c3f41d9f5cde464fbf428d7ce6cb3447a71e84e4a640c8bcb7ecddba172104a4`
+  == `out/rustical`, `health` green. nfcalaway's Contacts tab renders
+  one button whose destinations list all three writable books
+  (`nfcalaway@novo-ordo.com`/`Liturgical` + `/personal`, and
+  `family`/`family` — the group membership); the per-book page renders
+  the scoped form; a vcf POSTed through the **group** destination
+  ("Added 1 contact.") landed in the family book and was deleted
+  after — the picker's group destination works end-to-end, not just
+  the own-principal one.
