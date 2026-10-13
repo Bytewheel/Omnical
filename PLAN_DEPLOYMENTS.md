@@ -5411,3 +5411,176 @@ if native shows and import does not, it is their import-to-render path,
 not the file; if neither shows, it is their grid, not ours. Not ours to fix
 either way, but it decides whether any further shaping here is even
 theoretical.
+
+### 18.41 The push mirror into aphy — the four grid gates, the two-calendar layout, and the `-m` feed-UID marker that restored series ops (2026-10-13)
+
+**Where §18.40 left it:** the phone pipeline worked (shaped export →
+manual web import → phone sync) but was a per-change ritual, the aphy
+web week/day grids still dropped every imported event, and the
+flattening had removed the series operations the user valued. This
+section closes the §18.36–§18.40 arc: the manual import step is gone
+(a CalDAV push mirror, cron-driven), the web renders, and the series
+ops are back.
+
+**The channel test first (§18.40's held-in-reserve diagnostic):**
+CalDAV `PUT` ≡ web import — a flattened instance PUT directly into a
+scratch aphy calendar landed **month-view-only**, exactly like the
+import. The channel was never the discriminator; the bytes were. The
+byte bisect followed: aphy-native bytes re-imported under a changed UID
+**rendered** in week/day while ours did not, so the difference was in
+our bytes, and the field diff found the one structural absence — every
+native event carries an `ORGANIZER` (or at least a `CREATED`); khal
+writes neither. Nine live bisect rounds against a scratch calendar
+(deleted afterward, with all probe objects — leftovers shadow real
+calendars under aphy's UID rules) established **four mechanisms**:
+
+1. **The week/day grid gate:** a `VEVENT` renders in aphy's week/day
+   views only if it carries an `ORGANIZER` (or a `CREATED`). Month view
+   renders everything. khal never writes `ORGANIZER` — that single
+   absence was the entire §18.39/§18.40 symptom.
+2. **Account-wide UID uniqueness (RFC 6638
+   `unique-scheduling-object-resource`):** Cyrus rejects a `PUT` whose
+   VEVENT UID already exists in *another calendar of the same account* —
+   `403` with a `C:unique-scheduling-object-resource` body naming the
+   conflicting href. Found live: every omnical one-shot PUT 403'd while
+   the plain-UID copies sat in `Default`. The same event therefore
+   cannot live in both the phone feed and the web calendar under one
+   UID — the load-bearing constraint behind the suffixed-UID feed.
+3. **Kolab-style UID parsing:** `{uid}-{YYYYMMDDTHHMMSSZ}`-suffixed
+   UIDs parse as series *overrides* of that master. Master + family in
+   the same calendar → series ops present; master in the web calendar
+   and family in the feed calendar → **series ops vanish** (found when
+   the user clicked the recurring Trash in the mirrored web calendar
+   and the edit-this-occurrence/this-and-future/all-events options
+   were gone).
+4. **Thin bars:** 10-minute events render in week/day as
+   near-invisible slivers — at least two "doesn't render" answers
+   during the bisect were really "renders, too short to see." (Do not
+   re-litigate the early rounds on this account.)
+
+**The fix shipped as the mirror** (`rustical/src/mirror.rs`, commits
+`257249d7` → `6a1a2f9b` on `omnical-scheduling`): a one-way push from a
+local calendar into a remote CalDAV collection — `PROPFIND` the remote,
+`PUT` what changed, `DELETE` what the mirror owned but no longer wants,
+never touching objects it cannot claim (the remote account's own
+events, its accepted invitations). The pieces:
+
+- **Config:** `[mirror]` + one `[[mirror.targets]]` per source→remote
+  pair (`name`, `principal`, `calendar`, `url`, `username`, `password`,
+  `organizer`), with `phone_instances` (also write the §18.39/§18.40
+  flattened feed), `phone_feed_only` (skip recurring masters, stamp no
+  `ORGANIZER` — the feed stays under aphy's grid gate and out of the
+  web), `horizon_days` (90, §18.38's cadence), `interval_secs` (1800).
+  `rustical mirror sync` works regardless of `[mirror] enabled`, so a
+  target can be tested by hand before it is turned on.
+- **Body shaping:** `ORGANIZER`/`CREATED`/`LAST-MODIFIED` stamped on
+  masters that lack them — every other byte preserved, so recurrence
+  and the series model stay intact. `CREATED`/`LAST-MODIFIED` inherit
+  the source's own `DTSTAMP` (`c1f4c7c1`): change detection hashes the
+  body, and a mirror that re-stamped every run would re-PUT the whole
+  source each cadence (`a2bdd88b` pins that contract in a unit test).
+- **State:** the `mirror_objects` table (migration
+  `20261012200000_mirror_objects`; the reversible-migration count guard
+  in `commands/upgrade.rs` moved 19 → 20), one row per written object
+  (uid, href, body hash), keyed on the target name — the delete diff
+  and the unchanged check read it, and state is replaced only after all
+  writes succeeded, so a failed run redoes exactly its delta on the
+  next one.
+- **Adoption:** a `{master-uid}-…` object on the remote that the
+  desired set no longer carries is a stale instance (an old horizon, an
+  old scheme) — the mirror claims the whole UID family and deletes it;
+  objects outside every family are the remote's own and stay.
+- **The feed UID scheme:** phone-feed copies never claim a real UID
+  (mechanism 2): recurring events ride as their flattened instances,
+  one-shots as `{uid}-{DTSTART-stamp}`, each feed copy taking the
+  §18.36 all-day pass on DATE-valued lines. And since the series-ops
+  finding (mechanism 3), every feed UID carries a trailing `-m` marker
+  (`feed_uid`, `6a1a2f9b`): the marker breaks aphy's datetime-suffix
+  parse — with the bare `{uid}-{datestamp}` form, Roundcube tied the
+  feed family to the cross-calendar master and the web's series model
+  broke — while staying deterministic (re-syncs upsert) and inside the
+  `{uid}-` family the adoption sweep claims.
+- **Tracing:** manual `rustical mirror sync` initializes tracing
+  (`e9b1c30e` — the PUT/DELETE warnings are the operator's eyes and
+  were invisible), and the sync span logs the target **by name**
+  (`3320a1e0` — the target's `Debug` carried the remote password into
+  the log stream).
+
+**The two-calendar layout (user decision):**
+
+| aphy calendar | contents | consumed by | state |
+|---|---|---|---|
+| `Default` (the stock MP02's account-URL calendar) | phone feed only: 38 flattened personal instances + 3 suffixed one-shots + 602 suffixed liturgical one-shots (643 objects), no masters, no `ORGANIZER` | the MP02's DailyView | ✓ user-verified: Trash Mon 19:00 and Recycling Thu 19:00 on their own days |
+| `omnical` (MKCALENDAR'd this session) | canonical: 6 personal masters+one-shots + 602 liturgical + 1 CAS (609 objects), `ORGANIZER`/`CREATED`-stamped, RRULE intact | the aphy web UI | ✓ week view renders (10-min events are thin slivers, mechanism 4); ✓ series ops present after the `-m` marker |
+
+**Deployment (live, 2026-10-13):** seven targets rendered into
+`/etc/rustical/config.toml` by `scripts/render-router-config.sh`
+(Omnical-Code `7cf6541`): `personal-to-default` and
+`liturgical-to-default` (phone feeds, `phone_feed_only`),
+`personal-to-omnical`, `liturgical-to-omnical`,
+`carltonaudio-personal-to-omnical`, `carltonaudio-cas-to-omnical`,
+`hawksnest-internal-shared-to-omnical` (canonical). Sources:
+`nfcalaway@novo-ordo.com`/`personal` (6 objects) and
+`/cec120ff-36a1-4787-bca1-ff4dbb6f4be4` (602 liturgical one-shots,
+`hol-rc-1962-*@omnical`), `nicholas@carltonaudio.com`/`Personal`+`CAS`,
+`nicholas@hawksnestsoftware.com`/`Internal Shared` — the principal
+names need their `.com` or the sync aborts `Error: Not found`. aphy
+credentials: username in **email form** (`burningserenity@aphy.io`; the
+bare name 401/403s), DAV password in
+`pass secrets/aphy.io/burningserenity/dav` — a **different password
+from the parent entry's web-login one** (they look like the same
+account; they are not). Do not probe aphy with repeated failed auth:
+Cyrus/nginx throttles the source for a long window. The router runs
+**tenancy**, and the serve-path background loop is skipped when tenancy
+is enabled (`[mirror] enabled = false` is intentional — a per-tenant
+loop is §7 work), so the cadence is cron on the router itself:
+`*/30 * * * * /usr/sbin/rustical --config-file /etc/rustical/config.toml
+mirror sync`.
+
+**Live results:** a converged run takes seconds and reports
+`0 put, 0 deleted, N unchanged` on all seven targets (verified twice
+after the `-m` re-key: the 13:30 cron and a 13:36 manual run —
+`0/0/41`, `0/0/602`, `0/0/6`, `0/0/602`, and the three
+carltonaudio/hawksnest targets). The first run after any UID-scheme
+change churns deletes+puts for minutes (the `-m` re-key: 41 put + 82
+deleted on personal — the 82 is the same 41 stale objects deleted once
+via the state diff and once via the adoption sweep, 404-tolerant — and
+the 602 liturgical feed copies churned the same way); overlapping runs
+(cron + manual) are safe but wasteful — same desired set, idempotent
+PUTs, 404-tolerant deletes.
+
+**Benign 403s (accepted, do not "fix"):** most
+`nicholas@carltonaudio.com`/`nicholas@hawksnestsoftware.com` objects
+are UID-blocked by their own aphy-native copies in `Default` (accepted
+invites: `203057C8…`, `AJ9UKL4Y…`, `4A6SI53B…`,
+`vdirsyncer-update-test-20260911`, `25Z10RT2…`) — those PUTs 403 every
+sync and surface as WARN lines. Correct behavior: the native copies
+own the UIDs (mechanism 2) and render on the web anyway; the retries
+are a harmless 2-3 PUTs per sync.
+
+**Known limits:** foreign-organized events may be read-only in the
+aphy web UI — Church's `ORGANIZER` is `nfcalaway@novo-ordo.com`, and
+Roundcube treating a foreign organizer as not-yours is legitimate, so
+series-ops verification used TRASH (locally organized). The liturgical
+calendar rides both feeds: on the phone its DATE-valued one-shots were
+one-day-early historically (§18.36) and the `Default` feed copies now
+carry the local-midnight pass — accepted state.
+
+**The export route stays** (`?dailyview=1`, the one Download button,
+§18.40): still useful for one-off imports elsewhere, byte shapes
+phone-proven.
+
+**Verification (user, 2026-10-13):** the `omnical` web calendar renders
+in week view, and after the `-m` marker the recurring **Trash** offers
+its series operations again (edit-this-occurrence /
+this-and-future / all-events) — §18.41's open gap closed. The phone:
+one manual sync, the 4-day list unchanged (the feed UID renaming is a
+non-event for it — it wipes and refetches every sync).
+
+**Gates at `6a1a2f9b`:** fmt clean; `SQLX_OFFLINE=true cargo clippy
+--workspace --all-targets -- -D warnings` zero; `rustical --lib`
+**121** (the `feed_uid` marker test is new); caldav **73/73**; store
+**57/57**; integration **121/121** (names unchanged — test.yml's pin
+at 121 / `c8bb7123…` still matches, no churn as expected). Deployed:
+`scripts/build-rust.sh` + `deploy.sh`; router `/usr/sbin/rustical` sha
+`51d65763…` == `out/rustical`.
