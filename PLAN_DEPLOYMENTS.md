@@ -5717,3 +5717,97 @@ and every sync re-PUTs); integration **122** (baseline pin
 `d89c6bb0…` **holds** — no integration names added); `cargo test
 --workspace` clean. Deploy + live verification (the §18.41 checklist
 plus the timezone walkthrough) follows the user's confirmation.
+
+### 18.43 Contacts import, and a profile page a non-technical person can follow — the route shape a static verb saves (2026-10-13)
+
+**The user ask:** moving into Omnical meant exporting contacts from
+Google (or Apple/Outlook) *by hand* into a DAV client, and the profile
+page's instructions still read like they were written for the person
+who wrote the server. This section ships **§18.42's mid-session
+additions: a contacts import button + plain-language instructions**.
+
+**Contacts import** (`routes/addressbooks.rs`,
+`POST /{user}/addressbook/import/{principal}/{addressbook_id}`,
+mounted in `lib.rs`; the `import-contacts-form` Lit component posts
+the **raw file body** — the fetch-the-File shape, no multipart — and
+shows the plain-text response verbatim in its dialog):
+
+- **Formats:** a `.vcf` (vCard — the one format every contacts app
+  exports) or a contacts CSV (Google's and Outlook's export shapes).
+  The sniff is BOM-tolerant `BEGIN:VCARD`. The vcf path keeps **whole
+  cards** — BDAY/ADR/PHOTO survive, nothing is reduced to fields; a
+  card's own `UID` is kept, a missing one is stamped
+  `imported-{uuid}`. The CSV path is a hand-rolled RFC-4180-ish parser
+  (quoted fields, `""` escapes, commas/newlines inside quotes,
+  CRLF/LF) into `ParsedContact`, then a built `VERSION:3.0` vCard with
+  RFC 6350 escaping; headers are matched by keyword, case-blind, so
+  Google's `E-mail 1 - Value` and Outlook's `E-mail Address` /
+  `Mobile Phone` both work, `Type` columns are excluded, and **all**
+  emails/phones of a kind import (three emails stay three).
+- **Duplicates are skipped, never overwritten:** a UID already in the
+  book counts as a skip, a concurrent `put_object` `AlreadyExists`
+  counts as a skip — an import is a move-in, not a merge, and
+  re-importing the same file is a no-op. **UFCS is load-bearing**
+  (`AddressbookReadStore::get_objects` /
+  `AddressbookWriteStore::put_object`): `SqliteAddressbookStore` is
+  also a `PrefixedCalendarStore`, so the bare calls are ambiguous.
+- **The response is a plain sentence** (`ContactsImportOutcome::summary`):
+  "Added 2 contacts. Skipped 3 that were already in this addressbook.
+  Ignored 1 row with nothing recognizable in it." — `200` on any
+  processed file (including "added zero"), **`400` "No contacts found
+  in that file…"** when nothing parses at all (neither a vCard export
+  nor a contacts CSV). Empty CSV rows are **kept and counted**, not
+  silently dropped — the spreadsheet row the user can see is the row
+  the summary must own. (The singular grammar was a bug the plan
+  pre-diagnosed: "Skipped 1 *one that was*" double-counted; fixed.)
+- **The route shape is the lesson of this section.** The first draft
+  mounted `…/{principal}/{addressbook_id}/import`, the calendar
+  `…/restore` shape. But the contact-object POST route
+  `/{user}/addressbook/{addressbook}/contacts/{object}` owns the
+  literal `contacts` at the position the import route needed dynamic —
+  and **matchit prefers the static segment** — so an import into the
+  *default `contacts` book* never reached the import handler: it
+  answered the contact-edit form's 415 ("Form requests must have
+  `Content-Type: application/x-www-form-urlencoded`"). Not a test bug —
+  a production bug the frontend suite caught on its first-ever run
+  (the backend tests had used the same route and 401'd before the
+  extractor). The verb now sits on a **static segment** beside
+  `credentials`: `/{user}/addressbook/import/{principal}/
+  {addressbook_id}` — immune to any book/principal id. Known limit,
+  documented not blocked: UTF-16 CSV exports are not handled (UTF-8 /
+  BOM-UTF-8 only); the vCard path always works.
+- **Bundle:** `import-contacts-form.ts` exported from `bundle.ts`;
+  `deno task build` → `public/assets/js/bundle.mjs` 74.27 kB (committed
+  output — rebuilt after every `.ts` change).
+
+**Plain-language instructions** (`profile_section.html`): the intro's
+second paragraph now walks a new user through it — app token → "How to
+connect your apps…" → Calendars (share links) → **Addressbooks
+(import contacts)**; the help block is retitled "How to connect your
+apps…" and rewritten as copy-these-three-things + per-device steps in
+plain words + a **"Moving your existing calendar or contacts in"**
+section (the Google export steps, and the duplicate-skip promise:
+"contacts that are already here are skipped, so importing twice adds
+nothing twice"). Paragraph 1 and the localStorage script stayed
+byte-identical — `frontend_profile_intro.rs` pins them — so **no
+integration test names moved and the test.yml pins hold** (verified:
+122 / `d89c6bb0…`). One integration *body* assertion moved with the
+content: `test_portal_profile_sections_and_contacts`'s "the former
+tab entries are gone" checks are now scoped to the actual `<nav>`
+element — the intro legitimately deep-links `<a …>Addressbooks</a>`,
+and the old page-wide substring would misfire on the intro, not the
+nav.
+
+**Gates at this state (§18.42 + §18.43, rustical uncommitted,
+`omnical-scheduling`):** fmt clean; clippy `--workspace --all-targets
+-- -D warnings` zero (the frontend rig's `router_over` carries both
+`unused_async` spellings of clippy 1.98 — `unused_async` *and*
+`unused_async_trait_impl` fire on the same await-less fn);
+`rustical --lib` **112**; caldav **82**; store_sqlite **59**; frontend
+**52** (5 mirror suites + 3 contacts-import suites over the shared
+`test_rig`); http_integration **12**; migration_roundtrip **5**;
+integration **122** (baseline pin `d89c6bb0…` holds, digest re-derived
+and byte-identical — **no CI pin moves**); `cargo test --workspace`
+clean, three consecutive sweeps. The rustical changes stay
+**uncommitted** (the user has not asked); the planning repo carries
+this section.
