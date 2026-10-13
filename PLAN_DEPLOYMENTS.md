@@ -5811,3 +5811,64 @@ and byte-identical — **no CI pin moves**); `cargo test --workspace`
 clean, three consecutive sweeps. The rustical changes stay
 **uncommitted** (the user has not asked); the planning repo carries
 this section.
+
+**Deployment + live verification (2026-10-13 evening, §18.42/§18.43
+shipped together):** `scripts/build-rust.sh` (5 MiB rustical) +
+`deploy.sh` — both migrations ran on restart
+(`20261013120000_mirror_runs` + `20261013130000_principal_timezone`,
+`principals.timezone` column verified in the tenant DB), router
+`/usr/sbin/rustical` sha `9b8c82519dcb117c82d202f4040658fb8091f38f01cb72d
+1c2118af7ee5554fd` == `out/rustical`, `health` green. (The deploy
+script's post-start `sleep 2` health probe fired at +2s against a
+service that first serves at ~+4s (26 migrations + repair tasks) —
+the probe failed, the service was healthy seconds later; a
+pre-existing wrinkle of `deploy.sh`'s start block, not worth an
+Omnical-Code change.)
+
+- **Tiles:** nfcalaway's `personal` tile renders both targets —
+  `personal-to-default → dav.aphy.app · Default · phone feed · last
+  sync N minutes ago` (`0 copied, 0 removed, 42 unchanged`) and
+  `personal-to-omnical → … · omnical · web calendar · …` (`0 copied, 0
+  removed, 7 unchanged`) — plus one "Sync now" button (can_generate)
+  and the Timezone section (`Server default` selected while unset).
+- **"Sync now" live:** POSTed the form's own hidden fields → banner
+  "Mirror sync finished." with `personal-to-default: 0 put, 0 deleted,
+  42 unchanged.` + `personal-to-omnical: 0 put, 0 deleted, 7
+  unchanged.` — and the same-named runs landed in `mirror_runs` beside
+  the cron's and the CLI's.
+- **Timezone cascade, exercised both directions:** save
+  `America/New_York` → banner + `selected` + DB row; garbage zone →
+  "…is not a timezone this server recognises." + DB unchanged; fresh
+  re-login → still selected. Then the cascade proof: owner set to
+  **Europe/Berlin** → manual sync → `personal-to-default` re-stamped
+  **39 put** (the whole feed re-flattened: the recurring Trash's
+  instance body now reads `DTSTART;TZID=Europe/Berlin:20261020T010000`
+  — 19:00 NY Monday = 01:00 Berlin Tuesday) and
+  `liturgical-to-default` re-stamped **602 put** (the DATE-valued
+  local-midnight pass is zone-bound too), while `personal-to-omnical`
+  did **0 put** — the owner zone feeds the *feed flattening*, never
+  the canonical masters. The **18:00 cron tick picked the Berlin
+  setting up mid-uptime** (resolved per tick, exactly the §18.42
+  design) and overlapped the manual sweep — §18.41's "overlapping runs
+  are safe but wasteful" held (idempotent re-PUTs, both sweeps
+  recorded). Owner restored to `America/New_York` → feed back to
+  `DTSTART;TZID=America/New_York:20261019T190000`, converged
+  `0/0/42` — Trash still Mon 19:00 on its own day, so a phone
+  manual sync files it where it always did (the phone's own sync is
+  the user's device action; the feed bytes are the proof).
+- **Contacts import live:** `.vcf` (3 marked test cards, one with
+  BDAY/ADR) → "Added 3 contacts."; re-import → "Added 0 contacts.
+  Skipped 3 that were already in this addressbook."; stored cards
+  keep `BDAY:1990-05-06` + `ADR:;;1 Test Lane;;Testville;;11111;`
+  verbatim (whole-card, nothing reduced). Google-shaped CSV (quoted
+  comma in Notes, one empty row) → "Added 1 contact. Ignored 1 row
+  with nothing recognizable in it."; built card carries
+  `N:Csvtest;Jane;;;`, `FN:Jane Csvtest`, `EMAIL:…`, `TEL:+1 555
+  0199`, `ORG:CSV Import Co`, and `NOTE:she said "hello"\, twice`
+  (unescaped then RFC-6350-escaped). All four test objects removed
+  via the delete route; book back at its 2-contact baseline.
+- **Benign 403 WARNs:** still present after the engine move
+  (`203057C8…`, `AJ9UKL4Y…`, `vdirsyncer-update-test-20260911`,
+  `25Z10RT2…` in the aphy-UID account) — still benign, **not
+  "fixed"** (§18.41). Cron line untouched (`*/30 … mirror sync`), `[mirror] enabled` stays false (tenancy skips the serve-path loop;
+  the cron is the cadence).
